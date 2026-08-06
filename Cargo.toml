@@ -11,6 +11,7 @@ readme = "README.md"
 keywords = ["cli", "developer-tools", "proxy", "deploy", "environment"]
 categories = ["command-line-utilities", "development-tools"]
 authors = ["Kirill Lakhtachev <lahtachev@gmail.com>"]
+exclude = ["docs/", ".github/", "cliff.toml", "rustfmt.toml"]
 
 [dependencies]
 anyhow = "1"
