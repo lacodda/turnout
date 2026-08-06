@@ -133,6 +133,43 @@ fn app_edit_updates_commands_and_port() {
         .stdout(predicate::str::contains("localhost:7200").and(predicate::str::contains("echo deploy")));
 }
 
+#[cfg(windows)]
+#[test]
+fn app_add_canonicalizes_the_drive_letter() {
+    let (dir, project) = workspace();
+    let display = project.display().to_string();
+    // A lowercase drive letter would reach dev servers as a lowercase cwd
+    // and break them (Vite resolves imports against it).
+    let lowercase = format!("{}{}", display[..1].to_lowercase(), &display[1..]);
+    turnout(dir.path()).args(["app", "add", "myapp", "--path", &lowercase]).assert().success();
+    let canonical = std::fs::canonicalize(&project).unwrap().display().to_string();
+    let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical).to_string();
+    turnout(dir.path())
+        .args(["app", "show", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(&canonical));
+}
+
+#[test]
+fn gateway_run_on_a_busy_port_suggests_stopping() {
+    let (dir, project) = workspace();
+    let port = free_port();
+    // Occupy the port so the bind fails exactly like a second gateway would.
+    let _busy = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["gateway", "run"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("turnout gateway stop"));
+}
+
 #[test]
 fn server_crud_roundtrip() {
     let (dir, _) = workspace();
