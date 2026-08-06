@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 
 use crate::model::App;
 use crate::store;
@@ -23,26 +23,13 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
     }
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     eprintln!("[{}] {command_line}", app.name);
-
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", command_line]);
-        command
-    };
-    #[cfg(not(windows))]
-    let mut command = {
-        let mut command = std::process::Command::new("sh");
-        command.args(["-c", command_line]);
-        command
-    };
-    let status = command.current_dir(dir).status().with_context(|| format!("cannot run '{command_line}'"))?;
+    let status = crate::utils::run_in_dir(command_line, dir)?;
     std::process::exit(status.code().unwrap_or(1));
 }
 
 /// Explicit name wins; otherwise the app whose path contains the current
 /// directory (deepest match), so `turnout dev` works from inside a project.
-fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
+pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
     match name {
         Some(name) => apps
             .iter()

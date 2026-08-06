@@ -55,8 +55,9 @@ Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\tur
 - [x] `use` - bind an app to a stand with one command
 - [ ] Gateway: WebSocket proxying
 - [x] App commands: `dev` / `build` / `test` / `lint` from any directory
-- [ ] Deploy: build, package, upload, restart
-- [ ] Comfort: rich `status`, shell completions, app groups, config migrations
+- [x] Deploy: build, upload over SSH/SFTP, restart
+- [ ] Deploy: remote backup and restore
+- [ ] Comfort: shell completions, app groups, config migrations
 
 ## Documentation
 

@@ -37,6 +37,18 @@ pub struct Server {
     /// Accept self-signed or otherwise invalid TLS certificates for this server only.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// Deploy targets on this server, per app.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub deploy: BTreeMap<String, DeployTarget>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct DeployTarget {
+    /// Remote directory the app's artifacts land in.
+    pub path: String,
+    /// Command run on the server after upload, e.g. a service restart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart: Option<String>,
 }
 
 /// Access metadata for a server; the secret itself lives in the OS keyring.

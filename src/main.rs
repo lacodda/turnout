@@ -25,6 +25,7 @@ fn main() {
         cli::Command::Test { app } => commands::exec::run("test", app),
         cli::Command::Lint { app } => commands::exec::run("lint", app),
         cli::Command::Run { command, app } => commands::exec::run(&command, app),
+        cli::Command::Deploy { app, server, no_build, clear } => commands::deploy::run(app, server, no_build, clear),
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");

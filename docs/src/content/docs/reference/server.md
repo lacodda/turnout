@@ -43,6 +43,14 @@ turnout server edit lab --secure         # require valid TLS certificates again
 turnout server edit lab --insecure       # accept invalid TLS certificates
 ```
 
+Deploy targets - where each app lands on this server and what runs afterwards (see [`turnout deploy`](/turnout/reference/deploy/)):
+
+```bash
+turnout server edit prod --deploy-path myapp=/var/www/myapp
+turnout server edit prod --restart-cmd "myapp=systemctl restart myapp"
+turnout server edit prod --deploy-path myapp=      # remove the target
+```
+
 ## remove
 
 ```bash

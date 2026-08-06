@@ -1,6 +1,25 @@
+use std::path::Path;
+
 use anyhow::{Context, Result};
 
 use crate::model::Server;
+
+/// Run a shell command line in a directory, streaming output to the terminal.
+pub fn run_in_dir(command_line: &str, dir: &Path) -> Result<std::process::ExitStatus> {
+    #[cfg(windows)]
+    let mut command = {
+        let mut command = std::process::Command::new("cmd");
+        command.args(["/C", command_line]);
+        command
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", command_line]);
+        command
+    };
+    command.current_dir(dir).status().with_context(|| format!("cannot run '{command_line}'"))
+}
 
 /// Best-effort reachability probe used by `use` and `status`.
 pub fn check_reachable(server: &Server) -> Result<reqwest::StatusCode> {

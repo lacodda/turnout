@@ -25,7 +25,9 @@ pub fn run(command: ServerCommand) -> Result<()> {
             ssh,
             insecure,
             secure,
-        } => edit(&name, url, label, ssh, insecure, secure),
+            deploy_paths,
+            restart_cmds,
+        } => edit(&name, url, label, ssh, insecure, secure, deploy_paths, restart_cmds),
         ServerCommand::Remove { name, assume_yes } => remove(&name, assume_yes),
     }
 }
@@ -94,6 +96,7 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Op
         url,
         ssh,
         accept_invalid_certs,
+        deploy: Default::default(),
     });
     servers.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_servers(&servers)?;
@@ -140,6 +143,15 @@ fn show(name: &str) -> Result<()> {
     if !kinds.is_empty() {
         println!("  Access:   {} (secrets in the OS keyring)", kinds.join(", "));
     }
+    if !server.deploy.is_empty() {
+        println!("  Deploy:");
+        for (app, target) in &server.deploy {
+            match &target.restart {
+                Some(restart) => println!("    {app}: {} (then: {restart})", target.path),
+                None => println!("    {app}: {}", target.path),
+            }
+        }
+    }
     let apps = store::load_apps()?;
     let used_by: Vec<&str> = apps.iter().filter(|a| a.servers.iter().any(|s| s == name)).map(|a| a.name.as_str()).collect();
     if !used_by.is_empty() {
@@ -148,10 +160,20 @@ fn show(name: &str) -> Result<()> {
     Ok(())
 }
 
-fn edit(name: &str, url: Option<String>, label: Option<String>, ssh: Option<String>, insecure: bool, secure: bool) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn edit(
+    name: &str,
+    url: Option<String>,
+    label: Option<String>,
+    ssh: Option<String>,
+    insecure: bool,
+    secure: bool,
+    deploy_paths: Vec<String>,
+    restart_cmds: Vec<String>,
+) -> Result<()> {
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
-    let no_flags = url.is_none() && label.is_none() && ssh.is_none() && !insecure && !secure;
+    let no_flags = url.is_none() && label.is_none() && ssh.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
 
     if no_flags {
         if !std::io::stdin().is_terminal() {
@@ -199,10 +221,46 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, ssh: Option<Stri
         if secure {
             server.accept_invalid_certs = false;
         }
+        let known_apps = store::load_apps()?;
+        for spec in &deploy_paths {
+            let (app, dir) = split_spec(spec)?;
+            if dir.is_empty() {
+                server.deploy.remove(app);
+            } else {
+                if !known_apps.iter().any(|a| a.name == app) {
+                    bail!("no app named '{app}' - see `turnout app list`");
+                }
+                server
+                    .deploy
+                    .entry(app.to_string())
+                    .or_insert_with(|| crate::model::DeployTarget {
+                        path: String::new(),
+                        restart: None,
+                    })
+                    .path = dir.to_string();
+            }
+        }
+        for spec in &restart_cmds {
+            let (app, cmd) = split_spec(spec)?;
+            let Some(target) = server.deploy.get_mut(app) else {
+                bail!("app '{app}' has no deploy path on '{name}' - set it first with --deploy-path {app}=DIR");
+            };
+            target.restart = if cmd.is_empty() { None } else { Some(cmd.to_string()) };
+        }
     }
     store::save_servers(&servers)?;
     println!("Server '{name}' updated.");
     Ok(())
+}
+
+fn split_spec(spec: &str) -> Result<(&str, &str)> {
+    let (app, value) = spec
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("invalid value '{spec}': expected APP=VALUE"))?;
+    if app.is_empty() {
+        bail!("invalid value '{spec}': expected APP=VALUE");
+    }
+    Ok((app, value))
 }
 
 fn remove(name: &str, assume_yes: bool) -> Result<()> {

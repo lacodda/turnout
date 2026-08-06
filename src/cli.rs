@@ -59,6 +59,19 @@ pub enum Command {
     Lint { app: Option<String> },
     /// Run any named command from the app config
     Run { command: String, app: Option<String> },
+    /// Deploy an app to a server over SSH/SFTP: build, upload, restart
+    Deploy {
+        app: Option<String>,
+        /// Target server (defaults to the app's current binding)
+        #[arg(long)]
+        server: Option<String>,
+        /// Skip the build step
+        #[arg(long)]
+        no_build: bool,
+        /// Clear the remote directory before uploading
+        #[arg(long)]
+        clear: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -202,6 +215,12 @@ pub enum ServerCommand {
         /// Require valid TLS certificates for this server
         #[arg(long)]
         secure: bool,
+        /// Set an app's deploy directory as APP=DIR, or APP= to remove (repeatable)
+        #[arg(long = "deploy-path", value_name = "APP=DIR")]
+        deploy_paths: Vec<String>,
+        /// Set an app's post-deploy command as APP=CMD, or APP= to remove (repeatable)
+        #[arg(long = "restart-cmd", value_name = "APP=CMD")]
+        restart_cmds: Vec<String>,
     },
     /// Remove a server from the catalog; apps that allowed it are updated
     Remove {

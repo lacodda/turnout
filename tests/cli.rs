@@ -507,6 +507,70 @@ fn run_resolves_app_from_current_directory() {
 }
 
 #[test]
+fn server_edit_sets_deploy_targets() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "server",
+            "edit",
+            "staging",
+            "--deploy-path",
+            "myapp=/var/www/myapp",
+            "--restart-cmd",
+            "myapp=systemctl restart myapp",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/var/www/myapp").and(predicate::str::contains("systemctl restart myapp")));
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--restart-cmd", "ghost=oops"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no deploy path"));
+}
+
+#[test]
+fn deploy_validates_its_preconditions() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["deploy", "myapp", "--no-build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("pass --server or bind"));
+    turnout(dir.path())
+        .args(["deploy", "myapp", "--server", "staging", "--no-build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no SSH access"));
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--ssh", "deploy@staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["deploy", "myapp", "--server", "staging", "--no-build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no deploy path"));
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--deploy-path", "myapp=/var/www/myapp"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["deploy", "myapp", "--server", "staging", "--no-build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no artifact directory"));
+}
+
+#[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
     turnout(dir.path())
