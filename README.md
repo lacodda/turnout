@@ -3,6 +3,7 @@
 > A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy - from any directory.
 
 <p align="center">
+  <a href="https://crates.io/crates/turnout"><img src="https://img.shields.io/crates/v/turnout?style=flat-square" alt="crates.io"></a>
   <a href="https://github.com/lacodda/turnout/actions"><img src="https://img.shields.io/github/actions/workflow/status/lacodda/turnout/ci.yml?style=flat-square" alt="CI"></a>
   <a href="https://github.com/lacodda/turnout/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lacodda/turnout?style=flat-square" alt="License"></a>
 </p>
@@ -27,15 +28,13 @@ turnout puts all of it into one CLI that works from any directory:
 
 ## Install
 
-**Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
-
-**From source:**
+**With cargo:**
 
 ```bash
-git clone https://github.com/lacodda/turnout.git
-cd turnout
-cargo install --path .
+cargo install turnout
 ```
+
+**Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
 
 ## Quick start
 
