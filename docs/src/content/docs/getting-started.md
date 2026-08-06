@@ -5,7 +5,9 @@ description: Install turnout and run the first-time setup.
 
 ## Install
 
-From source, for now:
+Download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
+
+Or build from source:
 
 ```bash
 git clone https://github.com/lacodda/turnout.git
@@ -13,7 +15,7 @@ cd turnout
 cargo install --path .
 ```
 
-The binary lands in `~/.cargo/bin`, which should be on your `PATH`. Binary releases for Windows, macOS and Linux will come with the first tagged version.
+The binary lands in `~/.cargo/bin`, which should be on your `PATH`.
 
 ## First run
 

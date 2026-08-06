@@ -27,15 +27,15 @@ turnout puts all of it into one CLI that works from any directory:
 
 ## Install
 
-From source, for now:
+**Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
+
+**From source:**
 
 ```bash
 git clone https://github.com/lacodda/turnout.git
 cd turnout
 cargo install --path .
 ```
-
-Binary releases for Windows, macOS and Linux will come with the first tagged version.
 
 ## Quick start
 
