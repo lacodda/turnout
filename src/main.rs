@@ -20,6 +20,11 @@ fn main() {
         cli::Command::Pass { command } => commands::pass::run(command),
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(&app, &server, no_check),
         cli::Command::Gateway { command } => commands::gateway::run(command),
+        cli::Command::Dev { app } => commands::exec::run("dev", app),
+        cli::Command::Build { app } => commands::exec::run("build", app),
+        cli::Command::Test { app } => commands::exec::run("test", app),
+        cli::Command::Lint { app } => commands::exec::run("lint", app),
+        cli::Command::Run { command, app } => commands::exec::run(&command, app),
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");

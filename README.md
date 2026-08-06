@@ -54,7 +54,7 @@ Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\tur
 - [x] Dev gateway: per-stand cookie jars, self-signed HTTPS, redirect rewriting
 - [x] `use` - bind an app to a stand with one command
 - [ ] Gateway: WebSocket proxying
-- [ ] App commands: `dev` / `build` / `test` / `lint` from any directory
+- [x] App commands: `dev` / `build` / `test` / `lint` from any directory
 - [ ] Deploy: build, package, upload, restart
 - [ ] Comfort: rich `status`, shell completions, app groups, config migrations
 

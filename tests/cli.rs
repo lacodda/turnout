@@ -460,6 +460,53 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
 }
 
 #[test]
+fn run_executes_app_commands_with_exit_codes() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "hello=echo hi from turnout", "--command", "fail=exit 3"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["run", "hello", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hi from turnout"));
+    turnout(dir.path()).args(["run", "fail", "myapp"]).assert().code(3);
+    turnout(dir.path())
+        .args(["run", "nosuch", "myapp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no 'nosuch' command"));
+}
+
+#[test]
+fn run_resolves_app_from_current_directory() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "hello=echo resolved by cwd"])
+        .assert()
+        .success();
+    let nested = project.join("src");
+    std::fs::create_dir(&nested).unwrap();
+    turnout(dir.path())
+        .current_dir(&nested)
+        .args(["run", "hello"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("resolved by cwd"));
+    turnout(dir.path())
+        .current_dir(dir.path())
+        .args(["run", "hello"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not inside a known app directory"));
+}
+
+#[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
     turnout(dir.path())

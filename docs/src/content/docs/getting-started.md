@@ -49,6 +49,16 @@ turnout server add     # wizard: URL, SSH, TLS policy
 
 See [`turnout app`](/turnout/reference/app/) and [`turnout server`](/turnout/reference/server/) for the full command reference.
 
+## A working day
+
+```bash
+turnout gateway start          # once: the gateway routes apps to their stands
+turnout use myapp staging      # bind the app to a stand
+turnout dev                    # from the project dir: UI local, API on staging
+turnout pass copy staging      # password on the clipboard when the stand asks
+turnout use myapp prod-eu      # switch stands - no restarts, no env edits
+```
+
 ## Next steps
 
 - Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials and state.

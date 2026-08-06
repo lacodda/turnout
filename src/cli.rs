@@ -49,6 +49,16 @@ pub enum Command {
         #[command(subcommand)]
         command: GatewayCommand,
     },
+    /// Run the app's `dev` command (app resolved from the current directory if omitted)
+    Dev { app: Option<String> },
+    /// Run the app's `build` command
+    Build { app: Option<String> },
+    /// Run the app's `test` command
+    Test { app: Option<String> },
+    /// Run the app's `lint` command
+    Lint { app: Option<String> },
+    /// Run any named command from the app config
+    Run { command: String, app: Option<String> },
 }
 
 #[derive(Subcommand)]

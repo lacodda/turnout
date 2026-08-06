@@ -1,4 +1,5 @@
 pub mod app;
+pub mod exec;
 pub mod gateway;
 pub mod pass;
 pub mod server;
