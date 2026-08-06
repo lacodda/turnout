@@ -43,6 +43,13 @@ turnout server edit lab --secure         # require valid TLS certificates again
 turnout server edit lab --insecure       # accept invalid TLS certificates
 ```
 
+SSH auth for deploy can use a private key file (tried before the agent and the stored password):
+
+```bash
+turnout server edit prod --ssh-key ~/.ssh/id_ed25519
+turnout server edit prod --ssh-key ""    # remove, fall back to agent/password
+```
+
 Deploy targets - where each app lands on this server and what runs afterwards (see [`turnout deploy`](/turnout/reference/deploy/)):
 
 ```bash

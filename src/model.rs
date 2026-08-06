@@ -66,6 +66,9 @@ pub struct Ssh {
     #[serde(default = "default_ssh_port")]
     pub port: u16,
     pub user: String,
+    /// Path to a private key file; tried before the agent and the stored password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
 }
 
 fn default_ssh_port() -> u16 {
@@ -116,6 +119,7 @@ pub fn parse_ssh(spec: &str) -> Result<Ssh> {
         host: host.to_string(),
         port,
         user: user.to_string(),
+        key: None,
     })
 }
 

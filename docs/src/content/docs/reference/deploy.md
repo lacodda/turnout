@@ -15,7 +15,7 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 
 1. **Resolve.** The app comes from the argument or the current directory; the target server from `--server` or the app's current [binding](/turnout/reference/use/).
 2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy.
-3. **Connect.** SSH to the server's configured `user@host:port`. Auth tries agent keys first (ssh-agent / Pageant), then the password stored in the keyring (`--kind ssh`, falling back to `password`).
+3. **Connect.** SSH to the server's configured `user@host:port`. Auth order: the configured key file (`--ssh-key`), then agent keys (ssh-agent / Pageant), then the password stored in the keyring (`--kind ssh`, falling back to `password`).
 4. **Clear** *(only with `--clear`)*: the remote deploy directory is emptied.
 5. **Upload.** The app's artifact directory (`--dist`) is copied recursively; created directories and a file/byte summary are reported.
 6. **Restart.** If a post-deploy command is configured for this app, it runs on the server and its output is shown.

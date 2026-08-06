@@ -23,11 +23,12 @@ pub fn run(command: ServerCommand) -> Result<()> {
             url,
             label,
             ssh,
+            ssh_key,
             insecure,
             secure,
             deploy_paths,
             restart_cmds,
-        } => edit(&name, url, label, ssh, insecure, secure, deploy_paths, restart_cmds),
+        } => edit(&name, url, label, ssh, ssh_key, insecure, secure, deploy_paths, restart_cmds),
         ServerCommand::Remove { name, assume_yes } => remove(&name, assume_yes),
     }
 }
@@ -127,7 +128,10 @@ fn show(name: &str) -> Result<()> {
     }
     println!("  URL:      {}", server.url);
     match &server.ssh {
-        Some(ssh) => println!("  SSH:      {}@{}:{}", ssh.user, ssh.host, ssh.port),
+        Some(ssh) => {
+            let key = ssh.key.as_ref().map(|k| format!(" (key: {k})")).unwrap_or_default();
+            println!("  SSH:      {}@{}:{}{key}", ssh.user, ssh.host, ssh.port);
+        }
         None => println!("  SSH:      not configured"),
     }
     println!(
@@ -166,6 +170,7 @@ fn edit(
     url: Option<String>,
     label: Option<String>,
     ssh: Option<String>,
+    ssh_key: Option<String>,
     insecure: bool,
     secure: bool,
     deploy_paths: Vec<String>,
@@ -173,7 +178,8 @@ fn edit(
 ) -> Result<()> {
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
-    let no_flags = url.is_none() && label.is_none() && ssh.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
+    let no_flags =
+        url.is_none() && label.is_none() && ssh.is_none() && ssh_key.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
 
     if no_flags {
         if !std::io::stdin().is_terminal() {
@@ -213,7 +219,17 @@ fn edit(
             server.label = label;
         }
         if let Some(spec) = ssh {
-            server.ssh = Some(parse_ssh(&spec)?);
+            // Re-parsing replaces host/port/user; keep an already-configured key.
+            let key = server.ssh.as_ref().and_then(|s| s.key.clone());
+            let mut parsed = parse_ssh(&spec)?;
+            parsed.key = key;
+            server.ssh = Some(parsed);
+        }
+        if let Some(key) = ssh_key {
+            let Some(ssh) = server.ssh.as_mut() else {
+                bail!("set SSH access first: `turnout server edit {name} --ssh USER@HOST[:PORT]`");
+            };
+            ssh.key = if key.trim().is_empty() { None } else { Some(key) };
         }
         if insecure {
             server.accept_invalid_certs = true;

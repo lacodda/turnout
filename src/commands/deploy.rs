@@ -76,14 +76,20 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     Ok(())
 }
 
-/// Agent keys first (ssh-agent / Pageant), then the keyring password
-/// (kind `ssh`, falling back to `password`).
+/// Configured key file first, then agent keys (ssh-agent / Pageant),
+/// then the keyring password (kind `ssh`, falling back to `password`).
 fn connect(ssh: &Ssh, server_name: &str) -> Result<Session> {
     let stream = TcpStream::connect((ssh.host.as_str(), ssh.port)).with_context(|| format!("cannot reach {}:{}", ssh.host, ssh.port))?;
     let mut session = Session::new()?;
     session.set_tcp_stream(stream);
     session.handshake().context("SSH handshake failed")?;
 
+    if let Some(key) = &ssh.key {
+        session
+            .userauth_pubkey_file(&ssh.user, None, Path::new(key), None)
+            .with_context(|| format!("key auth with {key} failed"))?;
+        return Ok(session);
+    }
     let _ = session.userauth_agent(&ssh.user);
     if !session.authenticated() {
         let password = secrets::get(server_name, "ssh")

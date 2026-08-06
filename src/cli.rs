@@ -214,6 +214,9 @@ pub enum ServerCommand {
         label: Option<String>,
         #[arg(long, value_name = "USER@HOST[:PORT]")]
         ssh: Option<String>,
+        /// Private key file for SSH auth (empty value removes it)
+        #[arg(long = "ssh-key", value_name = "PATH")]
+        ssh_key: Option<String>,
         /// Accept invalid TLS certificates for this server
         #[arg(long, conflicts_with = "secure")]
         insecure: bool,

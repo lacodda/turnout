@@ -536,6 +536,40 @@ fn server_edit_sets_deploy_targets() {
 }
 
 #[test]
+fn server_edit_manages_the_ssh_key() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--ssh-key", "/home/me/.ssh/id_ed25519"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("set SSH access first"));
+    turnout(dir.path())
+        .args([
+            "server",
+            "edit",
+            "staging",
+            "--ssh",
+            "deploy@staging.example.com",
+            "--ssh-key",
+            "/home/me/.ssh/id_ed25519",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("key: /home/me/.ssh/id_ed25519"));
+    turnout(dir.path()).args(["server", "edit", "staging", "--ssh-key", ""]).assert().success();
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("key:").not());
+}
+
+#[test]
 fn deploy_validates_its_preconditions() {
     let (dir, project) = workspace();
     add_staging(dir.path());
