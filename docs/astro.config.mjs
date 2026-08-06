@@ -17,6 +17,10 @@ export default defineConfig({
 			sidebar: [
 				{ label: 'Getting Started', slug: 'getting-started' },
 				{
+					label: 'Guides',
+					items: [{ autogenerate: { directory: 'guides' } }],
+				},
+				{
 					label: 'Concepts',
 					items: [{ autogenerate: { directory: 'concepts' } }],
 				},
