@@ -27,6 +27,20 @@ pub fn run() -> Result<()> {
         names.dedup();
         println!("Access:  saved for {}", names.join(", "));
     }
-    println!("Gateway: not running");
+    let state = store::load_state()?;
+    if !state.bindings.is_empty() {
+        println!("Bindings:");
+        for (app, server) in &state.bindings {
+            println!("  {app} -> {server}");
+        }
+    }
+    match &state.gateway {
+        Some(gateway) if crate::commands::gateway::probe(gateway) => {
+            let ports: Vec<String> = gateway.ports.iter().map(|(port, app)| format!("{app}:{port}")).collect();
+            println!("Gateway: running (pid {}; {})", gateway.pid, ports.join(", "));
+        }
+        Some(gateway) => println!("Gateway: recorded (pid {}) but not responding - try `turnout gateway stop`", gateway.pid),
+        None => println!("Gateway: not running"),
+    }
     Ok(())
 }

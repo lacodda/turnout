@@ -319,6 +319,147 @@ fn pass_copy_never_prints_the_secret() {
 }
 
 #[test]
+fn use_binds_app_and_shows_in_status() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["use", "myapp", "staging", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'myapp' now uses 'staging'"));
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp -> staging"));
+}
+
+#[test]
+fn use_respects_the_allow_list() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path())
+        .args(["server", "add", "other", "--url", "https://other.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--server", "staging"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["use", "myapp", "other", "--no-check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not allowed"));
+}
+
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+}
+
+fn wait_for_port(port: u16) {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    for _ in 0..100 {
+        if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(100)).is_ok() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("port {port} never came up");
+}
+
+/// Kills the gateway child even when an assertion panics.
+struct ChildGuard(std::process::Child);
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+    }
+}
+
+/// A tiny "stand": sets a session cookie, echoes cookies back, redirects to itself.
+fn spawn_stand(port: u16) {
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async move {
+            use axum::http::HeaderMap;
+            use axum::routing::get;
+            let base = format!("http://127.0.0.1:{port}");
+            let app = axum::Router::new()
+                .route(
+                    "/hello",
+                    get(|| async { ([("set-cookie", "sid=abc123; Path=/; HttpOnly")], "hello from the stand") }),
+                )
+                .route(
+                    "/echo-cookie",
+                    get(|headers: HeaderMap| async move { headers.get("cookie").and_then(|v| v.to_str().ok()).unwrap_or("none").to_string() }),
+                )
+                .route(
+                    "/login",
+                    get(move || async move { (axum::http::StatusCode::FOUND, [("location", format!("{base}/after"))]) }),
+                );
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
+    });
+    wait_for_port(port);
+}
+
+#[test]
+fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
+    let (dir, project) = workspace();
+    let stand_port = free_port();
+    let gateway_port = free_port();
+    spawn_stand(stand_port);
+
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+
+    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
+        .env("TURNOUT_DATA_DIR", dir.path())
+        .args(["gateway", "run"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let _guard = ChildGuard(child);
+    wait_for_port(gateway_port);
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async move {
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let base = format!("http://127.0.0.1:{gateway_port}");
+
+        // Pass-through works and the stand's cookie never reaches the browser.
+        let response = client.get(format!("{base}/hello")).send().await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.headers().get("set-cookie").is_none(), "set-cookie must be stripped");
+        assert_eq!(response.text().await.unwrap(), "hello from the stand");
+
+        // The jar sends the captured cookie back to the stand.
+        let response = client.get(format!("{base}/echo-cookie")).send().await.unwrap();
+        assert_eq!(response.text().await.unwrap(), "sid=abc123");
+
+        // Absolute redirects to the stand come back rewritten to localhost.
+        let response = client.get(format!("{base}/login")).send().await.unwrap();
+        assert_eq!(response.status(), 302);
+        let location = response.headers().get("location").unwrap().to_str().unwrap();
+        assert_eq!(location, &format!("http://localhost:{gateway_port}/after"));
+    });
+}
+
+#[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
     turnout(dir.path())

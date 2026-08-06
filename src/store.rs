@@ -5,13 +5,14 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, Credential, Server};
+use crate::model::{App, Credential, Server, State};
 use crate::paths;
 
 const META_FILE: &str = "meta.json";
 const APPS_FILE: &str = "apps.json";
 const SERVERS_FILE: &str = "servers.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
+const STATE_FILE: &str = "state.json";
 const SCHEMA_VERSION: u32 = 1;
 
 /// Marker written by `setup`; its presence means the data directory is initialized.
@@ -89,4 +90,22 @@ pub fn load_credentials() -> Result<Vec<Credential>> {
 
 pub fn save_credentials(credentials: &[Credential]) -> Result<()> {
     save_catalog(CREDENTIALS_FILE, credentials)
+}
+
+pub fn load_state() -> Result<State> {
+    let path = require_initialized()?.join(STATE_FILE);
+    if !path.exists() {
+        return Ok(State::default());
+    }
+    let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))
+}
+
+pub fn save_state(state: &State) -> Result<()> {
+    let dir = require_initialized()?;
+    let path = dir.join(STATE_FILE);
+    let tmp = dir.join(format!("{STATE_FILE}.tmp"));
+    fs::write(&tmp, serde_json::to_string_pretty(state)?).with_context(|| format!("cannot write {}", tmp.display()))?;
+    fs::rename(&tmp, &path).with_context(|| format!("cannot replace {}", path.display()))?;
+    Ok(())
 }

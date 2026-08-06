@@ -60,6 +60,24 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+/// Current working mode, kept apart from the catalogs (`state.json`).
+#[derive(Serialize, Deserialize, Default)]
+pub struct State {
+    /// Which server each app currently uses for development.
+    #[serde(default)]
+    pub bindings: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway: Option<Gateway>,
+}
+
+/// Recorded facts about the background gateway process.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Gateway {
+    pub pid: u32,
+    /// Listening port per app at the moment the gateway started.
+    pub ports: BTreeMap<u16, String>,
+}
+
 /// Entity names are stable identifiers: lowercase letters, digits and inner dashes.
 pub fn validate_name(name: &str) -> Result<()> {
     let ok =

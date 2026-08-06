@@ -11,3 +11,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0005](0005-no-legacy-import.md) | No import from the predecessor tool | accepted |
 | [0006](0006-starlight-diataxis-docs.md) | Docs: Astro Starlight structured by Diátaxis | accepted |
 | [0007](0007-json-catalogs.md) | Catalogs as one JSON file per entity kind | accepted |
+| [0008](0008-state-file-over-ipc.md) | Bindings travel through the state file, not IPC | accepted |

@@ -36,6 +36,29 @@ pub enum Command {
         #[command(subcommand)]
         command: PassCommand,
     },
+    /// Bind an app to a server for development - the daily switch command
+    Use {
+        app: String,
+        server: String,
+        /// Skip the stand reachability check
+        #[arg(long)]
+        no_check: bool,
+    },
+    /// Run the local dev gateway that routes apps to their bound servers
+    Gateway {
+        #[command(subcommand)]
+        command: GatewayCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GatewayCommand {
+    /// Start the gateway in the background
+    Start,
+    /// Run the gateway in the foreground (what `start` spawns)
+    Run,
+    /// Stop the background gateway
+    Stop,
 }
 
 #[derive(Subcommand)]

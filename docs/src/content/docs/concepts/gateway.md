@@ -36,9 +36,9 @@ Response bodies are not rewritten: apps are expected to use relative URLs for AP
 ## Daily flow
 
 ```bash
+turnout gateway start       # once per workday
 turnout use myapp staging   # bind the app to a stand
-turnout dev myapp           # UI runs locally, API goes to staging
-turnout use myapp prod-eu   # tomorrow: switch - no restarts, no env edits
+turnout use myapp prod-eu   # switch - no restarts, no env edits
 ```
 
-*(The `use`, `dev` and gateway commands are under development - see the [roadmap](https://github.com/lacodda/turnout#roadmap).)*
+See [`turnout use`](/turnout/reference/use/) and [`turnout gateway`](/turnout/reference/gateway/) for details.

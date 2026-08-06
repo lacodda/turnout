@@ -1,0 +1,23 @@
+---
+title: turnout use
+description: Bind an app to a server for development - the daily switch command.
+sidebar:
+  order: 6
+---
+
+```bash
+turnout use APP SERVER [--no-check]
+```
+
+The daily command: point an app at a stand. The binding is written to turnout's state; a running [gateway](/turnout/reference/gateway/) picks it up on the very next request - no restarts, no env edits.
+
+```bash
+turnout use myapp staging     # work against staging
+turnout use myapp prod-eu     # switch - sessions for staging stay alive in the jar
+```
+
+After switching, `use` probes the stand with a quick HTTP request and reports whether it is reachable. `--no-check` skips the probe.
+
+If the app has an allow-list of servers, only those are accepted; an empty list means the app may use any server from the catalog.
+
+The current bindings are always visible in [`turnout status`](/turnout/reference/status/).

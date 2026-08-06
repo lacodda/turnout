@@ -1,5 +1,7 @@
 pub mod app;
+pub mod gateway;
 pub mod pass;
 pub mod server;
 pub mod setup;
 pub mod status;
+pub mod use_cmd;
