@@ -17,13 +17,10 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
             command_name
         );
     };
-    let dir = Path::new(&app.path);
-    if !dir.is_dir() {
-        bail!("project directory {} no longer exists", dir.display());
-    }
+    let dir = crate::utils::project_dir(Path::new(&app.path))?;
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     eprintln!("[{}] {command_line}", app.name);
-    let status = crate::utils::run_in_dir(command_line, dir)?;
+    let status = crate::utils::run_in_dir(command_line, &dir)?;
     std::process::exit(status.code().unwrap_or(1));
 }
 

@@ -14,16 +14,17 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
         bail!("app '{0}' has no artifact directory - set it with `turnout app edit {0} --dist DIR`", app.name);
     };
 
+    let project = crate::utils::project_dir(Path::new(&app.path))?;
     if !no_build {
         if let Some(build) = app.commands.get("build") {
             eprintln!("[{}] {build}", app.name);
-            let status = crate::utils::run_in_dir(build, Path::new(&app.path))?;
+            let status = crate::utils::run_in_dir(build, &project)?;
             if !status.success() {
                 bail!("build failed with {status} - nothing uploaded");
             }
         }
     }
-    let local = Path::new(&app.path).join(dist);
+    let local = project.join(dist);
     if !local.is_dir() {
         bail!("artifact directory {} does not exist - did the build produce it?", local.display());
     }

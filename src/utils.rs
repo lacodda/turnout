@@ -1,8 +1,20 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::model::Server;
+
+/// Normalize a project directory for storing and for spawning tools in it.
+/// Canonicalized via dunce so the result carries no `\\?\` prefix; this also
+/// fixes a lowercase drive letter, which would otherwise reach dev servers as
+/// a lowercase cwd and break them (Vite resolves imports against it).
+pub fn project_dir(path: &Path) -> Result<PathBuf> {
+    let path = std::path::absolute(path).with_context(|| format!("cannot resolve {}", path.display()))?;
+    if !path.is_dir() {
+        bail!("directory {} does not exist", path.display());
+    }
+    dunce::canonicalize(&path).with_context(|| format!("cannot canonicalize {}", path.display()))
+}
 
 /// Run a shell command line in a directory, streaming output to the terminal.
 pub fn run_in_dir(command_line: &str, dir: &Path) -> Result<std::process::ExitStatus> {

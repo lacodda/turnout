@@ -65,10 +65,7 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
             PathBuf::from(Input::<String>::new().with_prompt("Project directory").default(cwd).interact_text()?)
         }
     };
-    let path = std::path::absolute(&path).with_context(|| format!("cannot resolve {}", path.display()))?;
-    if !path.is_dir() {
-        bail!("directory {} does not exist", path.display());
-    }
+    let path = crate::utils::project_dir(&path)?;
 
     let kind = detect::detect(&path);
     let mut commands = detect::default_commands(kind);
@@ -186,10 +183,7 @@ fn edit(
         }
         let app = &mut apps[index];
         let path: String = Input::new().with_prompt("Project directory").default(app.path.clone()).interact_text()?;
-        let path = std::path::absolute(Path::new(&path))?;
-        if !path.is_dir() {
-            bail!("directory {} does not exist", path.display());
-        }
+        let path = crate::utils::project_dir(Path::new(&path))?;
         app.path = path.display().to_string();
         let port: String = Input::new()
             .with_prompt("Local gateway port (empty to unset)")
@@ -209,10 +203,7 @@ fn edit(
     } else {
         let app = &mut apps[index];
         if let Some(path) = path {
-            let path = std::path::absolute(&path)?;
-            if !path.is_dir() {
-                bail!("directory {} does not exist", path.display());
-            }
+            let path = crate::utils::project_dir(&path)?;
             app.path = path.display().to_string();
         }
         if port.is_some() {
