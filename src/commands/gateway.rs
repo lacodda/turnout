@@ -10,7 +10,15 @@ use crate::{gateway, store};
 pub fn run(command: GatewayCommand) -> Result<()> {
     match command {
         GatewayCommand::Start => start(),
-        GatewayCommand::Run => gateway::run(),
+        GatewayCommand::Run => {
+            // Same guard as `start`: a raw bind error (os error 10048) is cryptic.
+            if let Some(running) = &store::load_state()?.gateway {
+                if probe(running) {
+                    bail!("the gateway is already running (pid {}) - stop it with `turnout gateway stop`", running.pid);
+                }
+            }
+            gateway::run()
+        }
         GatewayCommand::Stop => stop(),
     }
 }

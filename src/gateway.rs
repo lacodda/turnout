@@ -47,7 +47,7 @@ pub fn run() -> Result<()> {
         for (app, port) in apps {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
                 .await
-                .with_context(|| format!("cannot listen on 127.0.0.1:{port} (is another gateway running?)"))?;
+                .with_context(|| format!("cannot listen on 127.0.0.1:{port} - the port is taken (a running gateway? stop it with `turnout gateway stop`)"))?;
             println!("{app}: listening on http://localhost:{port}");
             let ctx = Ctx {
                 app,
