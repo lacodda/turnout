@@ -19,6 +19,14 @@ pub fn run() -> Result<()> {
         0 => println!("Servers: none yet"),
         n => println!("Servers: {} ({})", n, servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
     }
+    let credentials = store::load_credentials()?;
+    if credentials.is_empty() {
+        println!("Access:  none saved");
+    } else {
+        let mut names: Vec<&str> = credentials.iter().map(|c| c.server.as_str()).collect();
+        names.dedup();
+        println!("Access:  saved for {}", names.join(", "));
+    }
     println!("Gateway: not running");
     Ok(())
 }

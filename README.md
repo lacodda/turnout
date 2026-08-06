@@ -50,7 +50,7 @@ Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\tur
 
 - [x] CLI skeleton: `setup`, `status`
 - [x] Apps and servers: CRUD with interactive wizards
-- [ ] Secrets: OS keyring storage, copy to clipboard
+- [x] Secrets: OS keyring storage, copy to clipboard
 - [ ] Dev gateway: per-stand cookie jars, self-signed HTTPS, WebSocket
 - [ ] `use` - bind an app to a stand with one command
 - [ ] App commands: `dev` / `build` / `test` / `lint` from any directory

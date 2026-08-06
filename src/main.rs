@@ -3,6 +3,7 @@ mod commands;
 mod detect;
 mod model;
 mod paths;
+mod secrets;
 mod store;
 
 use clap::Parser;
@@ -14,6 +15,7 @@ fn main() {
         cli::Command::Status => commands::status::run(),
         cli::Command::App { command } => commands::app::run(command),
         cli::Command::Server { command } => commands::server::run(command),
+        cli::Command::Pass { command } => commands::pass::run(command),
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");

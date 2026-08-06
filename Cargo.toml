@@ -14,9 +14,11 @@ authors = ["Kirill Lakhtachev <lahtachev@gmail.com>"]
 
 [dependencies]
 anyhow = "1"
+arboard = "3"
 clap = { version = "4.5", features = ["derive"] }
 dialoguer = "0.11"
 directories = "6"
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

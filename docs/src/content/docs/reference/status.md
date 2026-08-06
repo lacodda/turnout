@@ -24,5 +24,6 @@ turnout 0.1.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    2 (myapp, api)
 Servers: 2 (prod, staging)
+Access:  saved for staging
 Gateway: not running
 ```

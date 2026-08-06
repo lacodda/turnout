@@ -5,7 +5,7 @@ use dialoguer::{Confirm, Input};
 
 use crate::cli::ServerCommand;
 use crate::model::{Server, parse_ssh, validate_name, validate_url};
-use crate::store;
+use crate::{secrets, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
     match command {
@@ -135,6 +135,11 @@ fn show(name: &str) -> Result<()> {
             "verify certificates"
         }
     );
+    let credentials = store::load_credentials()?;
+    let kinds: Vec<&str> = credentials.iter().filter(|c| c.server == name).map(|c| c.kind.as_str()).collect();
+    if !kinds.is_empty() {
+        println!("  Access:   {} (secrets in the OS keyring)", kinds.join(", "));
+    }
     let apps = store::load_apps()?;
     let used_by: Vec<&str> = apps.iter().filter(|a| a.servers.iter().any(|s| s == name)).map(|a| a.name.as_str()).collect();
     if !used_by.is_empty() {
@@ -228,6 +233,19 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !touched.is_empty() {
         store::save_apps(&apps)?;
         println!("Removed '{name}' from apps: {}.", touched.join(", "));
+    }
+
+    let mut credentials = store::load_credentials()?;
+    let kinds: Vec<String> = credentials.iter().filter(|c| c.server == name).map(|c| c.kind.clone()).collect();
+    if !kinds.is_empty() {
+        for kind in &kinds {
+            if let Err(err) = secrets::delete(name, kind) {
+                eprintln!("warning: {err:#}");
+            }
+        }
+        credentials.retain(|c| c.server != name);
+        store::save_credentials(&credentials)?;
+        println!("Removed stored access: {}.", kinds.join(", "));
     }
     println!("Server '{name}' removed.");
     Ok(())

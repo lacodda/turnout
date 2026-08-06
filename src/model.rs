@@ -39,6 +39,15 @@ pub struct Server {
     pub accept_invalid_certs: bool,
 }
 
+/// Access metadata for a server; the secret itself lives in the OS keyring.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Credential {
+    pub server: String,
+    /// What this access is: password, token, ssh, ...
+    pub kind: String,
+    pub login: String,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Ssh {
     pub host: String,

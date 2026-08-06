@@ -5,12 +5,13 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, Server};
+use crate::model::{App, Credential, Server};
 use crate::paths;
 
 const META_FILE: &str = "meta.json";
 const APPS_FILE: &str = "apps.json";
 const SERVERS_FILE: &str = "servers.json";
+const CREDENTIALS_FILE: &str = "credentials.json";
 const SCHEMA_VERSION: u32 = 1;
 
 /// Marker written by `setup`; its presence means the data directory is initialized.
@@ -80,4 +81,12 @@ pub fn load_servers() -> Result<Vec<Server>> {
 
 pub fn save_servers(servers: &[Server]) -> Result<()> {
     save_catalog(SERVERS_FILE, servers)
+}
+
+pub fn load_credentials() -> Result<Vec<Credential>> {
+    load_catalog(CREDENTIALS_FILE)
+}
+
+pub fn save_credentials(credentials: &[Credential]) -> Result<()> {
+    save_catalog(CREDENTIALS_FILE, credentials)
 }

@@ -31,6 +31,50 @@ pub enum Command {
         #[command(subcommand)]
         command: ServerCommand,
     },
+    /// Manage access to servers: logins and secrets in the OS keyring
+    Pass {
+        #[command(subcommand)]
+        command: PassCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PassCommand {
+    /// Save or update access to a server; asks interactively for what's missing
+    Set {
+        /// Server name from the catalog
+        server: Option<String>,
+        /// What this access is: password, token, ssh, ...
+        #[arg(long, default_value = "password")]
+        kind: String,
+        #[arg(long)]
+        login: Option<String>,
+    },
+    /// Copy the secret (or login) to the clipboard
+    Copy {
+        server: String,
+        #[arg(long, default_value = "password")]
+        kind: String,
+        /// Copy the login instead of the secret
+        #[arg(long)]
+        login: bool,
+        /// Print to stdout instead of copying to the clipboard
+        #[arg(long)]
+        show: bool,
+    },
+    /// Show access metadata for a server (never prints secrets)
+    Show { server: String },
+    /// List all stored access metadata
+    List,
+    /// Remove stored access to a server
+    Remove {
+        server: String,
+        #[arg(long, default_value = "password")]
+        kind: String,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
 }
 
 #[derive(Subcommand)]

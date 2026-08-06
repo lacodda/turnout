@@ -211,6 +211,113 @@ fn removing_server_updates_apps() {
         .stdout(predicate::str::contains("none allowed yet"));
 }
 
+/// Pass commands run with the insecure file backend: the OS keyring is
+/// per-process-safe but not shareable across the separate CLI invocations
+/// a test makes, and CI runners have no unlocked keyring at all.
+fn turnout_secrets(data_dir: &std::path::Path) -> Command {
+    let mut cmd = turnout(data_dir);
+    cmd.env("TURNOUT_KEYRING", "insecure-file");
+    cmd
+}
+
+fn add_staging(dir: &std::path::Path) {
+    turnout(dir)
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+}
+
+fn save_access(dir: &std::path::Path) {
+    turnout_secrets(dir)
+        .args(["pass", "set", "staging", "--login", "deploy"])
+        .write_stdin("s3cret\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("saved"));
+}
+
+#[test]
+fn pass_set_copy_roundtrip() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout_secrets(dir.path())
+        .args(["pass", "copy", "staging", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("s3cret"));
+    turnout_secrets(dir.path())
+        .args(["pass", "copy", "staging", "--login", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy"));
+    turnout_secrets(dir.path())
+        .args(["pass", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy").and(predicate::str::contains("s3cret").not()));
+    turnout_secrets(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Access:  saved for staging"));
+}
+
+#[test]
+fn pass_set_requires_known_server() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    turnout_secrets(dir.path())
+        .args(["pass", "set", "nosuch", "--login", "x"])
+        .write_stdin("value\n")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no server named 'nosuch'"));
+}
+
+#[test]
+fn pass_remove_deletes_secret() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout_secrets(dir.path()).args(["pass", "remove", "staging", "--yes"]).assert().success();
+    turnout_secrets(dir.path())
+        .args(["pass", "copy", "staging", "--show"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no access saved"));
+}
+
+#[test]
+fn server_remove_purges_access() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout_secrets(dir.path())
+        .args(["server", "remove", "staging", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed stored access: password"));
+    turnout_secrets(dir.path())
+        .args(["pass", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No access saved yet"));
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn pass_copy_never_prints_the_secret() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout_secrets(dir.path())
+        .args(["pass", "copy", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("copied to the clipboard").and(predicate::str::contains("s3cret").not()));
+}
+
 #[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
