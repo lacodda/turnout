@@ -72,6 +72,11 @@ pub enum Command {
         #[arg(long)]
         clear: bool,
     },
+    /// Print a shell completion script (source it from your shell profile)
+    Completions {
+        /// Target shell
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]

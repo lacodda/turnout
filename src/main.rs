@@ -26,6 +26,11 @@ fn main() {
         cli::Command::Lint { app } => commands::exec::run("lint", app),
         cli::Command::Run { command, app } => commands::exec::run(&command, app),
         cli::Command::Deploy { app, server, no_build, clear } => commands::deploy::run(app, server, no_build, clear),
+        cli::Command::Completions { shell } => {
+            use clap::CommandFactory;
+            clap_complete::generate(shell, &mut cli::Cli::command(), "turnout", &mut std::io::stdout());
+            Ok(())
+        }
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");

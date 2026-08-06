@@ -571,6 +571,16 @@ fn deploy_validates_its_preconditions() {
 }
 
 #[test]
+fn completions_cover_the_command_surface() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path())
+        .args(["completions", "powershell"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("turnout").and(predicate::str::contains("deploy")));
+}
+
+#[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
     turnout(dir.path())
