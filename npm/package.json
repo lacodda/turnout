@@ -1,6 +1,9 @@
 {
   "name": "turnout-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
+  "turnout": {
+    "binary": "v0.2.0"
+  },
   "description": "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory",
   "license": "MIT",
   "author": "Kirill Lakhtachev <lahtachev@gmail.com> (https://lacodda.com)",

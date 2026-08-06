@@ -4,9 +4,11 @@ const https = require("https");
 const path = require("path");
 const { spawnSync } = require("child_process");
 
-const { version } = require("./package.json");
+const pkg = require("./package.json");
 const REPO = "lacodda/turnout";
-const TAG = `v${version}`;
+// The wrapper can be patched independently of the Rust binary: an explicit
+// turnout.binary field pins the release tag, otherwise it follows the version.
+const TAG = (pkg.turnout && pkg.turnout.binary) || `v${pkg.version}`;
 
 const TARGETS = {
   "win32-x64": ["x86_64-pc-windows-msvc", "zip"],
@@ -52,10 +54,19 @@ download(url, archive, 0, (err) => {
     console.error(`turnout-cli: download failed: ${err.message}`);
     process.exit(1);
   }
-  // bsdtar (shipped with Windows 10+, macOS and most Linux distros) reads both formats.
-  const result = spawnSync("tar", ["-xf", archive, "-C", __dirname], { stdio: "inherit" });
+  // Extraction must not depend on which tar happens to be first in PATH
+  // (Git Bash ships a GNU tar that cannot read zip): zip goes through
+  // PowerShell's Expand-Archive, tar.gz through tar on Unix systems.
+  const result =
+    ext === "zip"
+      ? spawnSync(
+          "powershell.exe",
+          ["-NoProfile", "-NonInteractive", "-Command", "Expand-Archive -LiteralPath 'archive.zip' -DestinationPath . -Force"],
+          { cwd: __dirname, stdio: "inherit" },
+        )
+      : spawnSync("tar", ["-xzf", `archive.${ext}`], { cwd: __dirname, stdio: "inherit" });
   if (result.status !== 0) {
-    console.error("turnout-cli: cannot extract the archive (is `tar` available?)");
+    console.error("turnout-cli: cannot extract the archive");
     process.exit(1);
   }
   fs.renameSync(path.join(__dirname, name, exe), path.join(__dirname, exe));
