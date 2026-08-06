@@ -1,0 +1,26 @@
+[package]
+name = "turnout"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory"
+license = "MIT"
+repository = "https://github.com/lacodda/turnout"
+homepage = "https://github.com/lacodda/turnout"
+readme = "README.md"
+keywords = ["cli", "developer-tools", "proxy", "deploy", "environment"]
+categories = ["command-line-utilities", "development-tools"]
+authors = ["Kirill Lakhtachev <lahtachev@gmail.com>"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4.5", features = ["derive"] }
+dialoguer = "0.11"
+directories = "6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
