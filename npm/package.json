@@ -1,0 +1,24 @@
+{
+  "name": "turnout-cli",
+  "version": "0.2.0",
+  "description": "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory",
+  "license": "MIT",
+  "author": "Kirill Lakhtachev <lahtachev@gmail.com> (https://lacodda.com)",
+  "homepage": "https://lacodda.github.io/turnout/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lacodda/turnout.git"
+  },
+  "keywords": ["cli", "proxy", "gateway", "deploy", "dev-environment", "stands"],
+  "bin": {
+    "turnout": "run.js"
+  },
+  "files": ["install.js", "run.js"],
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "os": ["win32", "darwin", "linux"],
+  "engines": {
+    "node": ">=18"
+  }
+}

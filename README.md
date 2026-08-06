@@ -28,6 +28,24 @@ turnout puts all of it into one CLI that works from any directory:
 
 ## Install
 
+**One-line installers:**
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.ps1 | iex
+```
+
+```bash
+# macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
+```
+
+**With npm:**
+
+```bash
+npm i -g turnout-cli
+```
+
 **With cargo:**
 
 ```bash

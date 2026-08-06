@@ -4,3 +4,9 @@
 docs/node_modules/
 docs/dist/
 docs/.astro/
+
+# npm wrapper: binaries downloaded by install.js
+npm/turnout
+npm/turnout.exe
+npm/archive.*
+npm/node_modules/
