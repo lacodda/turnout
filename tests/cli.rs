@@ -592,6 +592,27 @@ fn server_edit_manages_the_ssh_key() {
 }
 
 #[test]
+fn backup_and_restore_validate_preconditions() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["backup", "myapp", "--server", "staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no SSH access"));
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--ssh", "deploy@staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["restore", "myapp", "--server", "staging", "--list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no deploy path"));
+}
+
+#[test]
 fn deploy_validates_its_preconditions() {
     let (dir, project) = workspace();
     add_staging(dir.path());

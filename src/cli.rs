@@ -68,9 +68,32 @@ pub enum Command {
         /// Skip the build step
         #[arg(long)]
         no_build: bool,
+        /// Back up the remote directory before touching it
+        #[arg(long)]
+        backup: bool,
         /// Clear the remote directory before uploading
         #[arg(long)]
         clear: bool,
+    },
+    /// Back up an app's deploy directory on the server
+    Backup {
+        app: Option<String>,
+        /// Target server (defaults to the app's current binding)
+        #[arg(long)]
+        server: Option<String>,
+    },
+    /// Restore an app's deploy directory from a backup
+    Restore {
+        app: Option<String>,
+        /// Target server (defaults to the app's current binding)
+        #[arg(long)]
+        server: Option<String>,
+        /// Backup archive name (defaults to the newest)
+        #[arg(long)]
+        from: Option<String>,
+        /// List available backups and exit
+        #[arg(long)]
+        list: bool,
     },
     /// Print a shell completion script (source it from your shell profile)
     Completions {

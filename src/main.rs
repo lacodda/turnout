@@ -4,6 +4,7 @@ mod detect;
 mod gateway;
 mod model;
 mod paths;
+mod remote;
 mod secrets;
 mod store;
 mod utils;
@@ -25,7 +26,15 @@ fn main() {
         cli::Command::Test { app } => commands::exec::run("test", app),
         cli::Command::Lint { app } => commands::exec::run("lint", app),
         cli::Command::Run { command, app } => commands::exec::run(&command, app),
-        cli::Command::Deploy { app, server, no_build, clear } => commands::deploy::run(app, server, no_build, clear),
+        cli::Command::Deploy {
+            app,
+            server,
+            no_build,
+            backup,
+            clear,
+        } => commands::deploy::run(app, server, no_build, backup, clear),
+        cli::Command::Backup { app, server } => commands::backup::backup(app, server),
+        cli::Command::Restore { app, server, from, list } => commands::backup::restore(app, server, from, list),
         cli::Command::Completions { shell } => {
             use clap::CommandFactory;
             clap_complete::generate(shell, &mut cli::Cli::command(), "turnout", &mut std::io::stdout());

@@ -1,43 +1,15 @@
-use std::io::Read;
-use std::net::TcpStream;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use ssh2::Session;
 
-use crate::model::Ssh;
-use crate::{secrets, store};
+use crate::remote;
 
-pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool, clear: bool) -> Result<()> {
-    let apps = store::load_apps()?;
-    let app = super::exec::resolve(&apps, app_name)?;
-    let servers = store::load_servers()?;
-
-    let server_name = match server_name {
-        Some(name) => name,
-        None => store::load_state()?
-            .bindings
-            .get(&app.name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no target: pass --server or bind one with `turnout use {} SERVER`", app.name))?,
-    };
-    let server = servers
-        .iter()
-        .find(|s| s.name == server_name)
-        .ok_or_else(|| anyhow::anyhow!("no server named '{server_name}' - see `turnout server list`"))?;
-    if !app.servers.is_empty() && !app.servers.contains(&server_name) {
-        bail!("server '{server_name}' is not allowed for '{}' (allowed: {})", app.name, app.servers.join(", "));
-    }
-    let Some(ssh) = &server.ssh else {
-        bail!("server '{server_name}' has no SSH access - set it with `turnout server edit {server_name} --ssh USER@HOST[:PORT]`");
-    };
-    let Some(target) = server.deploy.get(&app.name) else {
-        bail!(
-            "no deploy path for '{}' on '{server_name}' - set it with `turnout server edit {server_name} --deploy-path {}=DIR`",
-            app.name,
-            app.name
-        );
-    };
+pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool, backup: bool, clear: bool) -> Result<()> {
+    let target = remote::resolve(app_name, server_name)?;
+    let (app, server) = (&target.app, &target.server);
+    let ssh = remote::require_ssh(server)?;
+    let deploy = remote::require_deploy_target(server, &app.name)?;
     let Some(dist) = &app.dist_dir else {
         bail!("app '{0}' has no artifact directory - set it with `turnout app edit {0} --dist DIR`", app.name);
     };
@@ -57,64 +29,29 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     }
 
     println!("Connecting to {}@{}:{} ...", ssh.user, ssh.host, ssh.port);
-    let session = connect(ssh, &server_name)?;
+    let session = remote::connect(ssh, &server.name)?;
 
+    if backup {
+        let name = remote::exec(&session, &remote::backup_command(&deploy.path))?;
+        println!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path));
+    }
     if clear {
-        println!("Clearing {} ...", target.path);
-        let quoted = shell_quote(&target.path);
-        remote_exec(&session, &format!("find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"))?;
+        println!("Clearing {} ...", deploy.path);
+        let quoted = remote::shell_quote(&deploy.path);
+        remote::exec(&session, &format!("find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"))?;
     }
 
-    let (files, bytes) = upload(&session, &local, &target.path)?;
-    println!("Uploaded {files} files ({} KB) to {}:{}", bytes / 1024, server_name, target.path);
+    let (files, bytes) = upload(&session, &local, &deploy.path)?;
+    println!("Uploaded {files} files ({} KB) to {}:{}", bytes / 1024, server.name, deploy.path);
 
-    if let Some(restart) = &target.restart {
+    if let Some(restart) = &deploy.restart {
         println!("Running: {restart}");
-        remote_exec(&session, restart)?;
+        let output = remote::exec(&session, restart)?;
+        if !output.trim().is_empty() {
+            println!("{}", output.trim_end());
+        }
     }
-    println!("Deploy of '{}' to '{server_name}' finished.", app.name);
-    Ok(())
-}
-
-/// Configured key file first, then agent keys (ssh-agent / Pageant),
-/// then the keyring password (kind `ssh`, falling back to `password`).
-fn connect(ssh: &Ssh, server_name: &str) -> Result<Session> {
-    let stream = TcpStream::connect((ssh.host.as_str(), ssh.port)).with_context(|| format!("cannot reach {}:{}", ssh.host, ssh.port))?;
-    let mut session = Session::new()?;
-    session.set_tcp_stream(stream);
-    session.handshake().context("SSH handshake failed")?;
-
-    if let Some(key) = &ssh.key {
-        session
-            .userauth_pubkey_file(&ssh.user, None, Path::new(key), None)
-            .with_context(|| format!("key auth with {key} failed"))?;
-        return Ok(session);
-    }
-    let _ = session.userauth_agent(&ssh.user);
-    if !session.authenticated() {
-        let password = secrets::get(server_name, "ssh")
-            .or_else(|_| secrets::get(server_name, "password"))
-            .map_err(|_| anyhow::anyhow!("agent auth failed and no password stored - save one with `turnout pass set {server_name} --kind ssh`"))?;
-        session.userauth_password(&ssh.user, &password).context("SSH password authentication failed")?;
-    }
-    Ok(session)
-}
-
-fn remote_exec(session: &Session, command: &str) -> Result<()> {
-    let mut channel = session.channel_session()?;
-    channel.exec(command).with_context(|| format!("cannot run remote command '{command}'"))?;
-    let mut output = String::new();
-    channel.read_to_string(&mut output)?;
-    let mut stderr = String::new();
-    channel.stderr().read_to_string(&mut stderr)?;
-    channel.wait_close()?;
-    let code = channel.exit_status()?;
-    if !output.trim().is_empty() {
-        println!("{}", output.trim_end());
-    }
-    if code != 0 {
-        bail!("remote command '{command}' exited with {code}: {}", stderr.trim());
-    }
+    println!("Deploy of '{}' to '{}' finished.", app.name, server.name);
     Ok(())
 }
 
@@ -146,9 +83,4 @@ fn upload(session: &Session, local_root: &Path, remote_root: &str) -> Result<(u6
         }
     }
     Ok((files, bytes))
-}
-
-/// Single-quote a value for a POSIX shell.
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
