@@ -37,8 +37,15 @@ pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
             .ok_or_else(|| anyhow::anyhow!("no app named '{name}' - see `turnout app list`")),
         None => {
             let cwd = std::env::current_dir()?;
+            // Canonicalize both sides: on macOS temp paths reach the app through
+            // symlinks (/var -> /private/var), so raw prefix comparison lies.
+            let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
             apps.iter()
-                .filter(|a| cwd.starts_with(&a.path))
+                .filter(|a| {
+                    let path = Path::new(&a.path);
+                    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+                    cwd.starts_with(&path)
+                })
                 .max_by_key(|a| a.path.len())
                 .ok_or_else(|| anyhow::anyhow!("not inside a known app directory - pass the app name or see `turnout app list`"))
         }
