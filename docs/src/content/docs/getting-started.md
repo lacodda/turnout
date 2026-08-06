@@ -5,23 +5,28 @@ description: Install turnout and run the first-time setup.
 
 ## Install
 
-One line:
+One line on Windows (PowerShell):
 
 ```powershell
-# Windows (PowerShell)
 irm https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.ps1 | iex
 ```
 
+One line on macOS / Linux:
+
 ```bash
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
 ```
 
-Other ways:
+Via npm:
 
 ```bash
-npm i -g turnout-cli     # via npm
-cargo install turnout    # via cargo
+npm i -g turnout-cli
+```
+
+Via cargo:
+
+```bash
+cargo install turnout
 ```
 
 Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.

@@ -28,15 +28,15 @@ turnout puts all of it into one CLI that works from any directory:
 
 ## Install
 
-**One-line installers:**
+**One-line installers.** Windows (PowerShell):
 
 ```powershell
-# Windows (PowerShell)
 irm https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.ps1 | iex
 ```
 
+macOS / Linux:
+
 ```bash
-# macOS / Linux
 curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
 ```
 
