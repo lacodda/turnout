@@ -19,6 +19,12 @@ pub fn run() -> Result<()> {
         0 => println!("Servers: none yet"),
         n => println!("Servers: {} ({})", n, servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
     }
+    let groups = store::load_groups()?;
+    if !groups.is_empty() {
+        for group in &groups {
+            println!("Group:   {} ({})", group.name, group.apps.join(", "));
+        }
+    }
     let credentials = store::load_credentials()?;
     if credentials.is_empty() {
         println!("Access:  none saved");

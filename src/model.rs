@@ -75,6 +75,13 @@ fn default_ssh_port() -> u16 {
     22
 }
 
+/// A named set of apps: `turnout use GROUP SERVER` switches the whole contour.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Group {
+    pub name: String,
+    pub apps: Vec<String>,
+}
+
 /// Current working mode, kept apart from the catalogs (`state.json`).
 #[derive(Serialize, Deserialize, Default)]
 pub struct State {

@@ -57,7 +57,8 @@ Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\tur
 - [x] Deploy: build, upload over SSH/SFTP, restart
 - [x] Deploy: remote backup and restore
 - [x] Shell completions
-- [ ] Comfort: app groups, config templates and migrations
+- [x] App groups: switch a whole contour with one `use`
+- [ ] Comfort: config templates and migrations, environment profiles
 
 ## Documentation
 

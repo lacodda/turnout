@@ -20,4 +20,10 @@ After switching, `use` probes the stand with a quick HTTP request and reports wh
 
 If the app has an allow-list of servers, only those are accepted; an empty list means the app may use any server from the catalog.
 
+`use` also takes a [group](/turnout/reference/group/) name - every member of the group is bound in one go:
+
+```bash
+turnout use contour staging   # the whole contour switches together
+```
+
 The current bindings are always visible in [`turnout status`](/turnout/reference/status/).

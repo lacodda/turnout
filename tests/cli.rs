@@ -648,6 +648,69 @@ fn deploy_validates_its_preconditions() {
 }
 
 #[test]
+fn group_use_binds_all_members() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    let second = dir.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["app", "add", "api", "--path"]).arg(&second).assert().success();
+    turnout(dir.path())
+        .args(["group", "add", "contour", "--app", "web", "--app", "api"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["use", "contour", "staging", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Group 'contour' now uses 'staging'"));
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web -> staging").and(predicate::str::contains("api -> staging")));
+    turnout(dir.path())
+        .args(["group", "show", "contour"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web -> staging"));
+}
+
+#[test]
+fn group_names_cannot_clash_with_apps() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["group", "add", "web", "--app", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must not clash"));
+}
+
+#[test]
+fn removing_an_app_updates_groups() {
+    let (dir, project) = workspace();
+    let second = dir.path().join("second");
+    std::fs::create_dir(&second).unwrap();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["app", "add", "api", "--path"]).arg(&second).assert().success();
+    turnout(dir.path())
+        .args(["group", "add", "contour", "--app", "web", "--app", "api"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "remove", "web", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed 'web' from groups: contour"));
+    turnout(dir.path())
+        .args(["group", "show", "contour"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web").not());
+}
+
+#[test]
 fn completions_cover_the_command_surface() {
     let dir = tempfile::tempdir().unwrap();
     turnout(dir.path())

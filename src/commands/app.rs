@@ -54,6 +54,9 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     if apps.iter().any(|a| a.name == name) {
         bail!("app '{name}' already exists");
     }
+    if store::load_groups()?.iter().any(|g| g.name == name) {
+        bail!("a group named '{name}' already exists - app names must not clash with group names");
+    }
 
     let path = match path {
         Some(path) => path,
@@ -246,6 +249,21 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     }
     apps.retain(|a| a.name != name);
     store::save_apps(&apps)?;
+
+    let mut groups = store::load_groups()?;
+    let mut touched = Vec::new();
+    for group in groups.iter_mut() {
+        if group.apps.iter().any(|a| a == name) {
+            group.apps.retain(|a| a != name);
+            touched.push(group.name.clone());
+        }
+    }
+    if !touched.is_empty() {
+        // A group emptied by this removal disappears with it.
+        groups.retain(|g| !g.apps.is_empty());
+        store::save_groups(&groups)?;
+        println!("Removed '{name}' from groups: {}.", touched.join(", "));
+    }
     println!("App '{name}' removed. The project on disk is untouched.");
     Ok(())
 }

@@ -36,13 +36,19 @@ pub enum Command {
         #[command(subcommand)]
         command: PassCommand,
     },
-    /// Bind an app to a server for development - the daily switch command
+    /// Bind an app (or a whole group) to a server - the daily switch command
     Use {
+        /// App or group name
         app: String,
         server: String,
         /// Skip the stand reachability check
         #[arg(long)]
         no_check: bool,
+    },
+    /// Manage app groups - switch a whole contour with one `use`
+    Group {
+        #[command(subcommand)]
+        command: GroupCommand,
     },
     /// Run the local dev gateway that routes apps to their bound servers
     Gateway {
@@ -99,6 +105,39 @@ pub enum Command {
     Completions {
         /// Target shell
         shell: clap_complete::Shell,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum GroupCommand {
+    /// Create a group; apps are picked interactively when not passed
+    Add {
+        /// Group name (lowercase letters, digits, dashes)
+        name: Option<String>,
+        /// App to include (repeatable)
+        #[arg(long = "app", value_name = "APP")]
+        apps: Vec<String>,
+    },
+    /// List groups
+    List,
+    /// Show a group and where its apps point
+    Show { name: String },
+    /// Add or remove apps in a group
+    Edit {
+        name: String,
+        /// Add an app (repeatable)
+        #[arg(long = "add-app", value_name = "APP")]
+        add_apps: Vec<String>,
+        /// Remove an app (repeatable)
+        #[arg(long = "rm-app", value_name = "APP")]
+        rm_apps: Vec<String>,
+    },
+    /// Remove a group (its apps are untouched)
+    Remove {
+        name: String,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
     },
 }
 

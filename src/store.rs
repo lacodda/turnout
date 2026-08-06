@@ -5,13 +5,14 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, Credential, Server, State};
+use crate::model::{App, Credential, Group, Server, State};
 use crate::paths;
 
 const META_FILE: &str = "meta.json";
 const APPS_FILE: &str = "apps.json";
 const SERVERS_FILE: &str = "servers.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
+const GROUPS_FILE: &str = "groups.json";
 const STATE_FILE: &str = "state.json";
 const SCHEMA_VERSION: u32 = 1;
 
@@ -90,6 +91,14 @@ pub fn load_credentials() -> Result<Vec<Credential>> {
 
 pub fn save_credentials(credentials: &[Credential]) -> Result<()> {
     save_catalog(CREDENTIALS_FILE, credentials)
+}
+
+pub fn load_groups() -> Result<Vec<Group>> {
+    load_catalog(GROUPS_FILE)
+}
+
+pub fn save_groups(groups: &[Group]) -> Result<()> {
+    save_catalog(GROUPS_FILE, groups)
 }
 
 pub fn load_state() -> Result<State> {
