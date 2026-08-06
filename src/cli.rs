@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
 /// Point local apps at any backend stand, keep servers and secrets at hand,
@@ -19,4 +21,116 @@ pub enum Command {
     },
     /// Show what turnout knows: apps, servers, bindings, gateway state
     Status,
+    /// Manage apps - the local projects turnout works with
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+    /// Manage servers - the stands turnout routes to and deploys on
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum AppCommand {
+    /// Add an app; missing details are asked interactively
+    Add {
+        /// App name (lowercase letters, digits, dashes)
+        name: Option<String>,
+        /// Project directory
+        #[arg(long)]
+        path: Option<PathBuf>,
+        /// Local gateway port for this app
+        #[arg(long)]
+        port: Option<u16>,
+        /// Build artifact directory, relative to the project path
+        #[arg(long)]
+        dist: Option<String>,
+        /// Set a command as NAME=CMD (repeatable); overrides detected defaults
+        #[arg(long = "command", value_name = "NAME=CMD")]
+        commands: Vec<String>,
+        /// Allow a server for this app (repeatable)
+        #[arg(long = "server", value_name = "SERVER")]
+        servers: Vec<String>,
+    },
+    /// List apps
+    List,
+    /// Show one app in detail
+    Show { name: String },
+    /// Edit an app; with no flags an interactive wizard walks the fields
+    Edit {
+        name: String,
+        #[arg(long)]
+        path: Option<PathBuf>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long)]
+        dist: Option<String>,
+        /// Set a command as NAME=CMD, or NAME= to remove it (repeatable)
+        #[arg(long = "command", value_name = "NAME=CMD")]
+        commands: Vec<String>,
+        /// Allow a server (repeatable)
+        #[arg(long = "add-server", value_name = "SERVER")]
+        add_servers: Vec<String>,
+        /// Disallow a server (repeatable)
+        #[arg(long = "rm-server", value_name = "SERVER")]
+        rm_servers: Vec<String>,
+    },
+    /// Remove an app from the catalog (the project on disk is not touched)
+    Remove {
+        name: String,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServerCommand {
+    /// Add a server; missing details are asked interactively
+    Add {
+        /// Server name (lowercase letters, digits, dashes)
+        name: Option<String>,
+        /// Base URL, e.g. https://staging.example.com
+        #[arg(long)]
+        url: Option<String>,
+        /// Human-friendly label
+        #[arg(long)]
+        label: Option<String>,
+        /// SSH access for deploy and remote operations
+        #[arg(long, value_name = "USER@HOST[:PORT]")]
+        ssh: Option<String>,
+        /// Accept self-signed or invalid TLS certificates for this server
+        #[arg(long)]
+        insecure: bool,
+    },
+    /// List servers
+    List,
+    /// Show one server in detail
+    Show { name: String },
+    /// Edit a server; with no flags an interactive wizard walks the fields
+    Edit {
+        name: String,
+        #[arg(long)]
+        url: Option<String>,
+        #[arg(long)]
+        label: Option<String>,
+        #[arg(long, value_name = "USER@HOST[:PORT]")]
+        ssh: Option<String>,
+        /// Accept invalid TLS certificates for this server
+        #[arg(long, conflicts_with = "secure")]
+        insecure: bool,
+        /// Require valid TLS certificates for this server
+        #[arg(long)]
+        secure: bool,
+    },
+    /// Remove a server from the catalog; apps that allowed it are updated
+    Remove {
+        name: String,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
 }

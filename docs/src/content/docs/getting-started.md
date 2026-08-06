@@ -39,6 +39,16 @@ turnout status
 
 Shows the data directory, configured apps and servers, and whether the gateway is running.
 
+## Describe your first app and server
+
+```bash
+cd ~/dev/myapp
+turnout app add        # wizard: detects the project type, proposes commands
+turnout server add     # wizard: URL, SSH, TLS policy
+```
+
+See [`turnout app`](/turnout/reference/app/) and [`turnout server`](/turnout/reference/server/) for the full command reference.
+
 ## Next steps
 
 - Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials and state.

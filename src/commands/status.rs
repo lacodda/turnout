@@ -9,8 +9,16 @@ pub fn run() -> Result<()> {
         println!("Not set up yet - run `turnout setup` first.");
         return Ok(());
     }
-    println!("Apps:    none yet");
-    println!("Servers: none yet");
+    let apps = store::load_apps()?;
+    let servers = store::load_servers()?;
+    match apps.len() {
+        0 => println!("Apps:    none yet"),
+        n => println!("Apps:    {} ({})", n, apps.iter().map(|a| a.name.as_str()).collect::<Vec<_>>().join(", ")),
+    }
+    match servers.len() {
+        0 => println!("Servers: none yet"),
+        n => println!("Servers: {} ({})", n, servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")),
+    }
     println!("Gateway: not running");
     Ok(())
 }
