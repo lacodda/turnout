@@ -1,0 +1,38 @@
+---
+title: turnout
+description: A developer's switchyard - point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory.
+template: splash
+hero:
+  tagline: A developer's switchyard - point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory.
+  actions:
+    - text: Get started
+      link: /turnout/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/lacodda/turnout
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What turnout does
+
+<CardGrid stagger>
+	<Card title="Dev gateway" icon="rocket">
+		Your apps always talk to localhost; turnout routes requests to the selected stand. Switching is one command, and sessions survive it - the gateway keeps a cookie jar per app+server pair.
+	</Card>
+	<Card title="Secrets in the OS keyring" icon="seti:lock">
+		Windows Credential Manager, macOS Keychain or Linux Secret Service. Copy a password to the clipboard with one command; nothing lives in plain files.
+	</Card>
+	<Card title="App commands anywhere" icon="setting">
+		dev, build, test, lint and custom commands run in the right project folder for you - no cd required.
+	</Card>
+	<Card title="Deploy" icon="cloud-download">
+		Build, package, upload over SSH/SFTP, restart the service - using the same apps, servers and secrets.
+	</Card>
+</CardGrid>
+
+:::note[Early development]
+turnout is under active development. The CLI skeleton (`setup`, `status`) works; entities, secrets and the gateway are on the [roadmap](https://github.com/lacodda/turnout#roadmap).
+:::
