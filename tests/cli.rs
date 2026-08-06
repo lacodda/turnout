@@ -399,6 +399,21 @@ fn spawn_stand(port: u16) {
                 .route(
                     "/login",
                     get(move || async move { (axum::http::StatusCode::FOUND, [("location", format!("{base}/after"))]) }),
+                )
+                .route(
+                    "/ws",
+                    get(|ws: axum::extract::ws::WebSocketUpgrade| async move {
+                        ws.on_upgrade(|mut socket| async move {
+                            while let Some(Ok(message)) = socket.recv().await {
+                                if let axum::extract::ws::Message::Text(text) = message {
+                                    let reply = axum::extract::ws::Message::Text(format!("echo: {text}").into());
+                                    if socket.send(reply).await.is_err() {
+                                        break;
+                                    }
+                                }
+                            }
+                        })
+                    }),
                 );
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
             axum::serve(listener, app).await.unwrap();
@@ -456,6 +471,13 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
         assert_eq!(response.status(), 302);
         let location = response.headers().get("location").unwrap().to_str().unwrap();
         assert_eq!(location, &format!("http://localhost:{gateway_port}/after"));
+
+        // WebSocket frames travel through the gateway both ways.
+        use futures_util::{SinkExt, StreamExt};
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{gateway_port}/ws")).await.unwrap();
+        socket.send(tokio_tungstenite::tungstenite::Message::text("ping")).await.unwrap();
+        let reply = socket.next().await.unwrap().unwrap();
+        assert_eq!(reply.to_text().unwrap(), "echo: ping");
     });
 }
 

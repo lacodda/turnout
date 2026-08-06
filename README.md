@@ -52,7 +52,7 @@ Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\tur
 - [x] Secrets: OS keyring storage, copy to clipboard
 - [x] Dev gateway: per-stand cookie jars, self-signed HTTPS, redirect rewriting
 - [x] `use` - bind an app to a stand with one command
-- [ ] Gateway: WebSocket proxying
+- [x] Gateway: WebSocket proxying
 - [x] App commands: `dev` / `build` / `test` / `lint` from any directory
 - [x] Deploy: build, upload over SSH/SFTP, restart
 - [ ] Deploy: remote backup and restore

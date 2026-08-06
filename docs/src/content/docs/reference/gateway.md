@@ -33,5 +33,5 @@ The same server in the foreground - handy for watching it work. `start` spawns e
 - **Cookie jar.** Stand cookies never reach the browser; they live in the gateway, in a separate jar per app+server pair. Switching stands swaps jars, so sessions survive switching. The jar is in-memory: restarting the gateway means logging in to the stand again.
 - **Redirects.** Absolute `Location` headers pointing at the stand are rewritten to `localhost`, so the browser never escapes.
 - **TLS.** Connections to the stand honor the server's TLS policy (`--insecure` accepts self-signed certificates). The gateway itself serves plain HTTP on localhost.
+- **WebSocket.** Upgrade requests are proxied too: the gateway opens a matching connection to the stand (jar cookies attached, `wss` for https servers, TLS per policy) and pumps frames both ways.
 - **Errors.** If the stand is down you get a plain-text `502` from the gateway saying which stand is unreachable - not a cryptic proxy failure.
-- **Not yet.** WebSocket proxying is on the [roadmap](https://github.com/lacodda/turnout#roadmap).

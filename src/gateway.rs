@@ -3,10 +3,14 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::body::Body;
-use axum::extract::{Request, State};
-use axum::http::header::{CONNECTION, CONTENT_LENGTH, COOKIE, HOST, LOCATION, SET_COOKIE, TRANSFER_ENCODING, UPGRADE};
+use axum::extract::ws::{Message as ClientMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::{FromRequestParts, Request, State};
+use axum::http::header::{CONNECTION, CONTENT_LENGTH, COOKIE, HOST, LOCATION, SEC_WEBSOCKET_PROTOCOL, SET_COOKIE, TRANSFER_ENCODING, UPGRADE};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::Response;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite::Message as StandMessage;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::model::Server;
 use crate::store;
@@ -61,7 +65,12 @@ pub fn run() -> Result<()> {
 }
 
 async fn proxy(State(ctx): State<Ctx>, req: Request) -> Response {
-    forward(ctx, req).await.unwrap_or_else(|err| {
+    let result = if is_websocket_upgrade(req.headers()) {
+        websocket_proxy(ctx, req).await
+    } else {
+        forward(ctx, req).await
+    };
+    result.unwrap_or_else(|err| {
         Response::builder()
             .status(StatusCode::BAD_GATEWAY)
             .header("content-type", "text/plain; charset=utf-8")
@@ -70,18 +79,23 @@ async fn proxy(State(ctx): State<Ctx>, req: Request) -> Response {
     })
 }
 
-async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
-    // The binding is re-read per request: `turnout use` changes it with no IPC (ADR 0008).
+/// The binding is re-read per request: `turnout use` changes it with no IPC (ADR 0008).
+fn resolve_binding(ctx: &Ctx) -> Result<Server> {
     let state = store::load_state()?;
     let server_name = state
         .bindings
         .get(&ctx.app)
         .cloned()
         .ok_or_else(|| anyhow!("app '{0}' is not bound to a server - run `turnout use {0} SERVER`", ctx.app))?;
-    let server = store::load_servers()?
+    store::load_servers()?
         .into_iter()
         .find(|s| s.name == server_name)
-        .ok_or_else(|| anyhow!("server '{server_name}' is gone from the catalog"))?;
+        .ok_or_else(|| anyhow!("server '{server_name}' is gone from the catalog"))
+}
+
+async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
+    let server = resolve_binding(&ctx)?;
+    let server_name = server.name.clone();
     let client = client_for(&ctx.clients, &server)?;
 
     let path_query = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
@@ -120,6 +134,113 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
         *headers_mut = resp_headers;
     }
     Ok(response.body(Body::from_stream(upstream.bytes_stream()))?)
+}
+
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+}
+
+/// Proxy a WebSocket: accept the browser's upgrade, open a matching connection
+/// to the stand (jar cookies attached, TLS per server policy) and pump frames
+/// both ways until either side closes.
+async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
+    let (mut parts, _body) = req.into_parts();
+    let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &())
+        .await
+        .map_err(|err| anyhow!("invalid websocket upgrade: {err}"))?;
+    let server = resolve_binding(&ctx)?;
+    let server_name = server.name.clone();
+
+    let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let ws_base = if let Some(rest) = server.url.strip_prefix("https://") {
+        format!("wss://{rest}")
+    } else if let Some(rest) = server.url.strip_prefix("http://") {
+        format!("ws://{rest}")
+    } else {
+        bail!("server URL '{}' is neither http nor https", server.url);
+    };
+    let target = format!("{}{path_query}", ws_base.trim_end_matches('/'));
+
+    let mut request = target.into_client_request().context("cannot build the upstream websocket request")?;
+    let jar_key = (ctx.app.clone(), server_name.clone());
+    if let Some(cookie) = jar_cookie_header(&ctx.jars, &jar_key) {
+        request
+            .headers_mut()
+            .insert(COOKIE, HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value")?);
+    }
+    let mut upgrade = upgrade;
+    if let Some(protocol) = parts.headers.get(SEC_WEBSOCKET_PROTOCOL) {
+        request.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, protocol.clone());
+        if let Ok(protocols) = protocol.to_str() {
+            upgrade = upgrade.protocols(protocols.split(',').map(|p| p.trim().to_string()).collect::<Vec<_>>());
+        }
+    }
+    let connector = if server.accept_invalid_certs {
+        let tls = native_tls::TlsConnector::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .context("cannot build the TLS connector")?;
+        Some(tokio_tungstenite::Connector::NativeTls(tls))
+    } else {
+        None
+    };
+
+    Ok(upgrade.on_upgrade(move |client| async move {
+        match tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await {
+            Ok((upstream, _response)) => pump(client, upstream).await,
+            Err(err) => eprintln!("turnout gateway: websocket to '{server_name}' failed: {err}"),
+        }
+    }))
+}
+
+async fn pump<S>(client: WebSocket, upstream: tokio_tungstenite::WebSocketStream<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let (mut client_tx, mut client_rx) = client.split();
+    let (mut upstream_tx, mut upstream_rx) = upstream.split();
+    let to_stand = async {
+        while let Some(Ok(message)) = client_rx.next().await {
+            if upstream_tx.send(client_to_stand(message)).await.is_err() {
+                break;
+            }
+        }
+        let _ = upstream_tx.close().await;
+    };
+    let to_client = async {
+        while let Some(Ok(message)) = upstream_rx.next().await {
+            let Some(message) = stand_to_client(message) else { continue };
+            if client_tx.send(message).await.is_err() {
+                break;
+            }
+        }
+        let _ = client_tx.close().await;
+    };
+    tokio::join!(to_stand, to_client);
+}
+
+fn client_to_stand(message: ClientMessage) -> StandMessage {
+    match message {
+        ClientMessage::Text(text) => StandMessage::text(text.to_string()),
+        ClientMessage::Binary(data) => StandMessage::binary(data.to_vec()),
+        ClientMessage::Ping(data) => StandMessage::Ping(data.to_vec().into()),
+        ClientMessage::Pong(data) => StandMessage::Pong(data.to_vec().into()),
+        ClientMessage::Close(_) => StandMessage::Close(None),
+    }
+}
+
+fn stand_to_client(message: StandMessage) -> Option<ClientMessage> {
+    match message {
+        StandMessage::Text(text) => Some(ClientMessage::Text(text.to_string().into())),
+        StandMessage::Binary(data) => Some(ClientMessage::Binary(data.to_vec().into())),
+        StandMessage::Ping(data) => Some(ClientMessage::Ping(data.to_vec().into())),
+        StandMessage::Pong(data) => Some(ClientMessage::Pong(data.to_vec().into())),
+        StandMessage::Close(_) => Some(ClientMessage::Close(None)),
+        StandMessage::Frame(_) => None,
+    }
 }
 
 /// One HTTP client per server: no redirect following (the browser must see them),
