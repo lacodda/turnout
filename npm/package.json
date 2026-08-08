@@ -16,7 +16,7 @@
   "bin": {
     "turnout": "run.js"
   },
-  "files": ["install.js", "run.js"],
+  "files": ["download.js", "install.js", "run.js"],
   "scripts": {
     "postinstall": "node install.js"
   },

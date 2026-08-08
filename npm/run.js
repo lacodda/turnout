@@ -1,12 +1,18 @@
 #!/usr/bin/env node
-// Thin launcher: forwards everything to the downloaded turnout binary.
-const path = require("path");
+// Thin launcher: forwards everything to the turnout binary, downloading it on
+// first run when the postinstall script was skipped (npm v12 default).
+const fs = require("fs");
 const { spawnSync } = require("child_process");
+const { install, exePath } = require("./download");
 
-const exe = path.join(__dirname, process.platform === "win32" ? "turnout.exe" : "turnout");
-if (!require("fs").existsSync(exe)) {
-  console.error("turnout-cli: binary missing - reinstall the package (npm i -g turnout-cli)");
-  process.exit(1);
+function exec() {
+  const result = spawnSync(exePath, process.argv.slice(2), { stdio: "inherit" });
+  process.exit(result.status === null ? 1 : result.status);
 }
-const result = spawnSync(exe, process.argv.slice(2), { stdio: "inherit" });
-process.exit(result.status === null ? 1 : result.status);
+
+if (fs.existsSync(exePath)) {
+  exec();
+} else {
+  console.error("turnout-cli: binary not present yet - downloading it now");
+  install(exec);
+}
