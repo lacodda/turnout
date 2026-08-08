@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout use APP SERVER [--no-check]
+turnout use [APP] [SERVER] [--no-check]
 ```
 
 The daily command: point an app at a stand. The binding is written to turnout's state; a running [gateway](/turnout/reference/gateway/) picks it up on the very next request - no restarts, no env edits.
@@ -14,6 +14,12 @@ The daily command: point an app at a stand. The binding is written to turnout's 
 ```bash
 turnout use myapp staging     # work against staging
 turnout use myapp prod-eu     # switch - sessions for staging stay alive in the jar
+```
+
+Leave either argument out on a terminal and turnout asks. Picking the app first narrows the server list to the ones that app is allowed to use - see [Pickers](/turnout/concepts/pickers/).
+
+```bash
+turnout use                   # pick the app (or group), then the server
 ```
 
 After switching, `use` probes the stand with a quick HTTP request and reports whether it is reachable. `--no-check` skips the probe.

@@ -16,7 +16,7 @@ turnout run COMMAND [APP]
 
 Runs the app's named command in its project directory - no `cd` required. `dev`, `build`, `test` and `lint` are shortcuts for the standard commands; `run` executes any command defined in the app config (see [`turnout app`](/turnout/reference/app/)).
 
-- **App resolution.** Pass the app name, or omit it and let turnout find the app whose directory contains your current one - `turnout dev` from anywhere inside the project just works.
+- **App resolution.** Pass the app name, or omit it and let turnout find the app whose directory contains your current one - `turnout dev` from anywhere inside the project just works. Outside any known project a terminal gets a [picker](/turnout/concepts/pickers/) instead of an error.
 - **Transparent output.** The command's stdout/stderr stream through untouched; turnout's own one-line status goes to stderr.
 - **Exit codes pass through.** `turnout build` exits with the build's own code, so it drops into scripts and CI without surprises.
 

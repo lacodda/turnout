@@ -34,6 +34,8 @@ turnout server list         # one line per server: name, URL, label
 turnout server show prod    # full card: URL, SSH, TLS policy, which apps use it
 ```
 
+Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
+
 ## edit
 
 ```bash

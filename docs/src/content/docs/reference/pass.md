@@ -11,7 +11,9 @@ turnout pass <set|copy|show|list|remove> [...]
 
 Access to a server is a **credential**: a login plus a secret. The login and the secret's kind are metadata (`credentials.json`); the secret value itself lives only in the OS keyring - Windows Credential Manager, macOS Keychain or Linux Secret Service. Secrets are never written to config files and never printed unless you explicitly ask.
 
-A server can hold several credentials distinguished by `--kind` (default `password`; use e.g. `token` or `ssh` for others).
+A server can hold several credentials distinguished by `--kind` (`set` defaults to `password`; use e.g. `token` or `ssh` for others).
+
+`copy`, `show` and `remove` take the server and the kind from a [picker](/turnout/concepts/pickers/) when you omit them; when a server holds exactly one kind it is used without asking.
 
 ## set
 
@@ -30,7 +32,7 @@ Running `set` again for the same server and kind updates both login and secret.
 ## copy
 
 ```bash
-turnout pass copy SERVER [--kind KIND] [--login] [--show]
+turnout pass copy [SERVER] [--kind KIND] [--login] [--show]
 ```
 
 Copies the secret to the clipboard and prints only a confirmation. `--login` copies the login instead. `--show` prints the value to stdout instead of copying - an explicit opt-in for terminals without a clipboard (e.g. over SSH).
@@ -43,14 +45,14 @@ turnout pass copy staging --login    # login  -> clipboard
 ## show / list
 
 ```bash
-turnout pass show staging   # kinds and logins for one server - never secrets
+turnout pass show [SERVER]  # kinds and logins for one server - never secrets
 turnout pass list           # all stored access metadata
 ```
 
 ## remove
 
 ```bash
-turnout pass remove staging [--kind KIND] [--yes]
+turnout pass remove [SERVER] [--kind KIND] [--yes]
 ```
 
 Deletes the secret from the keyring and the metadata from the catalog. `turnout server remove` does this automatically for all of the server's credentials.

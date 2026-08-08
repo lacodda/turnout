@@ -35,7 +35,7 @@ turnout app list          # one line per app: name, path, gateway port
 turnout app show myapp    # full card: commands, dist, allowed servers
 ```
 
-`show` warns if the project directory no longer exists on disk.
+`show` warns if the project directory no longer exists on disk. Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 
 ## edit
 

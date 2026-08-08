@@ -38,9 +38,10 @@ pub enum Command {
     },
     /// Bind an app (or a whole group) to a server - the daily switch command
     Use {
-        /// App or group name
-        app: String,
-        server: String,
+        /// App or group name; picked interactively when omitted
+        app: Option<String>,
+        /// Target server; picked interactively when omitted
+        server: Option<String>,
         /// Skip the stand reachability check
         #[arg(long)]
         no_check: bool,
@@ -121,10 +122,14 @@ pub enum GroupCommand {
     /// List groups
     List,
     /// Show a group and where its apps point
-    Show { name: String },
+    Show {
+        /// Group name; picked interactively when omitted
+        name: Option<String>,
+    },
     /// Add or remove apps in a group
     Edit {
-        name: String,
+        /// Group name; picked interactively when omitted
+        name: Option<String>,
         /// Add an app (repeatable)
         #[arg(long = "add-app", value_name = "APP")]
         add_apps: Vec<String>,
@@ -134,7 +139,8 @@ pub enum GroupCommand {
     },
     /// Remove a group (its apps are untouched)
     Remove {
-        name: String,
+        /// Group name; picked interactively when omitted
+        name: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
@@ -165,9 +171,11 @@ pub enum PassCommand {
     },
     /// Copy the secret (or login) to the clipboard
     Copy {
-        server: String,
-        #[arg(long, default_value = "password")]
-        kind: String,
+        /// Server name; picked interactively when omitted
+        server: Option<String>,
+        /// Access kind; when omitted the picker offers every stored kind
+        #[arg(long)]
+        kind: Option<String>,
         /// Copy the login instead of the secret
         #[arg(long)]
         login: bool,
@@ -176,14 +184,19 @@ pub enum PassCommand {
         show: bool,
     },
     /// Show access metadata for a server (never prints secrets)
-    Show { server: String },
+    Show {
+        /// Server name; picked interactively when omitted
+        server: Option<String>,
+    },
     /// List all stored access metadata
     List,
     /// Remove stored access to a server
     Remove {
-        server: String,
-        #[arg(long, default_value = "password")]
-        kind: String,
+        /// Server name; picked interactively when omitted
+        server: Option<String>,
+        /// Access kind; when omitted the picker offers every stored kind
+        #[arg(long)]
+        kind: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
@@ -215,10 +228,14 @@ pub enum AppCommand {
     /// List apps
     List,
     /// Show one app in detail
-    Show { name: String },
+    Show {
+        /// App name; picked interactively when omitted
+        name: Option<String>,
+    },
     /// Edit an app; with no flags an interactive wizard walks the fields
     Edit {
-        name: String,
+        /// App name; picked interactively when omitted
+        name: Option<String>,
         #[arg(long)]
         path: Option<PathBuf>,
         #[arg(long)]
@@ -237,7 +254,8 @@ pub enum AppCommand {
     },
     /// Remove an app from the catalog (the project on disk is not touched)
     Remove {
-        name: String,
+        /// App name; picked interactively when omitted
+        name: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
@@ -266,10 +284,14 @@ pub enum ServerCommand {
     /// List servers
     List,
     /// Show one server in detail
-    Show { name: String },
+    Show {
+        /// Server name; picked interactively when omitted
+        name: Option<String>,
+    },
     /// Edit a server; with no flags an interactive wizard walks the fields
     Edit {
-        name: String,
+        /// Server name; picked interactively when omitted
+        name: Option<String>,
         #[arg(long)]
         url: Option<String>,
         #[arg(long)]
@@ -294,7 +316,8 @@ pub enum ServerCommand {
     },
     /// Remove a server from the catalog; apps that allowed it are updated
     Remove {
-        name: String,
+        /// Server name; picked interactively when omitted
+        name: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,

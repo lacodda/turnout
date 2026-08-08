@@ -1,13 +1,34 @@
 use anyhow::{Result, bail};
 
 use crate::model::App;
-use crate::{store, utils};
+use crate::{pick, store, utils};
 
 /// `use NAME SERVER` where NAME is an app or a group - a group binds every member.
-pub fn run(name: &str, server_name: &str, no_check: bool) -> Result<()> {
+/// Either argument may be omitted on a terminal and is then picked from a list.
+pub fn run(name: Option<String>, server_name: Option<String>, no_check: bool) -> Result<()> {
     let apps = store::load_apps()?;
     let groups = store::load_groups()?;
     let servers = store::load_servers()?;
+    let state = store::load_state()?;
+
+    let name = match name {
+        Some(name) => name,
+        None => pick::app_or_group(&apps, &groups, &state, "Switch")?,
+    };
+    let name = name.as_str();
+
+    let server_name = match server_name {
+        Some(server) => server,
+        // A single app narrows the list to what it is allowed to use; a group
+        // has no allow-list of its own, so it offers every server and the
+        // per-member check below still applies.
+        None => match apps.iter().find(|a| a.name == name) {
+            Some(app) => pick::server_for_app(&servers, app, &format!("Point '{name}' at"))?,
+            None => pick::server(&servers, &format!("Point '{name}' at"))?,
+        },
+    };
+    let server_name = server_name.as_str();
+
     let server = servers
         .iter()
         .find(|s| s.name == server_name)
@@ -36,7 +57,7 @@ pub fn run(name: &str, server_name: &str, no_check: bool) -> Result<()> {
         }
     }
 
-    let mut state = store::load_state()?;
+    let mut state = state;
     for app in &members {
         state.bindings.insert(app.name.clone(), server.name.clone());
     }

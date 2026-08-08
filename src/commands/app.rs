@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -8,7 +7,7 @@ use dialoguer::{Confirm, Input, MultiSelect};
 use crate::cli::AppCommand;
 use crate::detect;
 use crate::model::{App, Server, validate_name};
-use crate::store;
+use crate::{pick, store};
 
 pub fn run(command: AppCommand) -> Result<()> {
     match command {
@@ -21,7 +20,7 @@ pub fn run(command: AppCommand) -> Result<()> {
             servers,
         } => add(name, path, port, dist, commands, servers),
         AppCommand::List => list(),
-        AppCommand::Show { name } => show(&name),
+        AppCommand::Show { name } => show(&resolve(name, "Show app")?),
         AppCommand::Edit {
             name,
             path,
@@ -30,8 +29,22 @@ pub fn run(command: AppCommand) -> Result<()> {
             commands,
             add_servers,
             rm_servers,
-        } => edit(&name, path, port, dist, commands, add_servers, rm_servers),
-        AppCommand::Remove { name, assume_yes } => remove(&name, assume_yes),
+        } => {
+            let name = resolve(name, "Edit app")?;
+            edit(&name, path, port, dist, commands, add_servers, rm_servers)
+        }
+        AppCommand::Remove { name, assume_yes } => {
+            let name = resolve(name, "Remove app")?;
+            remove(&name, assume_yes)
+        }
+    }
+}
+
+/// Take the app name as given, or let the user pick one.
+fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
+    match name {
+        Some(name) => Ok(name),
+        None => pick::app(&store::load_apps()?, &store::load_state()?, prompt),
     }
 }
 
@@ -39,7 +52,7 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     let mut apps = store::load_apps()?;
     let known = store::load_servers()?;
     let wizard = name.is_none() || path.is_none();
-    if wizard && !std::io::stdin().is_terminal() {
+    if wizard && !pick::interactive() {
         bail!("app name and --path are required outside an interactive terminal");
     }
 
@@ -178,7 +191,7 @@ fn edit(
     let no_flags = path.is_none() && port.is_none() && dist.is_none() && overrides.is_empty() && add_servers.is_empty() && rm_servers.is_empty();
 
     if no_flags {
-        if !std::io::stdin().is_terminal() {
+        if !pick::interactive() {
             bail!("nothing to change: pass flags, or run interactively for the wizard");
         }
         let app = &mut apps[index];

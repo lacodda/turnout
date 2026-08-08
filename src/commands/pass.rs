@@ -1,19 +1,41 @@
-use std::io::{IsTerminal, Read};
+use std::io::Read;
 
 use anyhow::{Context, Result, bail};
-use dialoguer::{Confirm, Input, Password, Select};
+use dialoguer::{Confirm, Input, Password};
 
 use crate::cli::PassCommand;
 use crate::model::Credential;
-use crate::{secrets, store};
+use crate::{pick, secrets, store};
 
 pub fn run(command: PassCommand) -> Result<()> {
     match command {
         PassCommand::Set { server, kind, login } => set(server, &kind, login),
-        PassCommand::Copy { server, kind, login, show } => copy(&server, &kind, login, show),
-        PassCommand::Show { server } => show(&server),
+        PassCommand::Copy { server, kind, login, show } => copy(server, kind, login, show),
+        PassCommand::Show { server } => show(server),
         PassCommand::List => list(),
-        PassCommand::Remove { server, kind, assume_yes } => remove(&server, &kind, assume_yes),
+        PassCommand::Remove { server, kind, assume_yes } => remove(server, kind, assume_yes),
+    }
+}
+
+/// Resolve the (server, kind) pair a command works on. A given server narrows
+/// the choice to its own kinds; with neither argument the picker lists
+/// everything stored.
+fn resolve(server: Option<String>, kind: Option<String>, prompt: &str) -> Result<(String, String)> {
+    let credentials = store::load_credentials()?;
+    match (server, kind) {
+        (Some(server), Some(kind)) => Ok((server, kind)),
+        (Some(server), None) => {
+            let matching: Vec<&Credential> = credentials.iter().filter(|c| c.server == server).collect();
+            match matching.as_slice() {
+                [] => bail!("no access saved for '{server}' - run `turnout pass set {server}`"),
+                [only] => Ok((server.clone(), only.kind.clone())),
+                _ => {
+                    let owned: Vec<Credential> = matching.into_iter().cloned().collect();
+                    pick::credential(&owned, None, prompt)
+                }
+            }
+        }
+        (None, kind) => pick::credential(&credentials, kind.as_deref(), prompt),
     }
 }
 
@@ -22,18 +44,11 @@ fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> 
     if servers.is_empty() {
         bail!("no servers in the catalog yet - run `turnout server add` first");
     }
-    let interactive = std::io::stdin().is_terminal();
+    let interactive = pick::interactive();
 
     let server = match server {
         Some(server) => server,
-        None => {
-            if !interactive {
-                bail!("server name is required outside an interactive terminal");
-            }
-            let names: Vec<&str> = servers.iter().map(|s| s.name.as_str()).collect();
-            let picked = Select::new().with_prompt("Server").items(&names).default(0).interact()?;
-            names[picked].to_string()
-        }
+        None => pick::server(&servers, "Server")?,
     };
     if !servers.iter().any(|s| s.name == server) {
         bail!("no server named '{server}' - see `turnout server list`");
@@ -87,7 +102,9 @@ fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> 
     Ok(())
 }
 
-fn copy(server: &str, kind: &str, login: bool, show: bool) -> Result<()> {
+fn copy(server: Option<String>, kind: Option<String>, login: bool, show: bool) -> Result<()> {
+    let (server, kind) = resolve(server, kind, "Copy access for")?;
+    let (server, kind) = (server.as_str(), kind.as_str());
     let credentials = store::load_credentials()?;
     let credential = credentials
         .iter()
@@ -109,8 +126,14 @@ fn copy(server: &str, kind: &str, login: bool, show: bool) -> Result<()> {
     Ok(())
 }
 
-fn show(server: &str) -> Result<()> {
+fn show(server: Option<String>) -> Result<()> {
     let credentials = store::load_credentials()?;
+    let server = match server {
+        Some(server) => server,
+        // Only servers that actually have access saved are worth showing.
+        None => pick::credential(&credentials, None, "Show access for")?.0,
+    };
+    let server = server.as_str();
     let matching: Vec<&Credential> = credentials.iter().filter(|c| c.server == server).collect();
     if matching.is_empty() {
         println!("No access saved for '{server}'.");
@@ -137,7 +160,9 @@ fn list() -> Result<()> {
     Ok(())
 }
 
-fn remove(server: &str, kind: &str, assume_yes: bool) -> Result<()> {
+fn remove(server: Option<String>, kind: Option<String>, assume_yes: bool) -> Result<()> {
+    let (server, kind) = resolve(server, kind, "Remove access for")?;
+    let (server, kind) = (server.as_str(), kind.as_str());
     let mut credentials = store::load_credentials()?;
     if !credentials.iter().any(|c| c.server == server && c.kind == kind) {
         bail!("no access saved for '{server}' ({kind})");

@@ -757,6 +757,32 @@ fn completions_cover_the_command_surface() {
         .stdout(predicate::str::contains("turnout").and(predicate::str::contains("deploy")));
 }
 
+/// Pickers only stand in on a terminal; piped runs must keep failing loudly
+/// rather than blocking on a prompt nobody can answer.
+#[test]
+fn missing_names_still_fail_without_a_terminal() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+
+    for args in [
+        vec!["app", "show"],
+        vec!["server", "show"],
+        vec!["use"],
+        vec!["use", "myapp"],
+        vec!["pass", "copy"],
+    ] {
+        turnout(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("outside an interactive terminal").or(predicate::str::contains("no access saved")));
+    }
+}
+
 #[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();

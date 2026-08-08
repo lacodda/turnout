@@ -1,11 +1,9 @@
-use std::io::IsTerminal;
-
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input};
 
 use crate::cli::ServerCommand;
 use crate::model::{Server, parse_ssh, validate_name, validate_url};
-use crate::{secrets, store};
+use crate::{pick, secrets, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
     match command {
@@ -17,7 +15,7 @@ pub fn run(command: ServerCommand) -> Result<()> {
             insecure,
         } => add(name, url, label, ssh, insecure),
         ServerCommand::List => list(),
-        ServerCommand::Show { name } => show(&name),
+        ServerCommand::Show { name } => show(&resolve(name, "Show server")?),
         ServerCommand::Edit {
             name,
             url,
@@ -28,15 +26,29 @@ pub fn run(command: ServerCommand) -> Result<()> {
             secure,
             deploy_paths,
             restart_cmds,
-        } => edit(&name, url, label, ssh, ssh_key, insecure, secure, deploy_paths, restart_cmds),
-        ServerCommand::Remove { name, assume_yes } => remove(&name, assume_yes),
+        } => {
+            let name = resolve(name, "Edit server")?;
+            edit(&name, url, label, ssh, ssh_key, insecure, secure, deploy_paths, restart_cmds)
+        }
+        ServerCommand::Remove { name, assume_yes } => {
+            let name = resolve(name, "Remove server")?;
+            remove(&name, assume_yes)
+        }
+    }
+}
+
+/// Take the server name as given, or let the user pick one.
+fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
+    match name {
+        Some(name) => Ok(name),
+        None => pick::server(&store::load_servers()?, prompt),
     }
 }
 
 fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Option<String>, insecure: bool) -> Result<()> {
     let mut servers = store::load_servers()?;
     let wizard = name.is_none() || url.is_none();
-    if wizard && !std::io::stdin().is_terminal() {
+    if wizard && !pick::interactive() {
         bail!("server name and --url are required outside an interactive terminal");
     }
 
@@ -182,7 +194,7 @@ fn edit(
         url.is_none() && label.is_none() && ssh.is_none() && ssh_key.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
 
     if no_flags {
-        if !std::io::stdin().is_terminal() {
+        if !pick::interactive() {
             bail!("nothing to change: pass flags, or run interactively for the wizard");
         }
         let server = &mut servers[index];

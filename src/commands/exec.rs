@@ -26,6 +26,7 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
 
 /// Explicit name wins; otherwise the app whose path contains the current
 /// directory (deepest match), so `turnout dev` works from inside a project.
+/// Outside any known project a terminal gets a picker instead of an error.
 pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
     match name {
         Some(name) => apps
@@ -37,14 +38,22 @@ pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
             // Canonicalize both sides: on macOS temp paths reach the app through
             // symlinks (/var -> /private/var), so raw prefix comparison lies.
             let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-            apps.iter()
+            let here = apps
+                .iter()
                 .filter(|a| {
                     let path = Path::new(&a.path);
                     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
                     cwd.starts_with(&path)
                 })
-                .max_by_key(|a| a.path.len())
-                .ok_or_else(|| anyhow::anyhow!("not inside a known app directory - pass the app name or see `turnout app list`"))
+                .max_by_key(|a| a.path.len());
+            if let Some(app) = here {
+                return Ok(app);
+            }
+            if !crate::pick::interactive() {
+                bail!("not inside a known app directory - pass the app name or see `turnout app list`");
+            }
+            let picked = crate::pick::app(apps, &store::load_state()?, "App")?;
+            apps.iter().find(|a| a.name == picked).ok_or_else(|| anyhow::anyhow!("no app named '{picked}'"))
         }
     }
 }

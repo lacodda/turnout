@@ -1,19 +1,31 @@
-use std::io::IsTerminal;
-
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input, MultiSelect};
 
 use crate::cli::GroupCommand;
 use crate::model::{Group, validate_name};
-use crate::store;
+use crate::{pick, store};
 
 pub fn run(command: GroupCommand) -> Result<()> {
     match command {
         GroupCommand::Add { name, apps } => add(name, apps),
         GroupCommand::List => list(),
-        GroupCommand::Show { name } => show(&name),
-        GroupCommand::Edit { name, add_apps, rm_apps } => edit(&name, add_apps, rm_apps),
-        GroupCommand::Remove { name, assume_yes } => remove(&name, assume_yes),
+        GroupCommand::Show { name } => show(&resolve(name, "Show group")?),
+        GroupCommand::Edit { name, add_apps, rm_apps } => {
+            let name = resolve(name, "Edit group")?;
+            edit(&name, add_apps, rm_apps)
+        }
+        GroupCommand::Remove { name, assume_yes } => {
+            let name = resolve(name, "Remove group")?;
+            remove(&name, assume_yes)
+        }
+    }
+}
+
+/// Take the group name as given, or let the user pick one.
+fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
+    match name {
+        Some(name) => Ok(name),
+        None => pick::group(&store::load_groups()?, prompt),
     }
 }
 
@@ -24,7 +36,7 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
         bail!("no apps in the catalog yet - run `turnout app add` first");
     }
     let wizard = name.is_none();
-    if wizard && !std::io::stdin().is_terminal() {
+    if wizard && !pick::interactive() {
         bail!("group name is required outside an interactive terminal");
     }
 
