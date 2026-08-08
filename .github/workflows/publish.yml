@@ -1,8 +1,11 @@
 name: Publish
 
+# Triggered by the tag push directly (not the release event): releases here
+# are created by release.yml with GITHUB_TOKEN, and such events do not start
+# other workflows.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
