@@ -59,6 +59,7 @@ fn start() -> Result<()> {
         ports: ports.clone(),
     });
     store::save_state(&state)?;
+    crate::journal::record("gateway.start", None, None, Some(&format!("{} apps", ports.len())));
     println!("Gateway started (pid {}).", child.id());
     for (port, app) in ports {
         println!("  {app}: http://localhost:{port}");
@@ -74,6 +75,7 @@ fn stop() -> Result<()> {
     };
     kill(running.pid)?;
     store::save_state(&state)?;
+    crate::journal::record("gateway.stop", None, None, None);
     println!("Gateway stopped (pid {}).", running.pid);
     Ok(())
 }

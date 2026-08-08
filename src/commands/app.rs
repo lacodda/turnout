@@ -127,6 +127,7 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     apps.push(app);
     apps.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_apps(&apps)?;
+    crate::journal::record("app.add", Some(&name), None, None);
     println!("App '{name}' added.");
     Ok(())
 }
@@ -267,6 +268,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         store::save_groups(&groups)?;
         println!("Removed '{name}' from groups: {}.", touched.join(", "));
     }
+    crate::journal::record("app.remove", Some(name), None, None);
     println!("App '{name}' removed. The project on disk is untouched.");
     Ok(())
 }

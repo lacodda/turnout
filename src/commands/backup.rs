@@ -9,6 +9,7 @@ pub fn backup(app_name: Option<String>, server_name: Option<String>) -> Result<(
     println!("Connecting to {}@{}:{} ...", ssh.user, ssh.host, ssh.port);
     let session = remote::connect(ssh, &target.server.name)?;
     let name = remote::exec(&session, &remote::backup_command(&deploy.path))?;
+    crate::journal::record("backup", Some(&target.app.name), Some(&target.server.name), Some(name.trim()));
     println!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path));
     Ok(())
 }
@@ -49,6 +50,7 @@ pub fn restore(app_name: Option<String>, server_name: Option<String>, from: Opti
         &session,
         &format!("test -f {archive} && find {dir} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} + && tar xzf {archive} -C {dir}"),
     )?;
+    crate::journal::record("restore", Some(&target.app.name), Some(&target.server.name), Some(&name));
     println!("Restored {name} into {}", deploy.path);
     if let Some(restart) = &deploy.restart {
         println!("Running: {restart}");

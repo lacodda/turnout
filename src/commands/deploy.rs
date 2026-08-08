@@ -52,6 +52,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
             println!("{}", output.trim_end());
         }
     }
+    crate::journal::record("deploy", Some(&app.name), Some(&server.name), Some(&format!("{files} files")));
     println!("Deploy of '{}' to '{}' finished.", app.name, server.name);
     Ok(())
 }

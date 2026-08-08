@@ -113,6 +113,7 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Op
     });
     servers.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_servers(&servers)?;
+    crate::journal::record("server.add", None, Some(&name), None);
     println!("Server '{name}' added.");
     Ok(())
 }
@@ -333,6 +334,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         store::save_credentials(&credentials)?;
         println!("Removed stored access: {}.", kinds.join(", "));
     }
+    crate::journal::record("server.remove", None, Some(name), None);
     println!("Server '{name}' removed.");
     Ok(())
 }

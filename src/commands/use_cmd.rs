@@ -62,6 +62,9 @@ pub fn run(name: Option<String>, server_name: Option<String>, no_check: bool) ->
         state.bindings.insert(app.name.clone(), server.name.clone());
     }
     store::save_state(&state)?;
+    for app in &members {
+        crate::journal::record("use", Some(&app.name), Some(server_name), None);
+    }
     match members.as_slice() {
         [app] => println!("'{}' now uses '{server_name}'.", app.name),
         _ => {

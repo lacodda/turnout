@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod detect;
 mod gateway;
+mod journal;
 mod model;
 mod paths;
 mod pick;

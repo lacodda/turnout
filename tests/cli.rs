@@ -850,6 +850,37 @@ fn deploy_setup_refuses_to_run_unattended() {
         .stderr(predicate::str::contains("interactive wizard").and(predicate::str::contains("turnout server edit")));
 }
 
+/// Every state change lands in the journal, and `status` shows the tail.
+/// Secrets never do - `pass` is not journaled at all.
+#[test]
+fn actions_are_journaled_without_secrets() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["use", "web", "staging", "--no-check"]).assert().success();
+    turnout(dir.path())
+        .args(["pass", "set", "staging", "--login", "deploy"])
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .write_stdin("hunter2-topsecret")
+        .assert()
+        .success();
+
+    let journal = std::fs::read_to_string(dir.path().join("journal.jsonl")).unwrap();
+    assert!(journal.contains(r#""action":"use""#), "{journal}");
+    assert!(journal.contains(r#""action":"app.add""#), "{journal}");
+    assert!(!journal.contains("hunter2"), "the secret leaked: {journal}");
+    assert!(!journal.contains("deploy"), "the login leaked: {journal}");
+
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Recent:").and(predicate::str::contains("web -> staging")));
+}
+
 #[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();
