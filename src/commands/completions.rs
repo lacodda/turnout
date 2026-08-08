@@ -48,7 +48,7 @@ _turnout_dynamic() {
             # `use TARGET SERVER`: first word is an app or a group, second a server.
             if [[ ${COMP_CWORD} -eq 2 ]]; then kind="targets"; else kind="servers"; fi
             ;;
-        dev|build|test|lint|deploy|backup|restore)
+        dev|build|test|lint|deploy|deploy-setup|backup|restore)
             [[ ${COMP_CWORD} -eq 2 ]] && kind="apps"
             ;;
         run)

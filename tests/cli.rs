@@ -837,6 +837,19 @@ fn missing_names_still_fail_without_a_terminal() {
     }
 }
 
+/// The deploy wizard is interactive by nature; scripts must be told what to
+/// use instead rather than hanging on a prompt.
+#[test]
+fn deploy_setup_refuses_to_run_unattended() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["deploy-setup", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("interactive wizard").and(predicate::str::contains("turnout server edit")));
+}
+
 #[test]
 fn status_counts_catalogs() {
     let (dir, project) = workspace();

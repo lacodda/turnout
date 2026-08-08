@@ -23,6 +23,16 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 
 ## Configuration
 
+The settings live on two entities - the artifact directory on the app, the SSH access and the per-app target on the server - plus the secret in the keyring. One wizard walks all of them:
+
+```bash
+turnout deploy-setup [APP] [--server SERVER]
+```
+
+It asks for the artifact directory (suggesting `dist`, `build`, `out` or `public` if one already exists), the SSH `user@host[:port]`, an optional key file, the remote directory, the post-deploy command, and - only when no key was given - a password to store in the keyring. Existing values come pre-filled, so it doubles as an edit pass. Nothing is written until every answer is in.
+
+The wizard needs a terminal. In scripts, set the same fields directly:
+
 ```bash
 turnout app edit myapp --dist dist                # what to upload
 turnout server edit prod --ssh deploy@prod.example.com

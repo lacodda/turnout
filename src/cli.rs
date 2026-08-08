@@ -66,6 +66,15 @@ pub enum Command {
     Lint { app: Option<String> },
     /// Run any named command from the app config
     Run { command: String, app: Option<String> },
+    /// Set up deployment of an app to a server in one wizard
+    #[command(name = "deploy-setup", alias = "setup-deploy")]
+    DeploySetup {
+        /// App name; picked interactively when omitted
+        app: Option<String>,
+        /// Target server; picked interactively when omitted
+        #[arg(long)]
+        server: Option<String>,
+    },
     /// Deploy an app to a server over SSH/SFTP: build, upload, restart
     Deploy {
         app: Option<String>,

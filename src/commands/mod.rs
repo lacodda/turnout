@@ -3,6 +3,7 @@ pub mod backup;
 pub mod complete;
 pub mod completions;
 pub mod deploy;
+pub mod deploy_setup;
 pub mod exec;
 pub mod gateway;
 pub mod group;
