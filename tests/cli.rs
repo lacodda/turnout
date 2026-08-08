@@ -747,6 +747,43 @@ fn removing_an_app_updates_groups() {
         .stdout(predicate::str::contains("web").not());
 }
 
+/// The completion helper feeds live names to the shell; `use` accepts apps and
+/// groups together, so `targets` must carry both.
+#[test]
+fn complete_lists_live_entity_names() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["group", "add", "contour", "--app", "web"]).assert().success();
+
+    turnout(dir.path()).args(["complete", "apps"]).assert().success().stdout("web\n");
+    turnout(dir.path()).args(["complete", "servers"]).assert().success().stdout("staging\n");
+    turnout(dir.path())
+        .args(["complete", "targets"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("web").and(predicate::str::contains("contour")));
+}
+
+/// bash gets the dynamic wrapper appended; other shells stay untouched.
+#[test]
+fn bash_completions_carry_the_dynamic_wrapper() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path())
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_turnout_dynamic").and(predicate::str::contains("complete -F _turnout_dynamic")));
+    turnout(dir.path())
+        .args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_turnout_dynamic").not());
+}
+
 #[test]
 fn completions_cover_the_command_surface() {
     let dir = tempfile::tempdir().unwrap();

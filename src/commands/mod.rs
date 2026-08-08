@@ -1,5 +1,7 @@
 pub mod app;
 pub mod backup;
+pub mod complete;
+pub mod completions;
 pub mod deploy;
 pub mod exec;
 pub mod gateway;

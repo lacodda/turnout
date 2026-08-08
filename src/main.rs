@@ -37,11 +37,8 @@ fn main() {
         } => commands::deploy::run(app, server, no_build, backup, clear),
         cli::Command::Backup { app, server } => commands::backup::backup(app, server),
         cli::Command::Restore { app, server, from, list } => commands::backup::restore(app, server, from, list),
-        cli::Command::Completions { shell } => {
-            use clap::CommandFactory;
-            clap_complete::generate(shell, &mut cli::Cli::command(), "turnout", &mut std::io::stdout());
-            Ok(())
-        }
+        cli::Command::Completions { shell } => commands::completions::run(shell),
+        cli::Command::Complete { what } => commands::complete::run(what),
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");

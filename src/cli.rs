@@ -107,6 +107,24 @@ pub enum Command {
         /// Target shell
         shell: clap_complete::Shell,
     },
+    /// List entity names for shell completion (internal)
+    #[command(hide = true)]
+    Complete {
+        /// What to list
+        what: CompleteKind,
+    },
+}
+
+/// Entity kinds the completion helper can list.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum CompleteKind {
+    Apps,
+    Servers,
+    Groups,
+    /// Apps and groups together - what `use` accepts first
+    Targets,
+    /// Command names defined across all apps - what `run` accepts
+    Commands,
 }
 
 #[derive(Subcommand)]
