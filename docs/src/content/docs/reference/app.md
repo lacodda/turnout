@@ -18,9 +18,28 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--dist DIR]
                 [--command NAME=CMD]... [--server SERVER]...
 ```
 
-With `NAME` or `--path` missing, an interactive wizard walks you through: it detects the project type (pnpm / yarn / npm / cargo) from lock and manifest files, proposes standard commands, suggests a free gateway port and lets you pick allowed servers from the catalog.
+With `NAME` or `--path` missing, an interactive wizard walks you through: it detects the project type (pnpm / yarn / npm / cargo) from lock and manifest files, proposes commands, suggests a free gateway port and lets you pick allowed servers from the catalog.
 
 With both given, `add` is fully non-interactive (useful for scripts): commands come from detection, adjustable via `--command`.
+
+### Where the commands come from
+
+When the project has a `package.json`, turnout reads its actual `scripts` instead of assuming names. Each of turnout's roles takes the first script that fills it:
+
+| Role | Script names tried, in order |
+| --- | --- |
+| `dev` | `dev`, `serve`, `start`, `dev:server`, `watch` |
+| `build` | `build`, `build:prod`, `compile`, `dist` |
+| `test` | `test`, `test:unit`, `spec` |
+| `lint` | `lint`, `lint:js`, `eslint` |
+
+So a Vue CLI project whose dev script is `serve` gets `dev -> pnpm serve`, and `turnout dev` just works. Scripts that fill no role are kept under their own name, reachable through [`turnout run`](/turnout/reference/run/):
+
+```bash
+turnout run storybook myapp
+```
+
+Projects without a `package.json` (or without `scripts`) fall back to the conventional command set for the detected manager.
 
 ```bash
 turnout app add                        # wizard, from the current directory

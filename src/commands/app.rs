@@ -81,9 +81,10 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     let path = crate::utils::project_dir(&path)?;
 
     let kind = detect::detect(&path);
-    let mut commands = detect::default_commands(kind);
+    let mut commands = detect::commands_for(&path, kind);
     if wizard && !commands.is_empty() {
-        println!("Detected a {} project; proposed commands:", kind.label());
+        let source = if path.join("package.json").exists() { " (from package.json)" } else { "" };
+        println!("Detected a {} project{source}; proposed commands:", kind.label());
         print_commands(&commands);
         if !Confirm::new().with_prompt("Use these commands?").default(true).interact()? {
             commands.clear();
@@ -163,9 +164,7 @@ fn show(name: &str) -> Result<()> {
         println!("  Commands: none");
     } else {
         println!("  Commands:");
-        for (name, cmd) in &app.commands {
-            println!("    {name:8} {cmd}");
-        }
+        print_commands(&app.commands);
     }
     if app.servers.is_empty() {
         println!("  Servers:  none allowed yet");
@@ -281,8 +280,10 @@ fn unknown_app(name: &str) -> anyhow::Error {
 }
 
 fn print_commands(commands: &BTreeMap<String, String>) {
+    // Script names come from package.json and can be longer than the roles.
+    let width = commands.keys().map(|n| n.len()).max().unwrap_or(0).max(8);
     for (name, cmd) in commands {
-        println!("  {name:8} {cmd}");
+        println!("    {name:width$} {cmd}");
     }
 }
 

@@ -118,6 +118,25 @@ fn app_add_detects_npm_commands() {
         .stdout(predicate::str::contains("npm run dev"));
 }
 
+/// Real scripts beat conventions: a Vue-style project calls its dev script
+/// `serve`, and scripts that fill no role stay reachable through `run`.
+#[test]
+fn app_add_maps_package_json_scripts_to_roles() {
+    let (dir, project) = workspace();
+    std::fs::write(
+        project.join("package.json"),
+        r#"{"scripts":{"serve":"vue-cli-service serve","build":"vue-cli-service build","storybook":"start-storybook"}}"#,
+    )
+    .unwrap();
+    std::fs::write(project.join("pnpm-lock.yaml"), "").unwrap();
+    turnout(dir.path()).args(["app", "add", "webapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["app", "show", "webapp"]).assert().success().stdout(
+        predicate::str::contains("dev")
+            .and(predicate::str::contains("pnpm serve"))
+            .and(predicate::str::contains("pnpm storybook")),
+    );
+}
+
 #[test]
 fn app_edit_updates_commands_and_port() {
     let (dir, project) = workspace();
