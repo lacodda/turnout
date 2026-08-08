@@ -30,6 +30,18 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$TMP/$NAME/turnout" "$BIN_DIR/turnout"
 echo "Installed turnout $TAG to $BIN_DIR/turnout"
 
+# Short alias `tn`, unless something else in PATH already answers to that name
+# (ours from a previous run does not count). TURNOUT_NO_ALIAS=1 skips it.
+if [ -z "${TURNOUT_NO_ALIAS:-}" ]; then
+    EXISTING=$(command -v tn 2>/dev/null || true)
+    if [ -z "$EXISTING" ] || [ "$EXISTING" = "$BIN_DIR/tn" ]; then
+        ln -sf turnout "$BIN_DIR/tn"
+        echo "Alias tn -> turnout"
+    else
+        echo "Note: 'tn' already resolves to $EXISTING - alias skipped."
+    fi
+fi
+
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *) echo "Note: add $BIN_DIR to your PATH." ;;

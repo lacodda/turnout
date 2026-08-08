@@ -772,11 +772,9 @@ fn complete_lists_live_entity_names() {
 #[test]
 fn bash_completions_carry_the_dynamic_wrapper() {
     let dir = tempfile::tempdir().unwrap();
-    turnout(dir.path())
-        .args(["completions", "bash"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("_turnout_dynamic").and(predicate::str::contains("complete -F _turnout_dynamic")));
+    turnout(dir.path()).args(["completions", "bash"]).assert().success().stdout(
+        predicate::str::contains("_turnout_dynamic").and(predicate::str::contains("-F _turnout_dynamic -o nosort -o bashdefault -o default turnout tn")),
+    );
     turnout(dir.path())
         .args(["completions", "zsh"])
         .assert()

@@ -82,9 +82,10 @@ _turnout_dynamic() {
     _turnout "$@"
 }
 
+# Registered for the `tn` alias too - the word positions are the same either way.
 if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERSINFO[0]}" -gt 4 ]]; then
-    complete -F _turnout_dynamic -o nosort -o bashdefault -o default turnout
+    complete -F _turnout_dynamic -o nosort -o bashdefault -o default turnout tn
 else
-    complete -F _turnout_dynamic -o bashdefault -o default turnout
+    complete -F _turnout_dynamic -o bashdefault -o default turnout tn
 fi
 "#;

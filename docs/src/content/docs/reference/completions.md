@@ -43,4 +43,4 @@ turnout dev <Tab>            # apps
 
 Flag values follow the same rule - `--server`, `--add-server`, `--app`, `--add-app` and their `--rm-` counterparts complete from the catalog.
 
-Names come from a hidden `turnout complete` helper the script calls; it stays quiet on errors so a half-configured setup never garbles the line you are typing. Other shells get the static script - the same commands and flags, without live names.
+Names come from a hidden `turnout complete` helper the script calls; it stays quiet on errors so a half-configured setup never garbles the line you are typing. The bash script registers itself for the [`tn` alias](/turnout/getting-started/#the-tn-alias) as well. Other shells get the static script - the same commands and flags, without live names.

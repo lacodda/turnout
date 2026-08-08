@@ -28,3 +28,16 @@ if (($userPath -split ";") -notcontains $dir) {
     Write-Host "Added $dir to your user PATH - restart the terminal to pick it up."
 }
 Write-Host "Installed turnout $tag to $dir\turnout.exe"
+
+# Short alias `tn`: a copy, since symlinks need elevation on Windows. Skipped
+# when another `tn` already answers in PATH; $env:TURNOUT_NO_ALIAS=1 opts out.
+if (-not $env:TURNOUT_NO_ALIAS) {
+    $alias = Join-Path $dir "tn.exe"
+    $existing = Get-Command tn -ErrorAction SilentlyContinue
+    if (-not $existing -or $existing.Source -eq $alias) {
+        Copy-Item (Join-Path $dir "turnout.exe") $alias -Force
+        Write-Host "Alias tn -> turnout"
+    } else {
+        Write-Host "Note: 'tn' already resolves to $($existing.Source) - alias skipped."
+    }
+}

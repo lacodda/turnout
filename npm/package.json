@@ -14,7 +14,8 @@
   },
   "keywords": ["cli", "proxy", "gateway", "deploy", "dev-environment", "stands"],
   "bin": {
-    "turnout": "run.js"
+    "turnout": "run.js",
+    "tn": "run.js"
   },
   "files": ["download.js", "install.js", "run.js"],
   "scripts": {
