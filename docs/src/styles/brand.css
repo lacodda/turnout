@@ -1,0 +1,19 @@
+/* The lacodda line mark is a square hex tile; without an explicit size it
+   fills the whole nav height and crowds the wordmark. */
+.site-title img {
+	width: 2rem;
+	height: 2rem;
+}
+
+/* Brand accent: turnout rose. */
+:root {
+	--sl-color-accent: #e85b72;
+	--sl-color-accent-high: #f3a3b0;
+	--sl-color-accent-low: #55212a;
+}
+
+:root[data-theme='light'] {
+	--sl-color-accent: #c23a52;
+	--sl-color-accent-high: #7a1c2c;
+	--sl-color-accent-low: #f7d5db;
+}

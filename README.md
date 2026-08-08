@@ -1,14 +1,13 @@
-# turnout
+<p align="center"><img src="assets/banner.svg" alt="turnout - a developer's switchyard" width="720"></p>
 
 > A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy - from any directory.
 
 <p align="center">
   <a href="https://crates.io/crates/turnout"><img src="https://img.shields.io/crates/v/turnout?style=flat-square" alt="crates.io"></a>
+  <a href="https://www.npmjs.com/package/turnout-cli"><img src="https://img.shields.io/npm/v/turnout-cli?style=flat-square" alt="npm"></a>
   <a href="https://github.com/lacodda/turnout/actions"><img src="https://img.shields.io/github/actions/workflow/status/lacodda/turnout/ci.yml?style=flat-square" alt="CI"></a>
   <a href="https://github.com/lacodda/turnout/blob/main/LICENSE"><img src="https://img.shields.io/github/license/lacodda/turnout?style=flat-square" alt="License"></a>
 </p>
-
-**Status: early development.** The CLI skeleton is in place; the entity model, secrets and the dev gateway are being built - see the roadmap below.
 
 ## Why
 
