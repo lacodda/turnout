@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/banner.svg" alt="turnout - a developer's switchyard" width="720"></p>
+<p align="center"><img src="https://github.com/lacodda/turnout/raw/main/assets/banner.svg" alt="turnout - a developer's switchyard" width="720"></p>
 
 > A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy - from any directory.
 
@@ -153,7 +153,7 @@ Released versions and what landed in each: [CHANGELOG on the Releases page](http
 
 ## Documentation
 
-The documentation site (Astro Starlight) lives in [`docs/`](docs/); architecture decision records are in [`docs/adr/`](docs/adr/).
+The documentation site (Astro Starlight) lives in [`docs/`](https://github.com/lacodda/turnout/tree/main/docs); architecture decision records are in [`docs/adr/`](https://github.com/lacodda/turnout/tree/main/docs/adr).
 
 ## License
 
