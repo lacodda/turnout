@@ -11,19 +11,90 @@
 
 ## Why
 
-Day-to-day work with several backend stands is scattered:
+Working against several backend stands scatters the day: you `cd` into a folder to start a project, edit `.env` files across repositories to switch a stand, dig through notes for a password, and keep deploy paths in your head.
 
-- to run a project you have to `cd` into its folder;
-- to switch a stand you edit `.env` files across repositories;
-- to deploy you must remember configs, passwords and server paths;
-- to copy a login or password you dig through notes and chats.
+turnout keeps all of it in one place and works from any directory.
 
-turnout puts all of it into one CLI that works from any directory:
+## A day in the life
 
-- **Dev gateway.** Your apps always talk to `localhost`; turnout routes requests to the selected stand. Switching a stand is one command - and sessions survive it, because the gateway keeps a cookie jar per app+server pair.
-- **Secrets in the OS keyring** (Windows Credential Manager / macOS Keychain / Linux Secret Service). Copy a password to the clipboard with one command; nothing is stored in plain files.
-- **App commands anywhere.** `dev`, `build`, `test`, `lint` and custom commands run in the right project folder for you.
-- **Deploy.** Build, package, upload over SSH/SFTP, restart the service - using the same apps, servers and secrets.
+Point an app at a stand:
+
+```console
+$ turnout use web staging
+'web' now uses 'staging'.
+The running gateway picks this up automatically.
+Stand check: https://staging.example.com responded with 200 OK.
+```
+
+Nothing in the project changed - the app still talks to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it to the stand you picked. Your session survives the switch, because cookies are kept per app **and** stand.
+
+Start working, from wherever you happen to be:
+
+```console
+$ cd ~/dev/web/src/components
+$ turnout dev
+[web] pnpm dev
+```
+
+Move the whole contour at once when the frontend and the API must agree:
+
+```console
+$ turnout use contour prod-eu
+Group 'contour' now uses 'prod-eu':
+  web -> prod-eu
+  api -> prod-eu
+```
+
+Forgot a name? Leave it out and pick from a list that shows where things point:
+
+```console
+$ turnout use
+? Switch ›
+❯ contour   group: web, api
+  api       -> staging
+  web       -> staging
+```
+
+Ship it:
+
+```console
+$ turnout deploy web --server prod-eu --backup
+[web] pnpm build
+Connecting to deploy@prod-eu.example.com:22 ...
+Backup 20260809-011500.tar.gz created in /var/www/web.backups
+Uploaded 142 files (3184 KB) to prod-eu:/var/www/web
+Running: systemctl restart web
+Deploy of 'web' to 'prod-eu' finished.
+```
+
+And see what has been going on:
+
+```console
+$ turnout status
+turnout 0.3.0
+Data directory: ~/.local/share/lacodda/turnout
+Apps:    2 (api, web)
+Servers: 2 (prod-eu, staging)
+Group:   contour (web, api)
+Access:  saved for prod-eu
+Bindings:
+  api -> staging
+  web -> prod-eu
+Gateway: running (pid 24180; web:7100, api:7101)
+Recent:
+  2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
+  2026-08-09T01:12:44Z  use            web -> prod-eu
+```
+
+## What you get
+
+- **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
+- **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. Copy a password to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
+- **Commands from any directory.** `dev`, `build`, `test`, `lint` and any custom command run in the right project folder. Commands are taken from your actual `package.json` scripts, so a project whose dev script is `serve` still answers to `turnout dev`.
+- **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong.
+- **Groups.** Bind a whole contour to one stand with a single `use`.
+- **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server and group names from your own catalogs. The short alias `tn` is installed alongside.
+- **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
 
 ## Install
 
@@ -53,31 +124,32 @@ cargo install turnout
 
 **Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
 
-The installers and the npm package also register the short alias `tn` (skipped if the name is already taken; `TURNOUT_NO_ALIAS=1` opts out).
+The installers and the npm package also register the short alias `tn` (skipped if the name is already taken; `TURNOUT_NO_ALIAS=1` opts out). `cargo install` gives you `turnout` only.
 
 ## Quick start
 
 ```bash
-turnout setup    # first-run wizard: creates the data directory
-turnout status   # what turnout knows right now
+turnout setup                  # first-run wizard: creates the data directory
+turnout app add                # register a project (detects its commands)
+turnout server add             # register a stand
+turnout use                    # bind one to the other
+turnout gateway start          # route traffic through the gateway
 ```
 
 Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\turnout` on Windows); set `TURNOUT_DATA_DIR` to override.
 
-## Roadmap
+Full command reference and concepts: **[lacodda.github.io/turnout](https://lacodda.github.io/turnout/)**.
 
-- [x] CLI skeleton: `setup`, `status`
-- [x] Apps and servers: CRUD with interactive wizards
-- [x] Secrets: OS keyring storage, copy to clipboard
-- [x] Dev gateway: per-stand cookie jars, self-signed HTTPS, redirect rewriting
-- [x] `use` - bind an app to a stand with one command
-- [x] Gateway: WebSocket proxying
-- [x] App commands: `dev` / `build` / `test` / `lint` from any directory
-- [x] Deploy: build, upload over SSH/SFTP, restart
-- [x] Deploy: remote backup and restore
-- [x] Shell completions
-- [x] App groups: switch a whole contour with one `use`
-- [ ] Comfort: config templates and migrations, environment profiles
+## Status
+
+Everything above works today. What is next:
+
+- [ ] **Updates and portability** - update notice, `self-update`, `export` / `import` for moving to another machine
+- [ ] **Background runs** - `dev --detach`, `ps`, `logs`, `stop`, OS notifications
+- [ ] **Observability** - gateway request log, `doctor`, `report` for handing context to an assistant
+- [ ] **Deploy consists** - atomic deploy and rollback across a group of apps
+
+Released versions and what landed in each: [CHANGELOG on the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation
 
