@@ -3,7 +3,25 @@ title: turnout
 description: A developer's switchyard - point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory.
 template: splash
 hero:
-  tagline: A developer's switchyard - point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory.
+  tagline: Point local apps at any backend stand, keep servers and secrets at hand, build and deploy - from any directory.
+  image:
+    html: |
+      <div class="tn-install">
+        <div class="tn-install__bar">
+          <span class="tn-install__dot"></span>
+          <span class="tn-install__dot"></span>
+          <span class="tn-install__dot"></span>
+          <span class="tn-install__os">install &amp; set up</span>
+        </div>
+        <pre class="tn-install__body"><span class="tn-install__prompt">$</span> npm i -g turnout-cli
+      <span class="tn-install__prompt">$</span> cargo install turnout
+
+      <span class="tn-install__comment"># then, once:</span>
+      <span class="tn-install__prompt">$</span> turnout setup
+      <span class="tn-install__prompt">$</span> turnout app add
+      <span class="tn-install__prompt">$</span> turnout server add
+      <span class="tn-install__prompt">$</span> turnout use</pre>
+      </div>
   actions:
     - text: Get started
       link: /turnout/getting-started/
@@ -16,6 +34,21 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
+## A day in the life
+
+```console
+$ turnout use web staging
+'web' now uses 'staging'.
+The running gateway picks this up automatically.
+Stand check: https://staging.example.com responded with 200 OK.
+
+$ cd ~/dev/web/src/components
+$ turnout dev
+[web] pnpm dev
+```
+
+Nothing in the project changed - the app still talks to `localhost`, and the [gateway](/turnout/concepts/gateway/) routes it to the stand you picked. Cookies are kept per app **and** stand, so the switch does not log you out.
+
 ## What turnout does
 
 <CardGrid stagger>
@@ -25,14 +58,16 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 	<Card title="Secrets in the OS keyring" icon="seti:lock">
 		Windows Credential Manager, macOS Keychain or Linux Secret Service. Copy a password to the clipboard with one command; nothing lives in plain files.
 	</Card>
-	<Card title="App commands anywhere" icon="setting">
-		dev, build, test, lint and custom commands run in the right project folder for you - no cd required.
+	<Card title="Commands from anywhere" icon="setting">
+		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
 	</Card>
 	<Card title="Deploy" icon="cloud-download">
-		Build, package, upload over SSH/SFTP, restart the service - using the same apps, servers and secrets.
+		Build, upload over SSH/SFTP, restart the service - with remote backup and restore when a release goes wrong.
+	</Card>
+	<Card title="Nothing to memorize" icon="approve-check">
+		Leave a name out and pick it from a list; in bash, Tab completes app, server and group names from your own catalogs.
+	</Card>
+	<Card title="An action journal" icon="document">
+		Every state change appends one JSON line - what happened and to which entities, never secrets. tail, grep and jq work on it directly.
 	</Card>
 </CardGrid>
-
-:::note[Early development]
-turnout is under active development. The CLI skeleton (`setup`, `status`) works; entities, secrets and the gateway are on the [roadmap](https://github.com/lacodda/turnout#roadmap).
-:::
