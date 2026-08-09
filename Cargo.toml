@@ -33,13 +33,13 @@ arboard = "3"
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.6.8"
-dialoguer = "0.11"
+dialoguer = "0.12"
 directories = "6"
 dunce = "1"
 futures-util = { version = "0.3.33", default-features = false, features = ["std", "sink"] }
-keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+keyring = { version = "4", features = ["v1"] }
 native-tls = "0.2.18"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ssh2 = "0.9"
@@ -51,7 +51,7 @@ assert_cmd = "2"
 axum = { version = "0.8", features = ["ws"] }
 futures-util = { version = "0.3.33", default-features = false, features = ["std", "sink"] }
 predicates = "3"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tempfile = "3"
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tokio-tungstenite = "0.30.0"
