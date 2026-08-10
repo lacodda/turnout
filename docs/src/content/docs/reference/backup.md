@@ -25,6 +25,14 @@ turnout backup myapp --server prod
 
 Creates `{deploy-path}.backups/YYYYMMDD-HHMMSS.tar.gz` and prints its name. `turnout deploy --backup` does the same right before touching the remote directory.
 
+:::note[Backups need access to the parent directory]
+Archives are kept *beside* the deploy directory, so the deploy user must be able to write to its parent - `/var/www` for a deploy path of `/var/www/myapp`, and that is usually owned by root. Deploying works regardless, which makes the first failed backup look arbitrary; turnout says so and gives you the command. Creating the directory once is enough:
+
+```bash
+sudo mkdir -p /var/www/myapp.backups && sudo chown $USER /var/www/myapp.backups
+```
+:::
+
 ## restore
 
 ```bash

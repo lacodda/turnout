@@ -41,7 +41,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
 
     if backup {
         let step = Step::start(format!("Backing up {} ...", deploy.path));
-        let name = remote::exec(&session, &remote::backup_command(&deploy.path))?;
+        let name = remote::run_backup(&session, &deploy.path)?;
         step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path)));
     }
     if clear {

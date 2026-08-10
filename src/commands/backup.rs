@@ -10,7 +10,7 @@ pub fn backup(app_name: Option<String>, server_name: Option<String>) -> Result<(
     let step = Step::start(format!("Connecting to {}@{}:{} ...", ssh.user, ssh.host, ssh.port));
     let session = remote::connect(ssh, &target.server.name)?;
     step.update(format!("Backing up {} ...", deploy.path));
-    let name = remote::exec(&session, &remote::backup_command(&deploy.path))?;
+    let name = remote::run_backup(&session, &deploy.path)?;
     step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path)));
     crate::journal::record("backup", Some(&target.app.name), Some(&target.server.name), Some(name.trim()));
     Ok(())

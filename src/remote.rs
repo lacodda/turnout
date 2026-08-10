@@ -111,3 +111,91 @@ pub fn backup_command(deploy_path: &str) -> String {
     let backups = shell_quote(&backups_dir(deploy_path));
     format!("mkdir -p {backups} && ts=$(date +%Y%m%d-%H%M%S) && tar czf {backups}/\"$ts\".tar.gz -C {dir} . && echo \"$ts\".tar.gz")
 }
+
+/// Run the backup, explaining the one failure that surprises everyone.
+///
+/// Archives live *beside* the deploy directory, so creating them needs write
+/// access to its parent - typically `/var/www`, owned by root. Uploading works
+/// regardless, which makes a bare "permission denied" from `mkdir` look
+/// arbitrary; the hint below is what actually unblocks it.
+pub fn run_backup(session: &Session, deploy_path: &str) -> Result<String> {
+    exec(session, &backup_command(deploy_path)).map_err(|err| {
+        if mentions_permission_denial(&err) {
+            anyhow::anyhow!(permission_hint(deploy_path))
+        } else {
+            err
+        }
+    })
+}
+
+/// Why the backup was refused and the one command that unblocks it.
+fn permission_hint(deploy_path: &str) -> String {
+    let backups = backups_dir(deploy_path);
+    let parent = parent_dir(&backups);
+    format!(
+        "cannot write backups to {backups}: permission denied.\n\
+         Backups are kept next to the deploy directory, so this needs write access to {parent} - \
+         being able to upload into the deploy directory itself is not enough.\n\
+         Create it once on the server with the right owner, e.g.\n  \
+         sudo mkdir -p {backups} && sudo chown $USER {backups}"
+    )
+}
+
+/// Whether a failed remote command was refused for lack of permission.
+fn mentions_permission_denial(err: &anyhow::Error) -> bool {
+    let text = format!("{err:#}").to_lowercase();
+    text.contains("permission denied") || text.contains("cannot create directory")
+}
+
+/// The directory a path sits in; `/` when there is no parent to name.
+fn parent_dir(path: &str) -> &str {
+    match path.trim_end_matches('/').rsplit_once('/') {
+        Some(("", _)) | None => "/",
+        Some((parent, _)) => parent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{backups_dir, mentions_permission_denial, parent_dir, shell_quote};
+
+    #[test]
+    fn backups_sit_beside_the_deploy_directory() {
+        assert_eq!(backups_dir("/var/www/myapp"), "/var/www/myapp.backups");
+        assert_eq!(backups_dir("/var/www/myapp/"), "/var/www/myapp.backups");
+    }
+
+    /// The parent is what the permission hint tells the user to fix, so it has
+    /// to be right even for a directory sitting at the root.
+    #[test]
+    fn parent_of_a_backups_dir() {
+        assert_eq!(parent_dir("/var/www/myapp.backups"), "/var/www");
+        assert_eq!(parent_dir("/srv"), "/");
+        assert_eq!(parent_dir("/"), "/");
+    }
+
+    #[test]
+    fn recognizes_permission_failures_only() {
+        let denied = anyhow::anyhow!("remote command 'mkdir -p /var/www/x.backups' exited with 1: mkdir: cannot create directory: Permission denied");
+        assert!(mentions_permission_denial(&denied));
+
+        let other = anyhow::anyhow!("remote command 'tar czf ...' exited with 2: tar: not found");
+        assert!(!mentions_permission_denial(&other), "unrelated failures must keep their own message");
+    }
+
+    /// The message has one job: say why uploading works while backing up does
+    /// not, and give the command that fixes it.
+    #[test]
+    fn permission_hint_names_the_parent_and_the_fix() {
+        let hint = super::permission_hint("/var/www/myapp");
+        assert!(hint.contains("/var/www/myapp.backups"), "{hint}");
+        assert!(hint.contains("write access to /var/www"), "{hint}");
+        assert!(hint.contains("sudo mkdir -p /var/www/myapp.backups"), "{hint}");
+    }
+
+    #[test]
+    fn quotes_values_for_a_posix_shell() {
+        assert_eq!(shell_quote("/var/www/my app"), "'/var/www/my app'");
+        assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+}
