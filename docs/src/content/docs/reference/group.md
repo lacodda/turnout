@@ -22,7 +22,12 @@ turnout use contour staging    # every app in the group now points at staging
 ```bash
 turnout group add                                # wizard: pick apps from a list
 turnout group add contour --app web --app api    # scripted
+turnout group add contour -a web -a api          # same, short form
 ```
+
+| Flag | Short | Description |
+| --- | --- | --- |
+| `--app` | `-a` | App to include (repeatable) |
 
 Group names must not clash with app names.
 
@@ -41,5 +46,10 @@ Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pick
 turnout group edit contour --add-app admin --rm-app api
 turnout group remove contour [--yes]     # apps themselves are untouched
 ```
+
+| Flag | Short | Description |
+| --- | --- | --- |
+| `--add-app` | `-a` | Add an app (repeatable) |
+| `--rm-app` | `-r` | Remove an app (repeatable) |
 
 Removing an app from the catalog removes it from its groups too; a group left empty disappears.

@@ -43,7 +43,7 @@ pub enum Command {
         /// Target server; picked interactively when omitted
         server: Option<String>,
         /// Skip the stand reachability check
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         no_check: bool,
     },
     /// Manage app groups - switch a whole contour with one `use`
@@ -72,43 +72,43 @@ pub enum Command {
         /// App name; picked interactively when omitted
         app: Option<String>,
         /// Target server; picked interactively when omitted
-        #[arg(long)]
+        #[arg(short, long)]
         server: Option<String>,
     },
     /// Deploy an app to a server over SSH/SFTP: build, upload, restart
     Deploy {
         app: Option<String>,
         /// Target server (defaults to the app's current binding)
-        #[arg(long)]
+        #[arg(short, long)]
         server: Option<String>,
         /// Skip the build step
-        #[arg(long)]
+        #[arg(short = 'n', long)]
         no_build: bool,
         /// Back up the remote directory before touching it
-        #[arg(long)]
+        #[arg(short, long)]
         backup: bool,
         /// Clear the remote directory before uploading
-        #[arg(long)]
+        #[arg(short, long)]
         clear: bool,
     },
     /// Back up an app's deploy directory on the server
     Backup {
         app: Option<String>,
         /// Target server (defaults to the app's current binding)
-        #[arg(long)]
+        #[arg(short, long)]
         server: Option<String>,
     },
     /// Restore an app's deploy directory from a backup
     Restore {
         app: Option<String>,
         /// Target server (defaults to the app's current binding)
-        #[arg(long)]
+        #[arg(short, long)]
         server: Option<String>,
         /// Backup archive name (defaults to the newest)
-        #[arg(long)]
+        #[arg(short, long)]
         from: Option<String>,
         /// List available backups and exit
-        #[arg(long)]
+        #[arg(short, long)]
         list: bool,
     },
     /// Print a shell completion script (source it from your shell profile)
@@ -143,7 +143,7 @@ pub enum GroupCommand {
         /// Group name (lowercase letters, digits, dashes)
         name: Option<String>,
         /// App to include (repeatable)
-        #[arg(long = "app", value_name = "APP")]
+        #[arg(short = 'a', long = "app", value_name = "APP")]
         apps: Vec<String>,
     },
     /// List groups
@@ -158,10 +158,10 @@ pub enum GroupCommand {
         /// Group name; picked interactively when omitted
         name: Option<String>,
         /// Add an app (repeatable)
-        #[arg(long = "add-app", value_name = "APP")]
+        #[arg(short = 'a', long = "add-app", value_name = "APP")]
         add_apps: Vec<String>,
         /// Remove an app (repeatable)
-        #[arg(long = "rm-app", value_name = "APP")]
+        #[arg(short = 'r', long = "rm-app", value_name = "APP")]
         rm_apps: Vec<String>,
     },
     /// Remove a group (its apps are untouched)
@@ -191,9 +191,9 @@ pub enum PassCommand {
         /// Server name from the catalog
         server: Option<String>,
         /// What this access is: password, token, ssh, ...
-        #[arg(long, default_value = "password")]
+        #[arg(short, long, default_value = "password")]
         kind: String,
-        #[arg(long)]
+        #[arg(short, long)]
         login: Option<String>,
     },
     /// Copy the secret (or login) to the clipboard
@@ -201,13 +201,13 @@ pub enum PassCommand {
         /// Server name; picked interactively when omitted
         server: Option<String>,
         /// Access kind; when omitted the picker offers every stored kind
-        #[arg(long)]
+        #[arg(short, long)]
         kind: Option<String>,
         /// Copy the login instead of the secret
-        #[arg(long)]
+        #[arg(short, long)]
         login: bool,
         /// Print to stdout instead of copying to the clipboard
-        #[arg(long)]
+        #[arg(short, long)]
         show: bool,
     },
     /// Show access metadata for a server (never prints secrets)
@@ -222,7 +222,7 @@ pub enum PassCommand {
         /// Server name; picked interactively when omitted
         server: Option<String>,
         /// Access kind; when omitted the picker offers every stored kind
-        #[arg(long)]
+        #[arg(short, long)]
         kind: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
@@ -237,19 +237,19 @@ pub enum AppCommand {
         /// App name (lowercase letters, digits, dashes)
         name: Option<String>,
         /// Project directory
-        #[arg(long)]
+        #[arg(short, long)]
         path: Option<PathBuf>,
         /// Local gateway port for this app
-        #[arg(long)]
+        #[arg(short = 'P', long)]
         port: Option<u16>,
         /// Build artifact directory, relative to the project path
-        #[arg(long)]
+        #[arg(short, long)]
         dist: Option<String>,
         /// Set a command as NAME=CMD (repeatable); overrides detected defaults
-        #[arg(long = "command", value_name = "NAME=CMD")]
+        #[arg(short = 'c', long = "command", value_name = "NAME=CMD")]
         commands: Vec<String>,
         /// Allow a server for this app (repeatable)
-        #[arg(long = "server", value_name = "SERVER")]
+        #[arg(short = 's', long = "server", value_name = "SERVER")]
         servers: Vec<String>,
     },
     /// List apps
@@ -263,20 +263,20 @@ pub enum AppCommand {
     Edit {
         /// App name; picked interactively when omitted
         name: Option<String>,
-        #[arg(long)]
+        #[arg(short, long)]
         path: Option<PathBuf>,
-        #[arg(long)]
+        #[arg(short = 'P', long)]
         port: Option<u16>,
-        #[arg(long)]
+        #[arg(short, long)]
         dist: Option<String>,
         /// Set a command as NAME=CMD, or NAME= to remove it (repeatable)
-        #[arg(long = "command", value_name = "NAME=CMD")]
+        #[arg(short = 'c', long = "command", value_name = "NAME=CMD")]
         commands: Vec<String>,
         /// Allow a server (repeatable)
-        #[arg(long = "add-server", value_name = "SERVER")]
+        #[arg(short = 'a', long = "add-server", value_name = "SERVER")]
         add_servers: Vec<String>,
         /// Disallow a server (repeatable)
-        #[arg(long = "rm-server", value_name = "SERVER")]
+        #[arg(short = 'r', long = "rm-server", value_name = "SERVER")]
         rm_servers: Vec<String>,
     },
     /// Remove an app from the catalog (the project on disk is not touched)
@@ -296,16 +296,16 @@ pub enum ServerCommand {
         /// Server name (lowercase letters, digits, dashes)
         name: Option<String>,
         /// Base URL, e.g. https://staging.example.com
-        #[arg(long)]
+        #[arg(short, long)]
         url: Option<String>,
         /// Human-friendly label
-        #[arg(long)]
+        #[arg(short, long)]
         label: Option<String>,
         /// SSH access for deploy and remote operations
-        #[arg(long, value_name = "USER@HOST[:PORT]")]
+        #[arg(short, long, value_name = "USER@HOST[:PORT]")]
         ssh: Option<String>,
         /// Accept self-signed or invalid TLS certificates for this server
-        #[arg(long)]
+        #[arg(short, long)]
         insecure: bool,
     },
     /// List servers
@@ -319,26 +319,26 @@ pub enum ServerCommand {
     Edit {
         /// Server name; picked interactively when omitted
         name: Option<String>,
-        #[arg(long)]
+        #[arg(short, long)]
         url: Option<String>,
-        #[arg(long)]
+        #[arg(short, long)]
         label: Option<String>,
-        #[arg(long, value_name = "USER@HOST[:PORT]")]
+        #[arg(short, long, value_name = "USER@HOST[:PORT]")]
         ssh: Option<String>,
         /// Private key file for SSH auth (empty value removes it)
-        #[arg(long = "ssh-key", value_name = "PATH")]
+        #[arg(short = 'K', long = "ssh-key", value_name = "PATH")]
         ssh_key: Option<String>,
         /// Accept invalid TLS certificates for this server
-        #[arg(long, conflicts_with = "secure")]
+        #[arg(short, long, conflicts_with = "secure")]
         insecure: bool,
         /// Require valid TLS certificates for this server
-        #[arg(long)]
+        #[arg(short = 'S', long)]
         secure: bool,
         /// Set an app's deploy directory as APP=DIR, or APP= to remove (repeatable)
-        #[arg(long = "deploy-path", value_name = "APP=DIR")]
+        #[arg(short = 'd', long = "deploy-path", value_name = "APP=DIR")]
         deploy_paths: Vec<String>,
         /// Set an app's post-deploy command as APP=CMD, or APP= to remove (repeatable)
-        #[arg(long = "restart-cmd", value_name = "APP=CMD")]
+        #[arg(short = 'r', long = "restart-cmd", value_name = "APP=CMD")]
         restart_cmds: Vec<String>,
     },
     /// Remove a server from the catalog; apps that allowed it are updated

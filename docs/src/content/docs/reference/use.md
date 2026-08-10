@@ -9,6 +9,10 @@ sidebar:
 turnout use [APP] [SERVER] [--no-check]
 ```
 
+| Flag | Short | Description |
+| --- | --- | --- |
+| `--no-check` | `-n` | Skip the stand reachability check |
+
 The daily command: point an app at a stand. The binding is written to turnout's state; a running [gateway](/turnout/reference/gateway/) picks it up on the very next request - no restarts, no env edits.
 
 ```bash
@@ -22,7 +26,11 @@ Leave either argument out on a terminal and turnout asks. Picking the app first 
 turnout use                   # pick the app (or group), then the server
 ```
 
-After switching, `use` probes the stand with a quick HTTP request and reports whether it is reachable. `--no-check` skips the probe.
+After switching, `use` probes the stand with a quick HTTP request and reports whether it is reachable. `--no-check` (`-n`) skips the probe:
+
+```bash
+turnout use myapp staging -n   # skip the reachability check
+```
 
 If the app has an allow-list of servers, only those are accepted; an empty list means the app may use any server from the catalog.
 
