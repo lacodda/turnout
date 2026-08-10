@@ -6,6 +6,7 @@ mod journal;
 mod model;
 mod paths;
 mod pick;
+mod progress;
 mod remote;
 mod secrets;
 mod store;
