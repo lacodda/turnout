@@ -37,8 +37,8 @@ Every step that would otherwise be silent - the SSH handshake, the backup, the c
 
 ```
 ✓ Connected to deploy@prod.example.com:22
-========================>     4.4 MB/6.1 MB · 1.8 MB/s · eta 1s  assets/index-b3f0a1.js
-Uploaded 214 files (6.1 MB) to prod:/var/www/myapp
+================>          3.56 MiB/6.10 MiB · 1.81 MiB/s · eta 1s  assets/index-b3f0a1.js
+Uploaded 214 files (6.10 MiB) to prod:/var/www/myapp
 ✓ Ran: systemctl restart myapp
 Deploy of 'myapp' to 'prod' finished.
 ```

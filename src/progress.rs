@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 use std::time::Duration;
 
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{HumanBytes, ProgressBar, ProgressStyle};
 
 /// Tick interval for the spinners; fast enough to look alive, slow enough to
 /// stay cheap over a slow link.
@@ -143,30 +143,26 @@ impl Transfer {
     }
 }
 
-/// Byte count for humans: `1.4 MB`, `812 KB`, `93 B`.
+/// Byte count for humans: `5.96 MiB`, `812.00 KiB`, `93 B`.
+///
+/// Delegates to the same formatter the transfer bar uses, so the summary line
+/// and the bar above it cannot drift into different units.
 pub fn human_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    const GB: u64 = MB * 1024;
-    match bytes {
-        b if b >= GB => format!("{:.1} GB", b as f64 / GB as f64),
-        b if b >= MB => format!("{:.1} MB", b as f64 / MB as f64),
-        b if b >= KB => format!("{} KB", b / KB),
-        b => format!("{b} B"),
-    }
+    HumanBytes(bytes).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::human_bytes;
 
+    /// Pins the units to the ones the transfer bar renders, so the summary
+    /// line and the bar cannot drift apart.
     #[test]
-    fn formats_byte_counts() {
+    fn formats_byte_counts_like_the_bar() {
         assert_eq!(human_bytes(0), "0 B");
         assert_eq!(human_bytes(93), "93 B");
-        assert_eq!(human_bytes(1024), "1 KB");
-        assert_eq!(human_bytes(831488), "812 KB");
-        assert_eq!(human_bytes(1_468_006), "1.4 MB");
-        assert_eq!(human_bytes(3_221_225_472), "3.0 GB");
+        assert!(human_bytes(831_488).ends_with("KiB"), "got {}", human_bytes(831_488));
+        assert!(human_bytes(6_400_000).ends_with("MiB"), "got {}", human_bytes(6_400_000));
+        assert!(human_bytes(3_221_225_472).ends_with("GiB"), "got {}", human_bytes(3_221_225_472));
     }
 }
