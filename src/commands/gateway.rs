@@ -12,10 +12,10 @@ pub fn run(command: GatewayCommand) -> Result<()> {
         GatewayCommand::Start => start(),
         GatewayCommand::Run => {
             // Same guard as `start`: a raw bind error (os error 10048) is cryptic.
-            if let Some(running) = &store::load_state()?.gateway {
-                if probe(running) {
-                    bail!("the gateway is already running (pid {}) - stop it with `turnout gateway stop`", running.pid);
-                }
+            if let Some(running) = &store::load_state()?.gateway
+                && probe(running)
+            {
+                bail!("the gateway is already running (pid {}) - stop it with `turnout gateway stop`", running.pid);
             }
             gateway::run()
         }
@@ -32,10 +32,10 @@ fn start() -> Result<()> {
         bail!("no apps with a gateway port - set one with `turnout app edit NAME --port PORT`");
     }
     let mut state = store::load_state()?;
-    if let Some(running) = &state.gateway {
-        if probe(running) {
-            bail!("the gateway is already running (pid {})", running.pid);
-        }
+    if let Some(running) = &state.gateway
+        && probe(running)
+    {
+        bail!("the gateway is already running (pid {})", running.pid);
     }
 
     let exe = std::env::current_exe().context("cannot locate the turnout binary")?;

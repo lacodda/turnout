@@ -16,13 +16,11 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     };
 
     let project = crate::utils::project_dir(Path::new(&app.path))?;
-    if !no_build {
-        if let Some(build) = app.commands.get("build") {
-            eprintln!("[{}] {build}", app.name);
-            let status = crate::utils::run_in_dir(build, &project)?;
-            if !status.success() {
-                bail!("build failed with {status} - nothing uploaded");
-            }
+    if !no_build && let Some(build) = app.commands.get("build") {
+        eprintln!("[{}] {build}", app.name);
+        let status = crate::utils::run_in_dir(build, &project)?;
+        if !status.success() {
+            bail!("build failed with {status} - nothing uploaded");
         }
     }
     let local = project.join(dist);

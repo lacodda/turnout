@@ -2,7 +2,7 @@
 name = "turnout"
 version = "0.3.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory"
 license = "MIT"
 repository = "https://github.com/lacodda/turnout"
