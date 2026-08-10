@@ -16,6 +16,7 @@ authors = ["Kirill Lakhtachev <lahtachev@gmail.com>"]
 exclude = [
     "docs/",
     ".github/",
+    "examples/",
     "cliff.toml",
     "rustfmt.toml",
     "assets/social-preview.png",

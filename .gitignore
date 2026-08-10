@@ -10,3 +10,7 @@ npm/turnout
 npm/turnout.exe
 npm/archive.*
 npm/node_modules/
+
+# Demo app used to exercise deploy
+examples/deploy-demo/node_modules/
+examples/deploy-demo/dist/
