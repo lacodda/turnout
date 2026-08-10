@@ -256,6 +256,7 @@ fn edit(
             if dir.is_empty() {
                 server.deploy.remove(app);
             } else {
+                crate::model::validate_remote_path(dir)?;
                 if !known_apps.iter().any(|a| a.name == app) {
                     bail!("no app named '{app}' - see `turnout app list`");
                 }
@@ -266,7 +267,7 @@ fn edit(
                         path: String::new(),
                         restart: None,
                     })
-                    .path = dir.to_string();
+                    .path = crate::model::normalize_remote_path(dir);
             }
         }
         for spec in &restart_cmds {

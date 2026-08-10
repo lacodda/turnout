@@ -65,6 +65,8 @@ turnout server edit prod --restart-cmd "myapp=systemctl restart myapp"
 echo "$PASSWORD" | turnout pass set prod --kind ssh --login deploy   # if no agent key
 ```
 
+On Windows, run those from PowerShell or prefix them with `MSYS_NO_PATHCONV=1` - Git Bash rewrites the remote path into a local one, and turnout refuses it rather than deploying somewhere nobody chose. See [`turnout server`](/turnout/reference/server/#edit).
+
 ## Examples
 
 ```bash

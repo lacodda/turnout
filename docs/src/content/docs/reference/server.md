@@ -80,6 +80,19 @@ turnout server edit prod --deploy-path myapp=      # remove the target
 turnout server edit prod -d myapp=/var/www/myapp -r "myapp=systemctl restart myapp"  # same, short form
 ```
 
+The deploy path is a directory **on the server**, so it must be an absolute POSIX path. A local path is refused rather than stored.
+
+:::caution[Git Bash rewrites remote paths]
+On Windows, Git Bash (MSYS2) turns arguments that look like POSIX paths into Windows paths before turnout ever sees them, so `-d myapp=/var/www/myapp` arrives as `C:/Program Files/Git/var/www/myapp`. turnout rejects such a value, because storing it would deploy to a directory nobody chose. Any of these gets the real path through:
+
+```bash
+MSYS_NO_PATHCONV=1 turnout server edit prod -d myapp=/var/www/myapp
+turnout server edit prod -d myapp=//var/www/myapp   # doubled slash, stored as /var/www/myapp
+```
+
+PowerShell, cmd and every non-Windows shell pass the path through unchanged.
+:::
+
 ## remove
 
 ```bash

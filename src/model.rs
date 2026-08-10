@@ -138,6 +138,54 @@ pub fn validate_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Normalize a remote directory for storage: `//var/www/app` becomes
+/// `/var/www/app`.
+///
+/// The doubled leading slash is what a Git Bash user types to stop the shell
+/// from rewriting the argument, so it arrives here as part of a working path
+/// rather than a mistake. POSIX treats `//foo` as implementation-defined, and
+/// it would show up in every line that echoes the path back.
+pub fn normalize_remote_path(path: &str) -> String {
+    let path = path.trim();
+    match path.strip_prefix("//") {
+        Some(rest) if !rest.starts_with('/') => format!("/{rest}"),
+        _ => path.to_string(),
+    }
+}
+
+/// A directory on the server, which is a POSIX path - never a local one.
+///
+/// The check exists because Git Bash rewrites POSIX-looking arguments into
+/// Windows paths before the process sees them: `/var/www/app` arrives as
+/// `C:/Program Files/Git/var/www/app`. Storing that silently deploys to a
+/// directory nobody meant, so a local-looking path is refused with the way out.
+pub fn validate_remote_path(path: &str) -> Result<()> {
+    if path.trim().is_empty() {
+        bail!("remote path is empty: pass an absolute path on the server, e.g. /var/www/myapp");
+    }
+    if looks_like_a_windows_path(path) {
+        bail!(
+            "'{path}' is a local Windows path, not a directory on the server.\n\
+             Git Bash rewrites arguments that look like POSIX paths - prefix the command with \
+             MSYS_NO_PATHCONV=1, double the leading slash (//var/www/myapp), or use PowerShell."
+        );
+    }
+    if !path.starts_with('/') {
+        bail!("remote path '{path}' must be absolute, e.g. /var/www/myapp");
+    }
+    Ok(())
+}
+
+/// `C:\dir`, `C:/dir` or a UNC share - all of them local, none of them a
+/// destination on a server.
+fn looks_like_a_windows_path(path: &str) -> bool {
+    let drive_letter = {
+        let mut chars = path.chars();
+        matches!((chars.next(), chars.next(), chars.next()), (Some(c), Some(':'), Some('/' | '\\')) if c.is_ascii_alphabetic())
+    };
+    drive_letter || path.starts_with("\\\\")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +207,37 @@ mod tests {
         assert_eq!(ssh.port, 2222);
         assert!(parse_ssh("nohost").is_err());
         assert!(parse_ssh("user@host:notaport").is_err());
+    }
+
+    #[test]
+    fn remote_paths_are_posix_and_absolute() {
+        assert!(validate_remote_path("/var/www/myapp").is_ok());
+        assert!(validate_remote_path("/srv/app with spaces").is_ok());
+        assert!(validate_remote_path("").is_err());
+        assert!(validate_remote_path("   ").is_err());
+        assert!(validate_remote_path("var/www/myapp").is_err(), "relative paths are not a server directory");
+    }
+
+    /// The doubled slash is the escape hatch the error message suggests, so a
+    /// path typed that way must end up stored the same as any other.
+    #[test]
+    fn remote_paths_drop_the_escaping_slash() {
+        assert_eq!(normalize_remote_path("//var/www/myapp"), "/var/www/myapp");
+        assert_eq!(normalize_remote_path("/var/www/myapp"), "/var/www/myapp");
+        assert_eq!(normalize_remote_path("  /srv/app  "), "/srv/app");
+        // Three or more leading slashes are not the Git Bash idiom; left alone.
+        assert_eq!(normalize_remote_path("///odd"), "///odd");
+    }
+
+    /// The exact shape Git Bash produces from `/var/www/myapp`, plus the other
+    /// local forms that mean the value never reached the server as written.
+    #[test]
+    fn remote_paths_reject_windows_paths() {
+        let mangled = validate_remote_path("C:/Program Files/Git/var/www/myapp").unwrap_err().to_string();
+        assert!(mangled.contains("MSYS_NO_PATHCONV"), "the error must say how to get past it: {mangled}");
+
+        assert!(validate_remote_path("C:\\www\\myapp").is_err());
+        assert!(validate_remote_path("d:/sites/myapp").is_err(), "any drive letter, not just C");
+        assert!(validate_remote_path("\\\\server\\share").is_err(), "UNC is local too");
     }
 }

@@ -87,7 +87,9 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
 
     // 3. Where the files land and what runs afterwards.
     let existing_target = servers[server_index].deploy.get(&app_name);
-    let mut path_input = Input::<String>::new().with_prompt("Remote directory");
+    let mut path_input = Input::<String>::new()
+        .with_prompt("Remote directory")
+        .validate_with(|s: &String| crate::model::validate_remote_path(s).map_err(|e| e.to_string()));
     if let Some(target) = existing_target {
         path_input = path_input.default(target.path.clone());
     }
@@ -177,7 +179,7 @@ fn apply(app: &mut App, server: &mut Server, answers: Answers) -> bool {
     server.deploy.insert(
         app.name.clone(),
         DeployTarget {
-            path: answers.remote_path.to_string(),
+            path: crate::model::normalize_remote_path(answers.remote_path),
             restart: if answers.restart.is_empty() {
                 None
             } else {
