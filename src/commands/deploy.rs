@@ -6,7 +6,19 @@ use ssh2::Session;
 use crate::progress::{Step, Transfer, human_bytes};
 use crate::remote;
 
-pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool, backup: bool, clear: bool) -> Result<()> {
+/// Below this, packing is not worth the extra round trips: a handful of files
+/// go over SFTP faster than tar + upload + untar can set itself up.
+const ARCHIVE_THRESHOLD: u64 = 8;
+
+/// Whether a tree of `files` files should travel as one archive.
+///
+/// Split out from the upload so the rule is testable without a server, and so
+/// the opt-out and the threshold live in one readable place.
+fn should_archive(files: u64, no_archive: bool) -> bool {
+    !no_archive && files >= ARCHIVE_THRESHOLD
+}
+
+pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
     let target = remote::resolve(app_name, server_name)?;
     let (app, server) = (&target.app, &target.server);
     let ssh = remote::require_ssh(server)?;
@@ -52,7 +64,12 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     }
 
     let plural = if plan.files == 1 { "" } else { "s" };
-    let (files, bytes) = upload(&session, &deploy.path, &plan)?;
+    let (files, bytes) = match archive_upload(&session, &deploy.path, &plan, no_archive)? {
+        Some(counts) => counts,
+        // Either the caller opted out, the tree is too small to be worth
+        // packing, or the server has no tar - send the files one by one.
+        None => upload(&session, &deploy.path, &plan)?,
+    };
     println!("Uploaded {files} file{plural} ({}) to {}:{}", human_bytes(bytes), server.name, deploy.path);
 
     if let Some(restart) = &deploy.restart {
@@ -108,6 +125,101 @@ fn plan_upload(local_root: &Path) -> Result<Plan> {
     Ok(plan)
 }
 
+/// Pack the tree, send one file, unpack it on the server.
+///
+/// Returns `None` when this route does not apply and the caller should fall
+/// back to sending files one at a time. A dist directory is usually thousands
+/// of small files, and SFTP pays a round trip per file; one archive turns that
+/// into a single stream plus one `tar` invocation.
+///
+/// The archive lands in a temporary file and is deleted afterwards, including
+/// when unpacking fails - a stray multi-megabyte tarball next to the site is
+/// its own kind of bug.
+fn archive_upload(session: &Session, remote_root: &str, plan: &Plan, no_archive: bool) -> Result<Option<(u64, u64)>> {
+    if !should_archive(plan.files, no_archive) {
+        return Ok(None);
+    }
+    if !remote_has_tar(session) {
+        // Not an error: the deploy still works, just the slower way.
+        eprintln!("note: no usable tar on the server - uploading file by file");
+        return Ok(None);
+    }
+
+    let step = Step::start(format!("Packing {} files ...", plan.files));
+    let archive = pack(plan)?;
+    step.clear();
+
+    let remote_root = remote_root.trim_end_matches('/');
+    // Inside the deploy directory, which is the one place we know is writable:
+    // uploading works there by definition. Beside it would mean writing to the
+    // parent - typically /var/www, owned by root - and that is exactly the
+    // permission wall backups run into (see `remote::permission_hint`).
+    //
+    // A dotfile, so a web server serving this directory does not hand it out,
+    // and it is removed as soon as it is unpacked.
+    let remote_archive = format!("{remote_root}/.turnout-upload.tar.gz");
+    let quoted_archive = remote::shell_quote(&remote_archive);
+    let quoted_root = remote::shell_quote(remote_root);
+
+    // The archive goes inside the deploy directory, so it has to exist first -
+    // on a first deploy it does not.
+    remote::exec(session, &format!("mkdir -p {quoted_root}"))?;
+
+    let transfer = Transfer::start(1, archive.len() as u64);
+    transfer.file(&format!("{} (packed)", human_bytes(archive.len() as u64)));
+    let sftp = session.sftp().context("cannot open SFTP")?;
+    let sent = {
+        use std::io::Write;
+        let mut remote_file = sftp
+            .create(Path::new(&remote_archive))
+            .with_context(|| format!("cannot create {remote_archive} on the server"))?;
+        remote_file
+            .write_all(&archive)
+            .with_context(|| format!("cannot upload the archive to {remote_archive}"))?;
+        archive.len() as u64
+    };
+    transfer.advance(sent);
+    transfer.finish();
+
+    let step = Step::start("Unpacking on the server ...".to_string());
+    let unpack = remote::exec(session, &format!("tar xzf {quoted_archive} -C {quoted_root} && rm -f {quoted_archive}"));
+    if let Err(err) = unpack {
+        // Best-effort: the upload already failed, and a leftover archive would
+        // outlive the error message.
+        let _ = remote::exec(session, &format!("rm -f {quoted_archive}"));
+        step.clear();
+        return Err(err).context("cannot unpack the archive on the server");
+    }
+    step.done(format!("Unpacked {} files", plan.files));
+    Ok(Some((plan.files, plan.bytes)))
+}
+
+/// Whether the server can unpack what we would send.
+///
+/// Probed rather than assumed: `tar` is missing often enough on minimal
+/// containers, and finding out mid-deploy would leave an archive behind and
+/// nothing unpacked.
+fn remote_has_tar(session: &Session) -> bool {
+    remote::exec(session, "command -v tar >/dev/null 2>&1 && echo yes")
+        .map(|out| out.trim() == "yes")
+        .unwrap_or(false)
+}
+
+/// Build the gzipped tar in memory, entries relative to the artifact root so it
+/// unpacks straight into the deploy directory.
+fn pack(plan: &Plan) -> Result<Vec<u8>> {
+    let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut builder = tar::Builder::new(encoder);
+    for (path, relative) in &plan.entries {
+        let mut file = std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
+        builder
+            .append_file(relative, &mut file)
+            .with_context(|| format!("cannot add {} to the archive", path.display()))?;
+    }
+    let encoder = builder.into_inner().context("cannot finish the archive")?;
+    encoder.finish().context("cannot compress the archive")
+}
+
 /// SFTP upload of a planned tree; remote directories are created as needed.
 fn upload(session: &Session, remote_root: &str, plan: &Plan) -> Result<(u64, u64)> {
     let sftp = session.sftp().context("cannot open SFTP")?;
@@ -158,6 +270,70 @@ mod tests {
         let mut relative: Vec<_> = plan.entries.iter().map(|(_, r)| r.as_str()).collect();
         relative.sort_unstable();
         assert_eq!(relative, vec!["assets/img/logo.svg", "index.html"]);
+    }
+
+    /// A real dist directory is thousands of files and always packs; a couple
+    /// of files are faster sent as they are. `--no-archive` overrides both.
+    #[test]
+    fn only_trees_worth_packing_are_packed() {
+        assert!(super::should_archive(2_000, false), "a dist directory packs");
+        assert!(super::should_archive(super::ARCHIVE_THRESHOLD, false), "the threshold itself packs");
+        assert!(!super::should_archive(super::ARCHIVE_THRESHOLD - 1, false), "just below it does not");
+        assert!(!super::should_archive(1, false), "a single file never packs");
+        assert!(!super::should_archive(2_000, true), "--no-archive wins over any size");
+    }
+
+    /// The archive has to unpack straight into the deploy directory, so entries
+    /// are stored relative to the artifact root - an absolute or `./`-prefixed
+    /// path would land the files somewhere else entirely.
+    #[test]
+    fn the_archive_holds_relative_paths_and_content() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let deep = root.path().join("assets").join("img");
+        std::fs::create_dir_all(&deep).expect("create dirs");
+        std::fs::write(root.path().join("index.html"), "<!doctype html>").expect("write");
+        std::fs::write(deep.join("logo.svg"), "<svg/>").expect("write");
+
+        let plan = super::plan_upload(root.path()).expect("plan");
+        let archive = super::pack(&plan).expect("pack");
+
+        let decoder = flate2::read::GzDecoder::new(std::io::Cursor::new(&archive));
+        let mut tar = tar::Archive::new(decoder);
+        let mut found = std::collections::BTreeMap::new();
+        for entry in tar.entries().expect("entries") {
+            use std::io::Read;
+            let mut entry = entry.expect("entry");
+            let path = entry.path().expect("path").to_string_lossy().replace('\\', "/");
+            let mut content = String::new();
+            entry.read_to_string(&mut content).expect("read");
+            found.insert(path, content);
+        }
+
+        assert_eq!(found.get("index.html").map(String::as_str), Some("<!doctype html>"));
+        assert_eq!(found.get("assets/img/logo.svg").map(String::as_str), Some("<svg/>"));
+        assert_eq!(found.len(), 2, "only files travel; directories come from the paths: {found:?}");
+        assert!(
+            !found.keys().any(|p| p.starts_with('/') || p.starts_with("./")),
+            "paths must be relative: {found:?}"
+        );
+    }
+
+    /// Compression is the point: a dist directory of text files should not
+    /// cross the wire at full size.
+    #[test]
+    fn the_archive_is_smaller_than_the_tree() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for index in 0..20 {
+            std::fs::write(root.path().join(format!("chunk-{index}.js")), "console.log('hello world');\n".repeat(200)).expect("write");
+        }
+        let plan = super::plan_upload(root.path()).expect("plan");
+        let archive = super::pack(&plan).expect("pack");
+        assert!(
+            (archive.len() as u64) < plan.bytes / 4,
+            "expected real compression, got {} from {}",
+            archive.len(),
+            plan.bytes
+        );
     }
 
     #[test]

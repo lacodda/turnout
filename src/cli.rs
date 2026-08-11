@@ -90,6 +90,9 @@ pub enum Command {
         /// Clear the remote directory before uploading
         #[arg(short, long)]
         clear: bool,
+        /// Upload file by file instead of packing the artifacts into one archive
+        #[arg(short = 'A', long)]
+        no_archive: bool,
     },
     /// Back up an app's deploy directory on the server
     Backup {

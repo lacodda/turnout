@@ -19,6 +19,7 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 | `-n, --no-build` | Skip the build step and upload what is already built |
 | `-b, --backup` | Archive the remote directory before touching it |
 | `-c, --clear` | Empty the remote directory before uploading |
+| `-A, --no-archive` | Upload file by file instead of packing the artifacts into one archive |
 
 ## What happens
 
@@ -28,8 +29,31 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 4. **Connect.** SSH to the server's configured `user@host:port`. Auth order: the configured key file (`--ssh-key`), then agent keys (ssh-agent / Pageant), then the password stored in the keyring (`--kind ssh`, falling back to `password`).
 5. **Backup** *(only with `--backup`)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/).
 6. **Clear** *(only with `--clear`)*: the remote deploy directory is emptied.
-7. **Upload.** The app's artifact directory (`--dist`) is copied recursively, with a progress bar showing transferred bytes, throughput and the file currently going over the wire.
+7. **Upload.** The app's artifact directory (`--dist`) is copied to the server - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
 8. **Restart.** If a post-deploy command is configured for this app, it runs on the server and its output is shown.
+
+## How the upload travels
+
+A dist directory is typically thousands of small files, and SFTP pays a round trip for every one of them. So turnout packs the artifacts into a single `tar.gz`, sends that, and unpacks it on the server:
+
+```
+✓ Packing 43 files ...
+=========================>  78.32 KiB/78.32 KiB · 1.2 MiB/s  78.32 KiB (packed)
+✓ Unpacked 43 files
+Uploaded 43 files (212.18 KiB) to pi:/var/www/site
+```
+
+On a small test deploy over a local network this halved the wall time; the gap widens with the file count and the latency, which is where real deploys live.
+
+The archive is written inside the deploy directory as `.turnout-upload.tar.gz` and removed as soon as it is unpacked - including when unpacking fails. It goes there rather than beside the directory because that is the one location a deploy already knows it can write to; the parent is usually `/var/www`, owned by root.
+
+Files are unpacked **over** whatever is already there, exactly like the file-by-file upload: names present in both are replaced, anything else is left alone. Use `--clear` when you want the directory emptied first.
+
+turnout falls back to sending files one at a time, without failing, when:
+
+- the server has no usable `tar` (checked before anything is sent, and reported as a note);
+- the artifact directory holds fewer than 8 files, where the round trips saved do not pay for the packing;
+- you pass `--no-archive`.
 
 ## Progress
 
