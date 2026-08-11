@@ -45,7 +45,7 @@ turnout app add myshop --path . --port 7100 --server main --server second
 
 This is the core idea: the project knows only its gateway port, never a stand address. In `.env.development` (safe to commit - it never changes again):
 
-```env
+```ini
 VITE_API_URL=http://localhost:7100
 ```
 
@@ -99,7 +99,7 @@ And when you come back with `turnout use myshop main`, you are **still logged in
 
 ```text
 $ turnout status
-turnout 0.2.0
+turnout 0.5.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    1 (myshop)
 Servers: 2 (main, second)

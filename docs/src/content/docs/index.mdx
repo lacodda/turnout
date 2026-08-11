@@ -62,7 +62,10 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
 	</Card>
 	<Card title="Deploy" icon="cloud-download">
-		Build, upload over SSH/SFTP, restart the service - with remote backup and restore when a release goes wrong.
+		Build, upload over SSH/SFTP, restart the service - with remote backup and restore when a release goes wrong. Artifacts travel as one archive instead of thousands of round trips.
+	</Card>
+	<Card title="Portable settings" icon="seti:config">
+		`export` writes your apps, servers and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase.
 	</Card>
 	<Card title="Nothing to memorize" icon="approve-check">
 		Leave a name out and pick it from a list; in bash, Tab completes app, server and group names from your own catalogs.
