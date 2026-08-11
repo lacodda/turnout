@@ -31,6 +31,15 @@ cargo install turnout
 
 Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
 
+### Installer options
+
+Both scripts read two environment variables:
+
+| Variable | Effect |
+| --- | --- |
+| `TURNOUT_VERSION` | Install this tag (e.g. `v0.4.0`) instead of the newest release |
+| `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
+
 ### The `tn` alias
 
 The installers and the npm package also set up `tn` as a short second name, so `tn use web staging` is the same as `turnout use web staging`. It is skipped when something else in your `PATH` already answers to `tn`; set `TURNOUT_NO_ALIAS=1` to opt out entirely. Installing through `cargo install` gives you `turnout` only - add your own alias if you want the short form.

@@ -3,8 +3,27 @@
 $ErrorActionPreference = "Stop"
 
 $repo = "lacodda/turnout"
-$tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest").tag_name
-if (-not $tag) { throw "Cannot resolve the latest release of $repo" }
+
+# The tag comes from the /releases/latest redirect rather than the REST API:
+# unauthenticated API calls are capped at 60 per hour per IP, and an installer
+# that fails because someone else on the same address ran it is no installer.
+# $env:TURNOUT_VERSION pins a specific release.
+$tag = $env:TURNOUT_VERSION
+if (-not $tag) {
+    $request = [Net.HttpWebRequest]::Create("https://github.com/$repo/releases/latest")
+    $request.AllowAutoRedirect = $false
+    $request.UserAgent = "turnout-installer"
+    try {
+        $response = $request.GetResponse()
+        $tag = ($response.Headers["Location"] -split "/")[-1]
+        $response.Close()
+    } catch {
+        throw "Cannot resolve the latest release of ${repo}: $($_.Exception.Message)"
+    }
+}
+if (-not $tag -or $tag -notmatch '^v\d') {
+    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.4.0"
+}
 
 $name = "turnout-$tag-x86_64-pc-windows-msvc"
 $url = "https://github.com/$repo/releases/download/$tag/$name.zip"
