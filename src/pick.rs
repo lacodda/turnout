@@ -3,16 +3,52 @@
 //! The rule across the CLI: on a terminal a missing name opens a picker, and
 //! everywhere else the command fails exactly as it did before, so scripts and
 //! CI keep their old behaviour.
+//!
+//! Every prompt - the pickers here and the `dialoguer` prompts in the command
+//! modules - must be preceded by [`ensure_interactive`]. `dialoguer` reads
+//! stdin unconditionally: with no terminal it either blocks forever waiting for
+//! input that will never come, or reads EOF and reports the empty value as if
+//! the user had typed nothing. Both are worse than failing outright, and the
+//! second one blames the wrong thing.
 
 use std::io::IsTerminal;
 
 use anyhow::{Result, bail};
-use dialoguer::Select;
+use dialoguer::{Confirm, Select};
 
 use crate::model::{App, Credential, Group, Server, State};
 
 pub fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
+}
+
+/// Fail with `reason` instead of prompting when there is nobody to answer.
+///
+/// `reason` states what is missing and how to supply it without a prompt -
+/// which flag or argument - because that is what a script hitting this needs
+/// to know. It is phrased as the missing thing, and this adds the context:
+///
+/// ```text
+/// ensure_interactive("--login is required")
+///   -> "--login is required: no terminal to prompt on"
+/// ```
+pub fn ensure_interactive(reason: &str) -> Result<()> {
+    if !interactive() {
+        bail!("{reason}: no terminal to prompt on");
+    }
+    Ok(())
+}
+
+/// Ask `prompt` before something destructive; `assume_yes` skips the question.
+///
+/// Without a terminal there is nobody to ask, and `dialoguer` would fail with a
+/// bare "not a terminal" that says nothing about the way out - which is `--yes`.
+pub fn confirm_destructive(prompt: String, assume_yes: bool) -> Result<bool> {
+    if assume_yes {
+        return Ok(true);
+    }
+    ensure_interactive("this needs confirming; pass --yes to skip the prompt")?;
+    Ok(Confirm::new().with_prompt(prompt).default(false).interact()?)
 }
 
 /// Show `prompt` over `labels` and return the index the user picked.
@@ -25,9 +61,7 @@ pub fn app(apps: &[App], state: &State, prompt: &str) -> Result<String> {
     if apps.is_empty() {
         bail!("no apps in the catalog yet - run `turnout app add` first");
     }
-    if !interactive() {
-        bail!("app name is required outside an interactive terminal");
-    }
+    ensure_interactive("app name is required")?;
     let width = apps.iter().map(|a| a.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = apps
         .iter()
@@ -44,9 +78,7 @@ pub fn server(servers: &[Server], prompt: &str) -> Result<String> {
     if servers.is_empty() {
         bail!("no servers in the catalog yet - run `turnout server add` first");
     }
-    if !interactive() {
-        bail!("server name is required outside an interactive terminal");
-    }
+    ensure_interactive("server name is required")?;
     let width = servers.iter().map(|s| s.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = servers.iter().map(|s| format!("{:width$}  {}", s.name, s.url)).collect();
     Ok(servers[select(prompt, &labels)?].name.clone())
@@ -74,9 +106,7 @@ pub fn group(groups: &[Group], prompt: &str) -> Result<String> {
     if groups.is_empty() {
         bail!("no groups yet - run `turnout group add` first");
     }
-    if !interactive() {
-        bail!("group name is required outside an interactive terminal");
-    }
+    ensure_interactive("group name is required")?;
     let width = groups.iter().map(|g| g.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = groups.iter().map(|g| format!("{:width$}  {}", g.name, g.apps.join(", "))).collect();
     Ok(groups[select(prompt, &labels)?].name.clone())
@@ -90,9 +120,7 @@ pub fn app_or_group(apps: &[App], groups: &[Group], state: &State, prompt: &str)
     if apps.is_empty() {
         bail!("no apps in the catalog yet - run `turnout app add` first");
     }
-    if !interactive() {
-        bail!("app or group name is required outside an interactive terminal");
-    }
+    ensure_interactive("app or group name is required")?;
     let mut names: Vec<String> = Vec::with_capacity(apps.len() + groups.len());
     let mut labels: Vec<String> = Vec::with_capacity(apps.len() + groups.len());
     let width = apps.iter().map(|a| a.name.len()).chain(groups.iter().map(|g| g.name.len())).max().unwrap_or(0);
@@ -117,12 +145,11 @@ pub fn credential(credentials: &[Credential], kind: Option<&str>, prompt: &str) 
     if matching.is_empty() {
         bail!("no access saved yet - run `turnout pass set` first");
     }
-    if !interactive() {
-        bail!("server name is required outside an interactive terminal");
-    }
+    // A single match needs no picking, so it resolves without a terminal too.
     if let [only] = matching.as_slice() {
         return Ok((only.server.clone(), only.kind.clone()));
     }
+    ensure_interactive("server name is required")?;
     let width = matching.iter().map(|c| c.server.len()).max().unwrap_or(0);
     let labels: Vec<String> = matching
         .iter()

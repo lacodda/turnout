@@ -48,8 +48,8 @@ fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
 fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Option<String>, insecure: bool) -> Result<()> {
     let mut servers = store::load_servers()?;
     let wizard = name.is_none() || url.is_none();
-    if wizard && !pick::interactive() {
-        bail!("server name and --url are required outside an interactive terminal");
+    if wizard {
+        pick::ensure_interactive("server name and --url are required")?;
     }
 
     let name = match name {
@@ -195,9 +195,7 @@ fn edit(
         url.is_none() && label.is_none() && ssh.is_none() && ssh_key.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
 
     if no_flags {
-        if !pick::interactive() {
-            bail!("nothing to change: pass flags, or run interactively for the wizard");
-        }
+        pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
         let server = &mut servers[index];
         let url: String = Input::new()
             .with_prompt("Base URL")
@@ -298,11 +296,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !servers.iter().any(|s| s.name == name) {
         return Err(unknown_server(name));
     }
-    let confirmed = assume_yes
-        || Confirm::new()
-            .with_prompt(format!("Remove server '{name}' from the catalog?"))
-            .default(false)
-            .interact()?;
+    let confirmed = pick::confirm_destructive(format!("Remove server '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
         return Ok(());

@@ -1,7 +1,7 @@
 use std::io::Read;
 
 use anyhow::{Context, Result, bail};
-use dialoguer::{Confirm, Input, Password};
+use dialoguer::{Input, Password};
 
 use crate::cli::PassCommand;
 use crate::model::Credential;
@@ -60,9 +60,7 @@ fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> 
     let login = match login {
         Some(login) => login,
         None => {
-            if !interactive {
-                bail!("--login is required outside an interactive terminal");
-            }
+            pick::ensure_interactive("--login is required")?;
             let current = existing.map(|i| credentials[i].login.clone()).unwrap_or_default();
             let mut input = Input::new().with_prompt("Login");
             if !current.is_empty() {
@@ -84,7 +82,12 @@ fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> 
         buffer.trim_end_matches(['\r', '\n']).to_string()
     };
     if secret.is_empty() {
-        bail!("empty secret - nothing saved");
+        if interactive {
+            bail!("empty secret - nothing saved");
+        }
+        // Off-terminal the secret comes from stdin, so an empty one usually
+        // means nothing was piped in rather than that an empty value was meant.
+        bail!("no secret on stdin - pipe it in, e.g. `echo \"$PASSWORD\" | turnout pass set {server} --kind {kind}`");
     }
 
     secrets::set(&server, kind, &secret)?;
@@ -167,11 +170,7 @@ fn remove(server: Option<String>, kind: Option<String>, assume_yes: bool) -> Res
     if !credentials.iter().any(|c| c.server == server && c.kind == kind) {
         bail!("no access saved for '{server}' ({kind})");
     }
-    let confirmed = assume_yes
-        || Confirm::new()
-            .with_prompt(format!("Remove access to '{server}' ({kind})?"))
-            .default(false)
-            .interact()?;
+    let confirmed = pick::confirm_destructive(format!("Remove access to '{server}' ({kind})?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
         return Ok(());

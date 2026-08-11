@@ -52,8 +52,8 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     let mut apps = store::load_apps()?;
     let known = store::load_servers()?;
     let wizard = name.is_none() || path.is_none();
-    if wizard && !pick::interactive() {
-        bail!("app name and --path are required outside an interactive terminal");
+    if wizard {
+        pick::ensure_interactive("app name and --path are required")?;
     }
 
     let name = match name {
@@ -191,9 +191,7 @@ fn edit(
     let no_flags = path.is_none() && port.is_none() && dist.is_none() && overrides.is_empty() && add_servers.is_empty() && rm_servers.is_empty();
 
     if no_flags {
-        if !pick::interactive() {
-            bail!("nothing to change: pass flags, or run interactively for the wizard");
-        }
+        pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
         let app = &mut apps[index];
         let path: String = Input::new().with_prompt("Project directory").default(app.path.clone()).interact_text()?;
         let path = crate::utils::project_dir(Path::new(&path))?;
@@ -242,11 +240,7 @@ fn edit(
 fn remove(name: &str, assume_yes: bool) -> Result<()> {
     let mut apps = store::load_apps()?;
     find(&apps, name)?;
-    let confirmed = assume_yes
-        || Confirm::new()
-            .with_prompt(format!("Remove app '{name}' from the catalog?"))
-            .default(false)
-            .interact()?;
+    let confirmed = pick::confirm_destructive(format!("Remove app '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
         return Ok(());

@@ -833,8 +833,68 @@ fn missing_names_still_fail_without_a_terminal() {
             .args(&args)
             .assert()
             .failure()
-            .stderr(predicate::str::contains("outside an interactive terminal").or(predicate::str::contains("no access saved")));
+            .stderr(predicate::str::contains("no terminal to prompt on").or(predicate::str::contains("no access saved")));
     }
+}
+
+/// Confirmations are prompts too: unattended they must name `--yes` rather than
+/// failing with dialoguer's bare "not a terminal", and must remove nothing.
+#[test]
+fn destructive_commands_explain_how_to_skip_the_prompt() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["group", "add", "contour", "--app", "myapp"]).assert().success();
+
+    for args in [
+        vec!["app", "remove", "myapp"],
+        vec!["server", "remove", "staging"],
+        vec!["group", "remove", "contour"],
+    ] {
+        turnout(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("--yes").and(predicate::str::contains("no terminal to prompt on")));
+    }
+
+    // Nothing was confirmed, so nothing may have been removed.
+    turnout(dir.path())
+        .args(["app", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp"));
+    turnout(dir.path())
+        .args(["server", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staging"));
+    turnout(dir.path())
+        .args(["group", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("contour"));
+}
+
+/// A scripted `pass set` reads the secret from stdin; an empty pipe is a
+/// forgotten value, not an intentionally empty secret.
+#[test]
+fn pass_set_says_when_no_secret_arrived_on_stdin() {
+    let (dir, _project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+
+    turnout(dir.path())
+        .args(["pass", "set", "staging", "--kind", "ssh", "--login", "deploy"])
+        .write_stdin("")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no secret on stdin"));
 }
 
 /// The deploy wizard is interactive by nature; scripts must be told what to
@@ -847,7 +907,7 @@ fn deploy_setup_refuses_to_run_unattended() {
         .args(["deploy-setup", "web"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("interactive wizard").and(predicate::str::contains("turnout server edit")));
+        .stderr(predicate::str::contains("is a wizard").and(predicate::str::contains("turnout server edit")));
 }
 
 /// Every state change lands in the journal, and `status` shows the tail.

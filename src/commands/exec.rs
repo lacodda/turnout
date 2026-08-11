@@ -49,9 +49,7 @@ pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
             if let Some(app) = here {
                 return Ok(app);
             }
-            if !crate::pick::interactive() {
-                bail!("not inside a known app directory - pass the app name or see `turnout app list`");
-            }
+            crate::pick::ensure_interactive("not inside a known app directory - pass the app name or see `turnout app list`")?;
             let picked = crate::pick::app(apps, &store::load_state()?, "App")?;
             apps.iter().find(|a| a.name == picked).ok_or_else(|| anyhow::anyhow!("no app named '{picked}'"))
         }

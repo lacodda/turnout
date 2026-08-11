@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use dialoguer::{Confirm, Input, MultiSelect};
+use dialoguer::{Input, MultiSelect};
 
 use crate::cli::GroupCommand;
 use crate::model::{Group, validate_name};
@@ -36,8 +36,8 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
         bail!("no apps in the catalog yet - run `turnout app add` first");
     }
     let wizard = name.is_none();
-    if wizard && !pick::interactive() {
-        bail!("group name is required outside an interactive terminal");
+    if wizard {
+        pick::ensure_interactive("group name is required")?;
     }
 
     let name = match name {
@@ -71,7 +71,7 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
         apps
     };
     if apps.is_empty() {
-        bail!("a group needs at least one app");
+        bail!("a group needs at least one app - pass --app NAME (repeatable)");
     }
 
     groups.push(Group { name: name.clone(), apps });
@@ -137,7 +137,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !groups.iter().any(|g| g.name == name) {
         return Err(unknown_group(name));
     }
-    let confirmed = assume_yes || Confirm::new().with_prompt(format!("Remove group '{name}'?")).default(false).interact()?;
+    let confirmed = pick::confirm_destructive(format!("Remove group '{name}'?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
         return Ok(());

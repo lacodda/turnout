@@ -14,9 +14,7 @@ use crate::model::{App, DeployTarget, Server, Ssh, parse_ssh};
 use crate::{pick, secrets, store};
 
 pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> {
-    if !pick::interactive() {
-        bail!("`deploy-setup` is an interactive wizard - configure with `turnout app edit` and `turnout server edit` in scripts");
-    }
+    pick::ensure_interactive("`deploy-setup` is a wizard; in scripts configure with `turnout app edit` and `turnout server edit`")?;
     let mut apps = store::load_apps()?;
     let mut servers = store::load_servers()?;
     let state = store::load_state()?;
