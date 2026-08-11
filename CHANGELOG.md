@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.5.0] - 2026-08-11
+
+### Documentation
+- Explain updating with the gateway or dev running
+
+### Features
+- Notice new releases without delaying a command
+- Update the binary from the latest release
+- Export and import a setup between machines
+- Send the artifacts as one archive
+- Migrate the data directory when the schema changes
 ## [0.4.1] - 2026-08-11
 
 ### Bug Fixes
