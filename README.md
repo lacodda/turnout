@@ -58,20 +58,23 @@ $ turnout use
 Ship it:
 
 ```console
-$ turnout deploy web --server prod-eu --backup
+$ turnout deploy web -s prod-eu -b
 [web] pnpm build
-Connecting to deploy@prod-eu.example.com:22 ...
-Backup 20260809-011500.tar.gz created in /var/www/web.backups
-Uploaded 142 files (3184 KB) to prod-eu:/var/www/web
-Running: systemctl restart web
+✓ Connected to deploy@prod-eu.example.com:22
+✓ Backup 20260809-011500.tar.gz created in /var/www/web.backups
+================>          2.02 MiB/3.11 MiB · 1.81 MiB/s · eta 1s  assets/index-b3f0a1.js
+Uploaded 142 files (3.11 MiB) to prod-eu:/var/www/web
+✓ Ran: systemctl restart web
 Deploy of 'web' to 'prod-eu' finished.
 ```
+
+Every long flag has a short form, and nothing runs silently: the upload reports throughput and an ETA, and the steps that talk to the server say so while they wait.
 
 And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.3.0
+turnout 0.4.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
@@ -145,6 +148,7 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 Everything above works today. What is next:
 
 - [ ] **Updates and portability** - update notice, `self-update`, `export` / `import` for moving to another machine
+- [ ] **Credentials and paths as their own entities** - one login reused across servers, a remote directory declared once, and named builds so a deploy stays a single word
 - [ ] **Background runs** - `dev --detach`, `ps`, `logs`, `stop`, OS notifications
 - [ ] **Observability** - gateway request log, `doctor`, `report` for handing context to an assistant
 - [ ] **Deploy consists** - atomic deploy and rollback across a group of apps

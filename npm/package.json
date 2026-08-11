@@ -1,8 +1,8 @@
 {
   "name": "turnout-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "turnout": {
-    "binary": "v0.3.0"
+    "binary": "v0.4.0"
   },
   "description": "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory",
   "license": "MIT",
