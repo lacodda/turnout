@@ -1067,3 +1067,191 @@ fn a_leftover_binary_from_self_update_is_swept() {
     assert!(!leftover.exists(), "the leftover binary should have been removed");
     assert!(exe.exists(), "the running binary must survive the sweep");
 }
+
+/// A round trip through a file is the whole point of export/import: what comes
+/// out on the other machine has to be what went in.
+#[test]
+fn a_setup_survives_export_and_import() {
+    let (source, project) = workspace();
+    turnout(source.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(source.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7100"])
+        .assert()
+        .success();
+
+    let file = source.path().join("export.json");
+    turnout(source.path()).args(["export", "--output"]).arg(&file).assert().success();
+
+    let target = tempfile::tempdir().unwrap();
+    turnout(target.path()).args(["setup", "--yes"]).assert().success();
+    turnout(target.path()).arg("import").arg(&file).assert().success();
+    turnout(target.path())
+        .args(["app", "show", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("localhost:7100"));
+    turnout(target.path())
+        .args(["server", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staging"));
+}
+
+/// Without `--with-secrets` the file must be safe to hand around: it carries
+/// the access record but not the value behind it.
+#[test]
+fn a_plain_export_carries_no_secret_values() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .write_stdin("hunter2")
+        .assert()
+        .success();
+
+    let file = dir.path().join("export.json");
+    turnout(dir.path()).args(["export", "--output"]).arg(&file).assert().success();
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("hunter2"), "the secret leaked into a plain export: {text}");
+    assert!(text.contains("\"login\": \"deploy\""), "the access record should still travel: {text}");
+}
+
+/// Secrets travel only under a passphrase, and arrive usable on the far side.
+#[test]
+fn secrets_travel_encrypted_and_arrive_usable() {
+    let (source, project) = workspace();
+    turnout(source.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(source.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(source.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .write_stdin("hunter2")
+        .assert()
+        .success();
+
+    let file = source.path().join("export.json");
+    turnout(source.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["export", "--with-secrets", "--output"])
+        .arg(&file)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.contains("hunter2"), "the secret must be encrypted: {text}");
+
+    let target = tempfile::tempdir().unwrap();
+    turnout(target.path()).args(["setup", "--yes"]).assert().success();
+    turnout(target.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .arg("import")
+        .arg(&file)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success();
+    turnout(target.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["pass", "copy", "staging", "--kind", "password", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hunter2"));
+}
+
+/// A wrong passphrase must leave the machine untouched. Writing the catalogs
+/// first and failing on the secrets would hand back half a setup - and the
+/// retry would then hit "already exists" on everything.
+#[test]
+fn a_wrong_passphrase_imports_nothing_at_all() {
+    let (source, project) = workspace();
+    turnout(source.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
+    turnout(source.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(source.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .write_stdin("hunter2")
+        .assert()
+        .success();
+    let file = source.path().join("export.json");
+    turnout(source.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .args(["export", "--with-secrets", "--output"])
+        .arg(&file)
+        .write_stdin("right passphrase")
+        .assert()
+        .success();
+
+    let target = tempfile::tempdir().unwrap();
+    turnout(target.path()).args(["setup", "--yes"]).assert().success();
+    turnout(target.path())
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .arg("import")
+        .arg(&file)
+        .write_stdin("wrong passphrase")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("wrong passphrase"));
+
+    turnout(target.path())
+        .args(["app", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No apps yet"));
+}
+
+/// The local setup wins unless `--force` says otherwise.
+#[test]
+fn import_keeps_local_entries_unless_forced() {
+    let (source, project) = workspace();
+    turnout(source.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7100"])
+        .assert()
+        .success();
+    let file = source.path().join("export.json");
+    turnout(source.path()).args(["export", "--output"]).arg(&file).assert().success();
+
+    let (target, other) = workspace();
+    turnout(target.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&other)
+        .args(["--port", "9999"])
+        .assert()
+        .success();
+
+    turnout(target.path())
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Skipped").and(predicate::str::contains("--force")));
+    turnout(target.path())
+        .args(["app", "show", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("localhost:9999"));
+
+    turnout(target.path()).arg("import").arg(&file).arg("--force").assert().success();
+    turnout(target.path())
+        .args(["app", "show", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("localhost:7100"));
+}

@@ -122,6 +122,23 @@ pub enum Command {
         /// What to list
         what: CompleteKind,
     },
+    /// Write apps, servers and groups to a file for another machine
+    Export {
+        /// Where to write; defaults to turnout-export.json in the current directory
+        #[arg(short, long)]
+        output: Option<std::path::PathBuf>,
+        /// Include stored secrets, encrypted with a passphrase you choose
+        #[arg(short = 'S', long)]
+        with_secrets: bool,
+    },
+    /// Read a file written by `turnout export`
+    Import {
+        /// The export file to read
+        file: std::path::PathBuf,
+        /// Overwrite entries that already exist instead of keeping them
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Update turnout itself to the latest release
     SelfUpdate {
         /// Skip the confirmation prompt

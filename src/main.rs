@@ -6,6 +6,7 @@ mod journal;
 mod model;
 mod paths;
 mod pick;
+mod portable;
 mod progress;
 mod remote;
 mod secrets;
@@ -53,6 +54,8 @@ fn main() {
         cli::Command::Restore { app, server, from, list } => commands::backup::restore(app, server, from, list),
         cli::Command::Completions { shell } => commands::completions::run(shell),
         cli::Command::Complete { what } => commands::complete::run(what),
+        cli::Command::Export { output, with_secrets } => commands::transfer::export(output, with_secrets),
+        cli::Command::Import { file, force } => commands::transfer::import(file, force),
         cli::Command::SelfUpdate { assume_yes, force } => commands::self_update::run(assume_yes, force),
         cli::Command::CheckUpdate => update::check_now(),
     };

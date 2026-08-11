@@ -12,4 +12,5 @@ pub mod self_update;
 pub mod server;
 pub mod setup;
 pub mod status;
+pub mod transfer;
 pub mod use_cmd;
