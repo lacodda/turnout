@@ -233,21 +233,23 @@ fn read_passphrase_from_stdin() -> Result<String> {
 ///
 /// Even without secrets this file lists hosts, logins and deploy paths, and it
 /// is written into whatever directory the user happened to be in.
+#[cfg(unix)]
 fn write_private(path: &Path, contents: &str) -> Result<()> {
-    #[cfg(unix)]
-    {
-        use std::io::Write;
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .with_context(|| format!("cannot write {}", path.display()))?;
-        return file.write_all(contents.as_bytes()).with_context(|| format!("cannot write {}", path.display()));
-    }
-    #[cfg(not(unix))]
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("cannot write {}", path.display()))?;
+    file.write_all(contents.as_bytes()).with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// Windows has no mode bits to set here; the file inherits the directory ACL.
+#[cfg(not(unix))]
+fn write_private(path: &Path, contents: &str) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("cannot write {}", path.display()))
 }
 
