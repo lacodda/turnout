@@ -2,6 +2,10 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1] - 2026-08-11
+
+### Bug Fixes
+- Resolve the release tag without the GitHub API
 ## [0.4.0] - 2026-08-11
 
 ### Bug Fixes
