@@ -173,9 +173,11 @@ fn app_add_canonicalizes_the_drive_letter() {
 #[test]
 fn gateway_run_on_a_busy_port_suggests_stopping() {
     let (dir, project) = workspace();
-    let port = free_port();
-    // Occupy the port so the bind fails exactly like a second gateway would.
-    let _busy = std::net::TcpListener::bind(("127.0.0.1", port)).unwrap();
+    // Hold the listener that chose the port rather than rebinding its number:
+    // releasing it first leaves a window where another process takes the port
+    // and the rebind fails (it did, on a macOS runner).
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = busy.local_addr().unwrap().port();
     turnout(dir.path())
         .args(["app", "add", "myapp", "--path"])
         .arg(&project)
