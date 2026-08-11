@@ -10,12 +10,15 @@ mod progress;
 mod remote;
 mod secrets;
 mod store;
+mod update;
 mod utils;
 
 use clap::Parser;
 
 fn main() {
     let cli = cli::Cli::parse();
+    // The background refresh must not spawn another one: it *is* the check.
+    let announces = !matches!(cli.command, cli::Command::CheckUpdate | cli::Command::Complete { .. });
     let result = match cli.command {
         cli::Command::Setup { assume_yes } => commands::setup::run(assume_yes),
         cli::Command::Status => commands::status::run(),
@@ -42,9 +45,15 @@ fn main() {
         cli::Command::Restore { app, server, from, list } => commands::backup::restore(app, server, from, list),
         cli::Command::Completions { shell } => commands::completions::run(shell),
         cli::Command::Complete { what } => commands::complete::run(what),
+        cli::Command::CheckUpdate => update::check_now(),
     };
     if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);
+    }
+    // Last, and only after a command succeeded: news about turnout itself must
+    // not push the actual output out of view, nor decorate a failure.
+    if announces {
+        update::hint_and_refresh();
     }
 }

@@ -122,6 +122,9 @@ pub enum Command {
         /// What to list
         what: CompleteKind,
     },
+    /// Refresh the cached latest release (internal, run in the background)
+    #[command(hide = true)]
+    CheckUpdate,
 }
 
 /// Entity kinds the completion helper can list.

@@ -4,6 +4,11 @@ use predicates::prelude::*;
 fn turnout(data_dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("turnout").unwrap();
     cmd.env("TURNOUT_DATA_DIR", data_dir);
+    // No test should reach github.com as a side effect of running a command.
+    // The update check is already off under `CI`, but a local run would spawn
+    // a background lookup from every single `setup`. The few tests that do
+    // exercise the check turn it back on via `with_update_check`.
+    cmd.env("TURNOUT_UPDATE_CHECK", "0");
     cmd
 }
 
@@ -956,4 +961,85 @@ fn status_counts_catalogs() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Apps:    1 (myapp)").and(predicate::str::contains("Servers: 1 (staging)")));
+}
+
+/// The update check is off under `CI`, which is exactly where these tests run,
+/// so they switch it back on explicitly - otherwise they would pass by
+/// checking nothing.
+fn with_update_check(data_dir: &std::path::Path) -> Command {
+    let mut cmd = turnout(data_dir);
+    cmd.env("TURNOUT_UPDATE_CHECK", "1").env_remove("CI");
+    cmd
+}
+
+/// The hidden helper the background process runs. Pointing it at an
+/// unreachable host proves the failure path: the attempt is recorded so the
+/// next command does not retry immediately, and no version is invented.
+///
+/// `setup` runs with the check disabled on purpose. Enabled, it would spawn a
+/// background lookup against the real GitHub, and that answer - not the failure
+/// under test - is what would land in the cache.
+#[test]
+fn a_failed_update_lookup_is_recorded_without_a_version() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    with_update_check(dir.path())
+        .env("TURNOUT_UPDATE_URL", "http://update-check.invalid/releases/latest")
+        .arg("check-update")
+        .assert()
+        .success();
+
+    let cache = std::fs::read_to_string(dir.path().join("update-check.json")).unwrap();
+    assert!(cache.contains("checked_at"), "{cache}");
+    assert!(!cache.contains("latest"), "an unreachable host must not yield a version: {cache}");
+}
+
+/// A newer version in the cache must never reach piped output: scripts read
+/// stdout, and a version notice in the middle of it is noise.
+#[test]
+fn the_update_notice_stays_out_of_piped_output() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    let cache = format!(r#"{{"checked_at":{},"latest":"99.0.0"}}"#, u64::MAX / 2);
+    std::fs::write(dir.path().join("update-check.json"), cache).unwrap();
+
+    with_update_check(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("99.0.0").not())
+        .stderr(predicate::str::contains("99.0.0").not());
+}
+
+/// Turning the check off means nothing is looked up at all - no cache file
+/// appears, so no background process went out to the network.
+#[test]
+fn the_update_check_can_be_switched_off() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    turnout(dir.path())
+        .env("TURNOUT_UPDATE_CHECK", "off")
+        .env_remove("CI")
+        .arg("status")
+        .assert()
+        .success();
+    // The spawn is fire-and-forget; give a stray one time to land.
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    assert!(
+        !dir.path().join("update-check.json").exists(),
+        "a disabled check must not reach the network or write a cache"
+    );
+}
+
+/// A command must not fail because the update check did.
+#[test]
+fn a_broken_update_check_never_fails_the_command() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    with_update_check(dir.path())
+        .env("TURNOUT_UPDATE_URL", "http://update-check.invalid/releases/latest")
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gateway: not running"));
 }

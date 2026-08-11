@@ -60,6 +60,8 @@ The wizard shows where turnout will keep its data and creates the directory:
 
 Set the `TURNOUT_DATA_DIR` environment variable to override the location (useful for tests and scripting). Pass `--yes` to skip prompts.
 
+Once a day turnout also checks whether a newer release exists and mentions it at the end of a command. The lookup runs in the background, so it never delays anything; `TURNOUT_UPDATE_CHECK=0` switches it off. See [the update check](/turnout/concepts/update-check/).
+
 ## Check the state
 
 ```bash
