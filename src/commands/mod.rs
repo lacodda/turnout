@@ -8,6 +8,7 @@ pub mod exec;
 pub mod gateway;
 pub mod group;
 pub mod pass;
+pub mod self_update;
 pub mod server;
 pub mod setup;
 pub mod status;

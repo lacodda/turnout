@@ -122,6 +122,15 @@ pub enum Command {
         /// What to list
         what: CompleteKind,
     },
+    /// Update turnout itself to the latest release
+    SelfUpdate {
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+        /// Replace the binary even when a package manager owns it
+        #[arg(short, long)]
+        force: bool,
+    },
     /// Refresh the cached latest release (internal, run in the background)
     #[command(hide = true)]
     CheckUpdate,

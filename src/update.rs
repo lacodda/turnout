@@ -78,8 +78,24 @@ fn hint_for(cache: &Cache, current: &str, is_terminal: bool) -> Option<String> {
         return None;
     }
     let latest = cache.latest.as_deref()?;
-    is_newer(latest, current)
-        .then(|| format!("\nturnout {latest} is available (you have {current}).\n  Update with `cargo install turnout` or see {LATEST_URL}\n"))
+    is_newer(latest, current).then(|| format!("\nturnout {latest} is available (you have {current}).\n  Update with `turnout self-update`\n"))
+}
+
+/// Look up the latest released version, waiting for the answer.
+///
+/// The background check deliberately never blocks and swallows failures;
+/// `self-update` is the opposite case - the user asked for it and is owed the
+/// reason when it does not work.
+pub fn fetch_latest_version() -> Result<String> {
+    let url = std::env::var(ENV_URL).unwrap_or_else(|_| LATEST_URL.to_string());
+    let location = redirect_target(&url)?;
+    let tag = location.rsplit('/').next().unwrap_or_default();
+    parse_tag(tag).with_context(|| format!("{location} does not look like a release tag"))
+}
+
+/// Whether `candidate` is a newer release than `current`.
+pub fn is_version_newer(candidate: &str, current: &str) -> bool {
+    is_newer(candidate, current)
 }
 
 /// Perform the lookup and write the cache. This is the body of the hidden

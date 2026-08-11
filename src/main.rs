@@ -17,8 +17,16 @@ use clap::Parser;
 
 fn main() {
     let cli = cli::Cli::parse();
+    // Clear the binary a previous self-update left behind; it is only
+    // deletable once it is no longer the running image.
+    commands::self_update::sweep_backup();
     // The background refresh must not spawn another one: it *is* the check.
-    let announces = !matches!(cli.command, cli::Command::CheckUpdate | cli::Command::Complete { .. });
+    // `self-update` is excluded too - it has just said its piece about
+    // versions, and the cached notice would contradict what it did.
+    let announces = !matches!(
+        cli.command,
+        cli::Command::CheckUpdate | cli::Command::Complete { .. } | cli::Command::SelfUpdate { .. }
+    );
     let result = match cli.command {
         cli::Command::Setup { assume_yes } => commands::setup::run(assume_yes),
         cli::Command::Status => commands::status::run(),
@@ -45,6 +53,7 @@ fn main() {
         cli::Command::Restore { app, server, from, list } => commands::backup::restore(app, server, from, list),
         cli::Command::Completions { shell } => commands::completions::run(shell),
         cli::Command::Complete { what } => commands::complete::run(what),
+        cli::Command::SelfUpdate { assume_yes, force } => commands::self_update::run(assume_yes, force),
         cli::Command::CheckUpdate => update::check_now(),
     };
     if let Err(err) = result {

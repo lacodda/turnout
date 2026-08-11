@@ -1043,3 +1043,27 @@ fn a_broken_update_check_never_fails_the_command() {
         .success()
         .stdout(predicate::str::contains("Gateway: not running"));
 }
+
+/// A binary left over from a previous `self-update` is swept by any later
+/// command - not only by `self-update` itself, which nobody runs twice in a
+/// row. Until it is swept it costs a full binary worth of disk.
+#[test]
+fn a_leftover_binary_from_self_update_is_swept() {
+    let dir = tempfile::tempdir().unwrap();
+    let exe = dir.path().join(if cfg!(windows) { "turnout.exe" } else { "turnout" });
+    std::fs::copy(assert_cmd::cargo::cargo_bin("turnout"), &exe).unwrap();
+
+    let mut leftover = exe.clone().into_os_string();
+    leftover.push(".old");
+    let leftover = std::path::PathBuf::from(leftover);
+    std::fs::write(&leftover, b"the previous binary").unwrap();
+
+    // A plain command, unrelated to updating. Not `--version`: clap answers
+    // that one itself and exits before any of our code runs.
+    let mut cmd = Command::new(&exe);
+    cmd.env("TURNOUT_DATA_DIR", dir.path()).env("TURNOUT_UPDATE_CHECK", "0");
+    cmd.arg("status").assert().success();
+
+    assert!(!leftover.exists(), "the leftover binary should have been removed");
+    assert!(exe.exists(), "the running binary must survive the sweep");
+}

@@ -7,10 +7,10 @@ Once a day turnout looks up its own latest release and, if you are behind, says 
 
 ```text
 turnout 0.5.0 is available (you have 0.4.1).
-  Update with `cargo install turnout` or see https://github.com/lacodda/turnout/releases/latest
+  Update with `turnout self-update`
 ```
 
-That is the whole feature. It never interrupts, never prompts, and never changes what a command does.
+That is the whole feature. It never interrupts, never prompts, and never changes what a command does. Acting on it is [`turnout self-update`](/turnout/reference/self-update/).
 
 ## It does not slow anything down
 
