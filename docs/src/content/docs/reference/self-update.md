@@ -47,6 +47,21 @@ That leftover is deleted by the next turnout command you run, whatever it is, si
 
 If installing the new binary fails partway, the old one is moved back: the command never leaves you without a working turnout.
 
+## Updating while the gateway or a dev server is running
+
+You do not have to stop anything first. Both `turnout gateway start` and `turnout dev` leave a second turnout process running from the same executable, and the update succeeds anyway - for the same reason as above. The lock is on the file, not on the name, so the running process keeps executing the image that was renamed out of the way.
+
+What it does mean is that **already-running processes keep running the old code**. They were loaded into memory before the swap and nothing reaches back into them:
+
+| Running | After `self-update` | To pick up the new version |
+| --- | --- | --- |
+| `turnout gateway` | Keeps serving, on the old code | `turnout gateway stop && turnout gateway start` |
+| `turnout dev` | Keeps running, on the old code | Stop it (Ctrl+C) and start it again |
+
+Nothing breaks either way - a restart is only needed when the new release changes something you actually want in those processes.
+
+One consequence worth knowing: while the old image is still executing, its `.old` file cannot be deleted. The sweep skips it silently and removes it after the process has exited.
+
 ## Where the release comes from
 
 The tag is read from the `/releases/latest` redirect on github.com and the matching archive is downloaded from that release - the same source the installers use, and deliberately not `api.github.com`, whose unauthenticated rate limit is shared by everyone behind your IP address. See [the update check](/turnout/concepts/update-check/) for the rest of that reasoning.
