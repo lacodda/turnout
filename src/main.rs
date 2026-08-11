@@ -3,6 +3,7 @@ mod commands;
 mod detect;
 mod gateway;
 mod journal;
+mod migrate;
 mod model;
 mod paths;
 mod pick;

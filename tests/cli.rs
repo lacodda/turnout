@@ -1255,3 +1255,44 @@ fn import_keeps_local_entries_unless_forced() {
         .success()
         .stdout(predicate::str::contains("localhost:7100"));
 }
+
+/// Data written by a newer turnout must stop the command with an explanation,
+/// not with a parse error from somewhere deep in a catalog. The files may well
+/// still parse and mean something different, which is the dangerous case.
+#[test]
+fn a_newer_data_directory_is_refused_with_a_way_out() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 99}"#).unwrap();
+
+    turnout(dir.path())
+        .args(["app", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("newer turnout").and(predicate::str::contains("self-update")));
+
+    // Nothing may be rewritten on the way out.
+    let meta = std::fs::read_to_string(dir.path().join("meta.json")).unwrap();
+    assert!(meta.contains("99"), "the marker must be left alone: {meta}");
+}
+
+/// The version marker is read on every command, so a current directory has to
+/// stay silent and untouched - a migration notice on every run would be noise.
+#[test]
+fn a_current_data_directory_migrates_nothing() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+
+    turnout(dir.path())
+        .args(["app", "list"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Migrating").not());
+
+    let backups: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("settings-backup"))
+        .collect();
+    assert!(backups.is_empty(), "no backup folder should appear for a no-op");
+}

@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
@@ -14,12 +14,42 @@ const SERVERS_FILE: &str = "servers.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
 const GROUPS_FILE: &str = "groups.json";
 const STATE_FILE: &str = "state.json";
-const SCHEMA_VERSION: u32 = 1;
+use crate::migrate::CURRENT_VERSION as SCHEMA_VERSION;
 
 /// Marker written by `setup`; its presence means the data directory is initialized.
 #[derive(Serialize, Deserialize)]
 pub struct Meta {
     pub schema_version: u32,
+}
+
+/// The schema recorded in `meta.json`.
+///
+/// A directory from before the marker existed, or one whose marker is
+/// unreadable, is treated as version 1 - that is the only shape that could
+/// have produced it.
+fn stored_version(dir: &Path) -> u32 {
+    std::fs::read_to_string(dir.join(META_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Meta>(&text).ok())
+        .map(|meta| meta.schema_version)
+        .unwrap_or(1)
+}
+
+/// Migrate the data directory if it predates this build, then record the new
+/// version.
+///
+/// Runs before the first read of any catalog, so no command ever parses files
+/// in a shape it does not understand.
+fn ensure_current_schema(dir: &Path) -> Result<()> {
+    let from = stored_version(dir);
+    if from == SCHEMA_VERSION {
+        return Ok(());
+    }
+    crate::migrate::run(dir, from)?;
+    let json = serde_json::to_string_pretty(&Meta {
+        schema_version: SCHEMA_VERSION,
+    })?;
+    fs::write(dir.join(META_FILE), json).context("cannot update meta.json after migrating")
 }
 
 fn meta_path() -> Result<PathBuf> {
@@ -46,6 +76,9 @@ fn require_initialized() -> Result<PathBuf> {
     if !dir.join(META_FILE).exists() {
         bail!("turnout is not set up on this machine - run `turnout setup` first");
     }
+    // Every catalog read and write funnels through here, which makes it the one
+    // place that can guarantee nothing parses an older shape.
+    ensure_current_schema(&dir)?;
     Ok(dir)
 }
 
