@@ -5,6 +5,7 @@ use ssh2::Session;
 
 use crate::progress::{Step, Transfer, human_bytes};
 use crate::remote;
+use crate::shell::Dialect;
 
 /// Below this, packing is not worth the extra round trips: a handful of files
 /// go over SFTP faster than tar + upload + untar can set itself up.
@@ -51,20 +52,24 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     let session = remote::connect(ssh, &server.name)?;
     step.done(format!("Connected to {}@{}:{}", ssh.user, ssh.host, ssh.port));
 
+    // Asked once, before any command is built: everything below is phrased in
+    // the dialect this answers with.
+    let dialect = remote::dialect(&session, server);
+    remote::check_quotable(dialect, &[&deploy.path])?;
+
     if backup {
         let step = Step::start(format!("Backing up {} ...", deploy.path));
-        let name = remote::run_backup(&session, &deploy.path)?;
+        let name = remote::run_backup(&session, dialect, &deploy.path)?;
         step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path)));
     }
     if clear {
         let step = Step::start(format!("Clearing {} ...", deploy.path));
-        let quoted = remote::shell_quote(&deploy.path);
-        remote::exec(&session, &format!("find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"))?;
+        remote::exec(&session, &dialect.clear_dir(&deploy.path))?;
         step.done(format!("Cleared {}", deploy.path));
     }
 
     let plural = if plan.files == 1 { "" } else { "s" };
-    let (files, bytes) = match archive_upload(&session, &deploy.path, &plan, no_archive)? {
+    let (files, bytes) = match archive_upload(&session, dialect, &deploy.path, &plan, no_archive)? {
         Some(counts) => counts,
         // Either the caller opted out, the tree is too small to be worth
         // packing, or the server has no tar - send the files one by one.
@@ -135,13 +140,13 @@ fn plan_upload(local_root: &Path) -> Result<Plan> {
 /// The archive lands in a temporary file and is deleted afterwards, including
 /// when unpacking fails - a stray multi-megabyte tarball next to the site is
 /// its own kind of bug.
-fn archive_upload(session: &Session, remote_root: &str, plan: &Plan, no_archive: bool) -> Result<Option<(u64, u64)>> {
+fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: &Plan, no_archive: bool) -> Result<Option<(u64, u64)>> {
     if !should_archive(plan.files, no_archive) {
         return Ok(None);
     }
     if !remote_has_tar(session) {
         // Not an error: the deploy still works, just the slower way.
-        eprintln!("note: no usable tar on the server - uploading file by file");
+        eprintln!("note: {} - uploading file by file", no_tar_note(dialect));
         return Ok(None);
     }
 
@@ -157,13 +162,11 @@ fn archive_upload(session: &Session, remote_root: &str, plan: &Plan, no_archive:
     //
     // A dotfile, so a web server serving this directory does not hand it out,
     // and it is removed as soon as it is unpacked.
-    let remote_archive = format!("{remote_root}/.turnout-upload.tar.gz");
-    let quoted_archive = remote::shell_quote(&remote_archive);
-    let quoted_root = remote::shell_quote(remote_root);
+    let remote_archive = remote::join_remote(remote_root, ".turnout-upload.tar.gz");
 
     // The archive goes inside the deploy directory, so it has to exist first -
     // on a first deploy it does not.
-    remote::exec(session, &format!("mkdir -p {quoted_root}"))?;
+    remote::exec(session, &dialect.mkdir_p(remote_root))?;
 
     let transfer = Transfer::start(1, archive.len() as u64);
     transfer.file(&format!("{} (packed)", human_bytes(archive.len() as u64)));
@@ -182,11 +185,14 @@ fn archive_upload(session: &Session, remote_root: &str, plan: &Plan, no_archive:
     transfer.finish();
 
     let step = Step::start("Unpacking on the server ...".to_string());
-    let unpack = remote::exec(session, &format!("tar xzf {quoted_archive} -C {quoted_root} && rm -f {quoted_archive}"));
+    let unpack = remote::exec(
+        session,
+        &dialect.and_then(&dialect.untar(&remote_archive, remote_root), &dialect.remove_file(&remote_archive)),
+    );
     if let Err(err) = unpack {
         // Best-effort: the upload already failed, and a leftover archive would
         // outlive the error message.
-        let _ = remote::exec(session, &format!("rm -f {quoted_archive}"));
+        let _ = remote::exec(session, &dialect.remove_file(&remote_archive));
         step.clear();
         return Err(err).context("cannot unpack the archive on the server");
     }
@@ -199,10 +205,34 @@ fn archive_upload(session: &Session, remote_root: &str, plan: &Plan, no_archive:
 /// Probed rather than assumed: `tar` is missing often enough on minimal
 /// containers, and finding out mid-deploy would leave an archive behind and
 /// nothing unpacked.
+///
+/// The probe is asked in the server's own dialect. The previous one was
+/// `command -v tar >/dev/null 2>&1`, which `cmd.exe` cannot run at all - so a
+/// Windows server always answered "no tar" no matter what it had installed. It
+/// had bsdtar in System32 the whole time.
+/// No dialect parameter on purpose: the fix was to stop asking in shell syntax
+/// at all. `tar --version` is a plain program invocation that both bsdtar and
+/// GNU tar answer, and running a program is the one thing every shell does the
+/// same way.
 fn remote_has_tar(session: &Session) -> bool {
-    remote::exec(session, "command -v tar >/dev/null 2>&1 && echo yes")
-        .map(|out| out.trim() == "yes")
-        .unwrap_or(false)
+    remote::exec(session, "tar --version").is_ok()
+}
+
+/// What to say when the archive route is off, without claiming more than we know.
+///
+/// The old text was `no usable tar on the server` for every failure, which
+/// merged two different things: a fact about the server, and a defect on our
+/// side. A field report cost a round of debugging and a feature request because
+/// of it - the server had tar, and the message said it did not.
+fn no_tar_note(dialect: Dialect) -> String {
+    match dialect {
+        Dialect::Posix => "the server has no usable tar".to_string(),
+        // On Windows the probe is young enough that a failure is at least as
+        // likely to be ours as the server's; say both.
+        Dialect::Windows => {
+            "tar did not answer on this Windows server (it ships with one since Windows 10 1803 - if it is there, this is a turnout bug)".to_string()
+        }
+    }
 }
 
 /// Build the gzipped tar in memory, entries relative to the artifact root so it

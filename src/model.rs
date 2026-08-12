@@ -37,6 +37,14 @@ pub struct Server {
     /// Accept self-signed or otherwise invalid TLS certificates for this server only.
     #[serde(default)]
     pub accept_invalid_certs: bool,
+    /// Which shell answers SSH here, learned by probing on first use.
+    ///
+    /// Cached because it cannot change without someone reconfiguring sshd, and
+    /// paying a round trip for it on every command would be a tax on the common
+    /// case. `None` means "not asked yet", which is also what every server
+    /// written by an older turnout looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<crate::shell::Dialect>,
     /// Deploy targets on this server, per app.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub deploy: BTreeMap<String, DeployTarget>,
@@ -153,37 +161,65 @@ pub fn normalize_remote_path(path: &str) -> String {
     }
 }
 
-/// A directory on the server, which is a POSIX path - never a local one.
+/// A directory on the server: an absolute path, POSIX or Windows.
 ///
-/// The check exists because Git Bash rewrites POSIX-looking arguments into
-/// Windows paths before the process sees them: `/var/www/app` arrives as
-/// `C:/Program Files/Git/var/www/app`. Storing that silently deploys to a
-/// directory nobody meant, so a local-looking path is refused with the way out.
+/// Two different things look identical here, and telling them apart is the
+/// whole job:
+///
+/// - A Windows *server* has directories like `C:\inetpub\site`, and refusing
+///   them would mean turnout cannot deploy to Windows at all.
+/// - Git Bash rewrites POSIX-looking arguments before the process sees them, so
+///   a user typing `/var/www/app` can arrive here as
+///   `C:/Program Files/Git/var/www/app` - a path nobody meant.
+///
+/// The tell is the Git Bash installation prefix, not the drive letter: the
+/// rewrite always splices the MSYS root in front of the path the user typed.
+/// A plain `C:\inetpub\site` carries no such prefix and is taken at face value.
 pub fn validate_remote_path(path: &str) -> Result<()> {
     if path.trim().is_empty() {
         bail!("remote path is empty: pass an absolute path on the server, e.g. /var/www/myapp");
     }
-    if looks_like_a_windows_path(path) {
+    if let Some(original) = looks_rewritten_by_git_bash(path) {
         bail!(
-            "'{path}' is a local Windows path, not a directory on the server.\n\
-             Git Bash rewrites arguments that look like POSIX paths - prefix the command with \
-             MSYS_NO_PATHCONV=1, double the leading slash (//var/www/myapp), or use PowerShell."
+            "'{path}' looks like Git Bash rewrote '{original}' into a local path before turnout saw it.\n\
+             Prefix the command with MSYS_NO_PATHCONV=1, double the leading slash (/{original}), or use PowerShell.\n\
+             If you really meant this directory on a Windows server, pass it with backslashes."
         );
     }
-    if !path.starts_with('/') {
-        bail!("remote path '{path}' must be absolute, e.g. /var/www/myapp");
+    if !is_absolute_remote(path) {
+        bail!("remote path '{path}' must be absolute, e.g. /var/www/myapp or C:\\inetpub\\myapp");
     }
     Ok(())
 }
 
-/// `C:\dir`, `C:/dir` or a UNC share - all of them local, none of them a
-/// destination on a server.
-fn looks_like_a_windows_path(path: &str) -> bool {
-    let drive_letter = {
-        let mut chars = path.chars();
-        matches!((chars.next(), chars.next(), chars.next()), (Some(c), Some(':'), Some('/' | '\\')) if c.is_ascii_alphabetic())
-    };
-    drive_letter || path.starts_with("\\\\")
+/// Absolute for either kind of server: a leading `/`, a drive (`C:\` or `C:/`)
+/// or a UNC share.
+fn is_absolute_remote(path: &str) -> bool {
+    path.starts_with('/') || has_drive_letter(path) || path.starts_with("\\\\")
+}
+
+/// The POSIX path a Git Bash rewrite started from, if this looks like one.
+///
+/// The rewrite splices the MSYS installation root in front, so the giveaway is
+/// a drive-letter path containing a known Git-for-Windows prefix followed by
+/// what the user actually typed.
+fn looks_rewritten_by_git_bash(path: &str) -> Option<&str> {
+    if !has_drive_letter(path) {
+        return None;
+    }
+    let normalized = path.replace('\\', "/");
+    // Only the prefixes MSYS actually uses; a server directory that merely
+    // contains the word "git" is not a rewrite.
+    const MSYS_ROOTS: [&str; 4] = ["/Program Files/Git/", "/Program Files (x86)/Git/", "/git/", "/msys64/"];
+    let rest_index = MSYS_ROOTS.iter().find_map(|root| normalized.find(root).map(|at| at + root.len()))?;
+    // Borrow from the original so the caller can quote it back verbatim.
+    Some(&path[rest_index..])
+}
+
+/// `C:\dir` or `C:/dir` - a path anchored at a drive.
+fn has_drive_letter(path: &str) -> bool {
+    let mut chars = path.chars();
+    matches!((chars.next(), chars.next(), chars.next()), (Some(c), Some(':'), Some('/' | '\\')) if c.is_ascii_alphabetic())
 }
 
 #[cfg(test)]
@@ -210,12 +246,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_paths_are_posix_and_absolute() {
+    fn remote_paths_must_be_absolute() {
         assert!(validate_remote_path("/var/www/myapp").is_ok());
         assert!(validate_remote_path("/srv/app with spaces").is_ok());
         assert!(validate_remote_path("").is_err());
         assert!(validate_remote_path("   ").is_err());
         assert!(validate_remote_path("var/www/myapp").is_err(), "relative paths are not a server directory");
+        assert!(validate_remote_path("inetpub\\myapp").is_err(), "relative is relative on Windows too");
+    }
+
+    /// A Windows server's directories are drive-letter paths. Refusing them
+    /// outright - as every release before v0.7.0 did - meant turnout could not
+    /// be told where to deploy on Windows at all.
+    #[test]
+    fn windows_server_directories_are_accepted() {
+        assert!(validate_remote_path("C:\\inetpub\\wwwroot\\myapp").is_ok());
+        assert!(validate_remote_path("D:/sites/myapp").is_ok());
+        assert!(validate_remote_path("C:\\sites\\my app").is_ok(), "spaces are ordinary in Windows paths");
+        assert!(
+            validate_remote_path("\\\\fileserver\\share\\myapp").is_ok(),
+            "a UNC share is a real destination"
+        );
     }
 
     /// The doubled slash is the escape hatch the error message suggests, so a
@@ -227,17 +278,28 @@ mod tests {
         assert_eq!(normalize_remote_path("  /srv/app  "), "/srv/app");
         // Three or more leading slashes are not the Git Bash idiom; left alone.
         assert_eq!(normalize_remote_path("///odd"), "///odd");
+        // A UNC share opens with backslashes, and both of them are load-bearing.
+        assert_eq!(normalize_remote_path("\\\\fileserver\\share"), "\\\\fileserver\\share");
     }
 
-    /// The exact shape Git Bash produces from `/var/www/myapp`, plus the other
-    /// local forms that mean the value never reached the server as written.
+    /// The exact shape Git Bash produces from `/var/www/myapp`. The tell is the
+    /// MSYS root spliced in front, which is what separates this from a genuine
+    /// Windows server path.
     #[test]
-    fn remote_paths_reject_windows_paths() {
+    fn a_git_bash_rewrite_is_caught_and_explained() {
         let mangled = validate_remote_path("C:/Program Files/Git/var/www/myapp").unwrap_err().to_string();
         assert!(mangled.contains("MSYS_NO_PATHCONV"), "the error must say how to get past it: {mangled}");
+        assert!(mangled.contains("var/www/myapp"), "it must name the path the user meant: {mangled}");
 
-        assert!(validate_remote_path("C:\\www\\myapp").is_err());
-        assert!(validate_remote_path("d:/sites/myapp").is_err(), "any drive letter, not just C");
-        assert!(validate_remote_path("\\\\server\\share").is_err(), "UNC is local too");
+        assert!(validate_remote_path("C:\\Program Files\\Git\\var\\www\\myapp").is_err(), "backslashes too");
+        assert!(validate_remote_path("C:/msys64/var/www/myapp").is_err());
+    }
+
+    /// The rewrite check keys on the MSYS root, so a Windows directory that
+    /// merely mentions git is a normal destination.
+    #[test]
+    fn a_windows_path_that_mentions_git_is_not_a_rewrite() {
+        assert!(validate_remote_path("C:\\sites\\gitlab-runner").is_ok());
+        assert!(validate_remote_path("D:\\git-repos\\myapp").is_ok());
     }
 }

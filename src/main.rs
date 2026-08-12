@@ -11,6 +11,7 @@ mod portable;
 mod progress;
 mod remote;
 mod secrets;
+mod shell;
 mod store;
 mod update;
 mod utils;

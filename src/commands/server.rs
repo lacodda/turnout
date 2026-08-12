@@ -110,6 +110,8 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Op
         ssh,
         accept_invalid_certs,
         deploy: Default::default(),
+        // Learned on the first command that needs a shell, not guessed here.
+        shell: None,
     });
     servers.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_servers(&servers)?;

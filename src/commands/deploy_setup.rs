@@ -212,6 +212,7 @@ mod tests {
             ssh: None,
             accept_invalid_certs: false,
             deploy: BTreeMap::new(),
+            shell: None,
         }
     }
 
