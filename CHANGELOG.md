@@ -2,10 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.7.0] - 2026-08-12
+
+### Documentation
+- Cover Windows servers and refresh the versions in examples
+
+### Features
+- Speak the server's own shell dialect
 ## [0.5.0] - 2026-08-11
+
+### Bug Fixes
+- Split write_private per platform instead of returning early
 
 ### Documentation
 - Explain updating with the gateway or dev running
+- Refresh versions and cover this release on the landing pages
 
 ### Features
 - Notice new releases without delaying a command
