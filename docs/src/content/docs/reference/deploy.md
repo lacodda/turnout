@@ -51,9 +51,11 @@ Files are unpacked **over** whatever is already there, exactly like the file-by-
 
 turnout falls back to sending files one at a time, without failing, when:
 
-- the server has no usable `tar` (checked before anything is sent, and reported as a note);
+- `tar` does not answer on the server (checked before anything is sent, and reported as a note);
 - the artifact directory holds fewer than 8 files, where the round trips saved do not pay for the packing;
 - you pass `--no-archive`.
+
+Windows servers take the archive route too - `tar.exe` has shipped in `System32` since Windows 10 1803. See [Windows servers](/turnout/concepts/windows-servers/).
 
 ## Progress
 
@@ -89,7 +91,7 @@ turnout server edit prod --restart-cmd "myapp=systemctl restart myapp"
 echo "$PASSWORD" | turnout pass set prod --kind ssh --login deploy   # if no agent key
 ```
 
-On Windows, run those from PowerShell or prefix them with `MSYS_NO_PATHCONV=1` - Git Bash rewrites the remote path into a local one, and turnout refuses it rather than deploying somewhere nobody chose. See [`turnout server`](/turnout/reference/server/#edit).
+Setting a *POSIX* remote path from Git Bash needs care: it rewrites `/var/www/myapp` into a local path before turnout sees it, and turnout refuses that rather than deploying somewhere nobody chose. Run those lines from PowerShell, or prefix them with `MSYS_NO_PATHCONV=1`. A Windows deploy path (`C:\inetpub\myapp`) is unaffected. See [`turnout server`](/turnout/reference/server/#edit) and [Windows servers](/turnout/concepts/windows-servers/).
 
 ## Examples
 

@@ -80,10 +80,17 @@ turnout server edit prod --deploy-path myapp=      # remove the target
 turnout server edit prod -d myapp=/var/www/myapp -r "myapp=systemctl restart myapp"  # same, short form
 ```
 
-The deploy path is a directory **on the server**, so it must be an absolute POSIX path. A local path is refused rather than stored.
+The deploy path is a directory **on the server**, so it must be absolute. Both kinds are accepted, matching the server it belongs to:
+
+```bash
+turnout server edit prod    -d myapp=/var/www/myapp              # POSIX server
+turnout server edit winprod -d "myapp=C:\inetpub\wwwroot\myapp"  # Windows server
+```
+
+A relative path is refused rather than stored. See [Windows servers](/turnout/concepts/windows-servers/) for what else changes against a Windows target.
 
 :::caution[Git Bash rewrites remote paths]
-On Windows, Git Bash (MSYS2) turns arguments that look like POSIX paths into Windows paths before turnout ever sees them, so `-d myapp=/var/www/myapp` arrives as `C:/Program Files/Git/var/www/myapp`. turnout rejects such a value, because storing it would deploy to a directory nobody chose. Any of these gets the real path through:
+On Windows, Git Bash (MSYS2) turns arguments that look like POSIX paths into Windows paths before turnout ever sees them, so `-d myapp=/var/www/myapp` arrives as `C:/Program Files/Git/var/www/myapp`. turnout recognizes the Git installation prefix and refuses the value, because storing it would deploy to a directory nobody chose - a genuine Windows path like `C:\inetpub\myapp` carries no such prefix and is stored as typed. Any of these gets the POSIX path through:
 
 ```bash
 MSYS_NO_PATHCONV=1 turnout server edit prod -d myapp=/var/www/myapp
