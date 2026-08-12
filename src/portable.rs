@@ -177,7 +177,7 @@ fn derive_key_with(passphrase: &str, salt: &[u8], memory_kib: u32, iterations: u
 }
 
 fn random_bytes(len: usize) -> Vec<u8> {
-    use rand::RngCore;
+    use rand::Rng;
     let mut bytes = vec![0u8; len];
     rand::rng().fill_bytes(&mut bytes);
     bytes
