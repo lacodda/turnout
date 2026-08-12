@@ -151,8 +151,8 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 Everything above works today. What is next:
 
-- [ ] **Key-based access, set up rather than only used** - generate a key, install it on the server and verify it in one command, including the Windows administrator case
 - [ ] **Credentials and paths as their own entities** - one login reused across servers, a remote directory declared once, and named builds so a deploy stays a single word
+- [ ] **Key-based access, set up rather than only used** - generate a key, install it on the server and verify it in one command, including the Windows administrator case
 - [ ] **Background runs** - `dev --detach`, `ps`, `logs`, `stop`, OS notifications
 - [ ] **Observability** - gateway request log, `doctor`, `report` for handing context to an assistant
 - [ ] **Deploy consists** - atomic deploy and rollback across a group of apps

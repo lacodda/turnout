@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+There is no 0.6.0. The release after 0.5.0 was numbered 0.7.0 by mistake, and
+a version cannot be published below the latest one without making `cargo
+install` and the changelog disagree about what is current. Nothing was withdrawn
+and nothing is missing - the number is simply unused.
+
 ## [0.7.0] - 2026-08-12
 
 ### Documentation
