@@ -7,6 +7,13 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.7.1] - 2026-08-13
+
+### Documentation
+- Record that 0.6.0 does not exist
+
+### Features
+- Render progress as a clack-style checklist
 ## [0.7.0] - 2026-08-12
 
 ### Documentation
