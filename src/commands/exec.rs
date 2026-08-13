@@ -21,7 +21,10 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     eprintln!("[{}] {command_line}", app.name);
     let status = crate::utils::run_in_dir(command_line, &dir)?;
-    std::process::exit(status.code().unwrap_or(1));
+    // 130 is the conventional "interrupted" exit; the raw Windows status for
+    // Ctrl+C is a negative NTSTATUS nobody's scripts check for.
+    let code = if crate::term::interrupted() { 130 } else { status.code().unwrap_or(1) };
+    std::process::exit(code);
 }
 
 /// Explicit name wins; otherwise the app whose path contains the current

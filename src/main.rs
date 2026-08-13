@@ -13,6 +13,7 @@ mod remote;
 mod secrets;
 mod shell;
 mod store;
+mod term;
 mod update;
 mod utils;
 
@@ -20,6 +21,9 @@ use clap::Parser;
 
 fn main() {
     let cli = cli::Cli::parse();
+    // Before anything touches the terminal: capture its state and take over
+    // Ctrl+C, so an interrupt never leaves the console half-broken.
+    term::init();
     // Clear the binary a previous self-update left behind; it is only
     // deletable once it is no longer the running image.
     commands::self_update::sweep_backup();
@@ -62,6 +66,9 @@ fn main() {
         cli::Command::SelfUpdate { assume_yes, force } => commands::self_update::run(assume_yes, force),
         cli::Command::CheckUpdate => update::check_now(),
     };
+    // Whatever the command did to the terminal - a spinner mid-error, a
+    // picker abandoned with Esc - the prompt the user gets back must work.
+    term::restore();
     if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);

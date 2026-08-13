@@ -30,7 +30,15 @@ pub fn run_in_dir(command_line: &str, dir: &Path) -> Result<std::process::ExitSt
         command.args(["-c", command_line]);
         command
     };
-    command.current_dir(dir).status().with_context(|| format!("cannot run '{command_line}'"))
+    command.current_dir(dir);
+    let mut child = command.spawn().with_context(|| format!("cannot run '{command_line}'"))?;
+    // The whole tree dies with turnout, not only the direct child; and while
+    // the child runs, Ctrl+C belongs to it (see `term`).
+    crate::term::confine(&child);
+    crate::term::child_begin();
+    let status = child.wait();
+    crate::term::child_end();
+    status.with_context(|| format!("cannot run '{command_line}'"))
 }
 
 /// Best-effort reachability probe used by `use` and `status`.
