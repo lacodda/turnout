@@ -7,6 +7,16 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.8.0] - 2026-08-13
+
+### Bug Fixes
+- Restore the terminal and kill the child tree on Ctrl+C
+
+### Documentation
+- Strip the product prefix from page titles
+
+### Testing
+- Hold port reservations until handoff
 ## [0.7.1] - 2026-08-13
 
 ### Documentation

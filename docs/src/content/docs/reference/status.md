@@ -21,7 +21,7 @@ One command that answers "what is going on":
 `status` never prints secrets - it only reports whether credentials exist.
 
 ```text
-turnout 0.7.0
+turnout 0.8.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    2 (myapp, api)
 Servers: 2 (prod, staging)

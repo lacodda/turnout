@@ -10,10 +10,10 @@ turnout self-update
 ```
 
 ```text
-turnout 0.7.0 is available (you have 0.6.0).
+turnout 0.8.0 is available (you have 0.7.1).
 It will replace /home/dev/.local/bin/turnout
 Update now? yes
-Updated to turnout 0.7.0
+Updated to turnout 0.8.0
 ```
 
 | Flag | Short | Effect |
