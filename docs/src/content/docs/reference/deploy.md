@@ -37,10 +37,9 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 A dist directory is typically thousands of small files, and SFTP pays a round trip for every one of them. So turnout packs the artifacts into a single `tar.gz`, sends that, and unpacks it on the server:
 
 ```
-✓ Packing 43 files ...
-=========================>  78.32 KiB/78.32 KiB · 1.2 MiB/s  78.32 KiB (packed)
-✓ Unpacked 43 files
-Uploaded 43 files (212.18 KiB) to pi:/var/www/site
+◇ Packed 43 files → 78.32 KiB
+◇ Uploaded 78.32 KiB in 0.4s · 196.00 KiB/s
+◇ Unpacked 43 files into /var/www/site
 ```
 
 On a small test deploy over a local network this halved the wall time; the gap widens with the file count and the latency, which is where real deploys live.
@@ -59,17 +58,32 @@ Windows servers take the archive route too - `tar.exe` has shipped in `System32`
 
 ## Progress
 
-Every step that would otherwise be silent - the SSH handshake, the backup, the clear, the upload, the restart - reports while it runs:
+Every step that would otherwise be silent - the SSH handshake, the shell probe, the backup, the clear, the packing, the upload, the unpacking, the restart - is a line in a live checklist: a spinner while it runs, a checked summary when it ends. The upload itself is a byte bar with a percentage, the current rate and an ETA:
 
 ```
-✓ Connected to deploy@prod.example.com:22
-================>          3.56 MiB/6.10 MiB · 1.81 MiB/s · eta 1s  assets/index-b3f0a1.js
-Uploaded 214 files (6.10 MiB) to prod:/var/www/myapp
-✓ Ran: systemctl restart myapp
-Deploy of 'myapp' to 'prod' finished.
+┌ Deploying myapp → prod
+│
+◇ Connected to deploy@prod.example.com:22
+◇ Packed 214 files → 6.10 MiB
+◆ Uploading [███████████░░░░░░░░░░░░░]  47% · 2.87 MiB/6.10 MiB · 1.81 MiB/s · eta 2s
+│
 ```
 
-When stdout is not a terminal - a pipe, a CI log, a file - the spinners and the bar are replaced by one plain line per step, so logs stay readable.
+Once everything lands, the checklist reads as a receipt of what happened:
+
+```
+┌ Deploying myapp → prod
+│
+◇ Connected to deploy@prod.example.com:22
+◇ Packed 214 files → 6.10 MiB
+◇ Uploaded 6.10 MiB in 3.4s · 1.81 MiB/s
+◇ Unpacked 214 files into /var/www/myapp
+◇ Restarted: systemctl restart myapp
+│
+└ Deploy of 'myapp' to 'prod' finished
+```
+
+The build tool's own output streams above the frame, unchanged. When stdout is not a terminal - a pipe, a CI log, a file - the frame, the spinners and the bar are replaced by one plain line per step, so logs stay readable.
 
 ## Configuration
 

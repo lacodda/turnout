@@ -3,13 +3,19 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use ssh2::Session;
 
-use crate::progress::{Step, Transfer, human_bytes};
+use crate::model::{DeployTarget, Server, Ssh};
+use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
 use crate::remote;
 use crate::shell::Dialect;
 
 /// Below this, packing is not worth the extra round trips: a handful of files
 /// go over SFTP faster than tar + upload + untar can set itself up.
 const ARCHIVE_THRESHOLD: u64 = 8;
+
+/// How much goes over the wire between two bar updates. Small enough that the
+/// bar moves several times a second on a home uplink, large enough that the
+/// accounting is noise next to the SFTP round trips.
+const UPLOAD_CHUNK: usize = 64 * 1024;
 
 /// Whether a tree of `files` files should travel as one archive.
 ///
@@ -48,46 +54,68 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
         bail!("artifact directory {} is empty - nothing to upload", local.display());
     }
 
+    // The frame opens after the build on purpose: the build tool's raw output
+    // streams above it, and the checklist below covers only our own phases.
+    progress::intro(format!("Deploying {} → {}", app.name, server.name));
+    match deploy_over_ssh(server, ssh, deploy, &plan, &Options { backup, clear, no_archive }) {
+        Ok(files) => {
+            crate::journal::record("deploy", Some(&app.name), Some(&server.name), Some(&format!("{files} files")));
+            progress::outro(format!("Deploy of '{}' to '{}' finished", app.name, server.name));
+            Ok(())
+        }
+        Err(err) => {
+            // Closes the frame so the error prints on a clean line below it.
+            progress::outro_error(format!("Deploy of '{}' to '{}' failed", app.name, server.name));
+            Err(err)
+        }
+    }
+}
+
+struct Options {
+    backup: bool,
+    clear: bool,
+    no_archive: bool,
+}
+
+/// Every phase that talks to the server, in checklist order.
+fn deploy_over_ssh(server: &Server, ssh: &Ssh, deploy: &DeployTarget, plan: &Plan, options: &Options) -> Result<u64> {
     let step = Step::start(format!("Connecting to {}@{}:{} ...", ssh.user, ssh.host, ssh.port));
     let session = remote::connect(ssh, &server.name)?;
-    step.done(format!("Connected to {}@{}:{}", ssh.user, ssh.host, ssh.port));
-
     // Asked once, before any command is built: everything below is phrased in
-    // the dialect this answers with.
+    // the dialect this answers with. Under the same step - it is a round trip
+    // on a first contact, and a silent one would look like a hang.
+    step.update("Detecting the server shell ...");
     let dialect = remote::dialect(&session, server);
+    step.done(format!("Connected to {}@{}:{}", ssh.user, ssh.host, ssh.port));
     remote::check_quotable(dialect, &[&deploy.path])?;
 
-    if backup {
+    if options.backup {
         let step = Step::start(format!("Backing up {} ...", deploy.path));
         let name = remote::run_backup(&session, dialect, &deploy.path)?;
         step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path)));
     }
-    if clear {
+    if options.clear {
         let step = Step::start(format!("Clearing {} ...", deploy.path));
         remote::exec(&session, &dialect.clear_dir(&deploy.path))?;
         step.done(format!("Cleared {}", deploy.path));
     }
 
-    let plural = if plan.files == 1 { "" } else { "s" };
-    let (files, bytes) = match archive_upload(&session, dialect, &deploy.path, &plan, no_archive)? {
+    let (files, _bytes) = match archive_upload(&session, dialect, &deploy.path, plan, options.no_archive)? {
         Some(counts) => counts,
         // Either the caller opted out, the tree is too small to be worth
         // packing, or the server has no tar - send the files one by one.
-        None => upload(&session, &deploy.path, &plan)?,
+        None => upload(&session, &deploy.path, plan)?,
     };
-    println!("Uploaded {files} file{plural} ({}) to {}:{}", human_bytes(bytes), server.name, deploy.path);
 
     if let Some(restart) = &deploy.restart {
         let step = Step::start(format!("Running: {restart}"));
         let output = remote::exec(&session, restart)?;
-        step.done(format!("Ran: {restart}"));
+        step.done(format!("Restarted: {restart}"));
         if !output.trim().is_empty() {
-            println!("{}", output.trim_end());
+            progress::info(output.trim_end());
         }
     }
-    crate::journal::record("deploy", Some(&app.name), Some(&server.name), Some(&format!("{files} files")));
-    println!("Deploy of '{}' to '{}' finished.", app.name, server.name);
-    Ok(())
+    Ok(files)
 }
 
 /// What the upload is about to send: directories to create and files to copy,
@@ -144,15 +172,18 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: 
     if !should_archive(plan.files, no_archive) {
         return Ok(None);
     }
+
+    // The tar probe, the packing and the remote mkdir are one visible phase:
+    // each is a wait with no output of its own, and three blinking lines would
+    // say less than one.
+    let step = Step::start(format!("Packing {} files ...", plan.files));
     if !remote_has_tar(session) {
+        step.clear();
         // Not an error: the deploy still works, just the slower way.
-        eprintln!("note: {} - uploading file by file", no_tar_note(dialect));
+        progress::warn(&format!("{} - uploading file by file", no_tar_note(dialect)));
         return Ok(None);
     }
-
-    let step = Step::start(format!("Packing {} files ...", plan.files));
     let archive = pack(plan)?;
-    step.clear();
 
     let remote_root = remote_root.trim_end_matches('/');
     // Inside the deploy directory, which is the one place we know is writable:
@@ -167,22 +198,29 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: 
     // The archive goes inside the deploy directory, so it has to exist first -
     // on a first deploy it does not.
     remote::exec(session, &dialect.mkdir_p(remote_root))?;
+    step.done(format!("Packed {} files → {}", plan.files, human_bytes(archive.len() as u64)));
 
-    let transfer = Transfer::start(1, archive.len() as u64);
-    transfer.file(&format!("{} (packed)", human_bytes(archive.len() as u64)));
+    let sent = archive.len() as u64;
+    let transfer = Transfer::start(1, sent);
     let sftp = session.sftp().context("cannot open SFTP")?;
-    let sent = {
-        use std::io::Write;
+    {
         let mut remote_file = sftp
             .create(Path::new(&remote_archive))
             .with_context(|| format!("cannot create {remote_archive} on the server"))?;
-        remote_file
-            .write_all(&archive)
+        // Chunked so the bar earns its keep: one write_all of the whole buffer
+        // would credit every byte after the fact, and the bar would sit at zero
+        // for exactly as long as the upload takes - which is what it is for.
+        let mut archive_slice = &archive[..];
+        copy_chunked(&mut archive_slice, &mut remote_file, |chunk| transfer.advance(chunk))
             .with_context(|| format!("cannot upload the archive to {remote_archive}"))?;
-        archive.len() as u64
-    };
-    transfer.advance(sent);
-    transfer.finish();
+    }
+    let elapsed = transfer.elapsed();
+    transfer.done(format!(
+        "Uploaded {} in {} · {}",
+        human_bytes(sent),
+        human_duration(elapsed),
+        rate(sent, elapsed)
+    ));
 
     let step = Step::start("Unpacking on the server ...".to_string());
     let unpack = remote::exec(
@@ -196,8 +234,27 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: 
         step.clear();
         return Err(err).context("cannot unpack the archive on the server");
     }
-    step.done(format!("Unpacked {} files", plan.files));
+    step.done(format!("Unpacked {} files into {}", plan.files, remote_root));
     Ok(Some((plan.files, plan.bytes)))
+}
+
+/// Copy in fixed-size chunks, reporting each as it lands.
+///
+/// This is `std::io::copy` with a progress callback: the per-file upload and
+/// the archive upload both go through it, so a single large file cannot freeze
+/// the bar for its whole duration.
+fn copy_chunked(from: &mut impl std::io::Read, to: &mut impl std::io::Write, mut on_chunk: impl FnMut(u64)) -> std::io::Result<u64> {
+    let mut buffer = vec![0u8; UPLOAD_CHUNK];
+    let mut total = 0;
+    loop {
+        let read = from.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(total);
+        }
+        to.write_all(&buffer[..read])?;
+        on_chunk(read as u64);
+        total += read as u64;
+    }
 }
 
 /// Whether the server can unpack what we would send.
@@ -263,18 +320,25 @@ fn upload(session: &Session, remote_root: &str, plan: &Plan) -> Result<(u64, u64
     let mut files = 0;
     let mut bytes = 0;
     for (path, relative) in &plan.entries {
-        transfer.file(relative);
         let remote = format!("{remote_root}/{relative}");
         let mut local_file = std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
         let mut remote_file = sftp
             .create(Path::new(&remote))
             .with_context(|| format!("cannot create {remote} on the server"))?;
-        let copied = std::io::copy(&mut local_file, &mut remote_file).with_context(|| format!("cannot upload {}", path.display()))?;
-        transfer.advance(copied);
+        let copied =
+            copy_chunked(&mut local_file, &mut remote_file, |chunk| transfer.advance(chunk)).with_context(|| format!("cannot upload {}", path.display()))?;
         bytes += copied;
         files += 1;
     }
-    transfer.finish();
+    let elapsed = transfer.elapsed();
+    let plural = if files == 1 { "" } else { "s" };
+    transfer.done(format!(
+        "Uploaded {files} file{plural} ({}) to {} in {} · {}",
+        human_bytes(bytes),
+        remote_root,
+        human_duration(elapsed),
+        rate(bytes, elapsed)
+    ));
     Ok((files, bytes))
 }
 
@@ -364,6 +428,22 @@ mod tests {
             archive.len(),
             plan.bytes
         );
+    }
+
+    /// The chunk loop is what keeps the bar honest: bytes are credited as they
+    /// leave, in bounded pieces, and the total matches what was sent.
+    #[test]
+    fn chunked_copies_report_bytes_as_they_leave() {
+        let payload = vec![7u8; super::UPLOAD_CHUNK * 2 + 123];
+        let mut sink = Vec::new();
+        let mut reported = Vec::new();
+        let total = super::copy_chunked(&mut payload.as_slice(), &mut sink, |chunk| reported.push(chunk)).expect("copy");
+
+        assert_eq!(total, payload.len() as u64);
+        assert_eq!(sink, payload, "the copy must be byte-identical");
+        assert_eq!(reported.iter().sum::<u64>(), total, "every byte is reported exactly once");
+        assert!(reported.len() >= 3, "a large payload travels in several chunks: {reported:?}");
+        assert!(reported.iter().all(|c| *c <= super::UPLOAD_CHUNK as u64), "no chunk exceeds the bound");
     }
 
     #[test]

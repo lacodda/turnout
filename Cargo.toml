@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "turnout"
 version = "0.7.0"
 edition = "2024"
@@ -36,6 +36,7 @@ axum = { version = "0.8", features = ["ws"] }
 chacha20poly1305 = "0.11.0"
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.6.8"
+cliclack = "0.3.8"
 dialoguer = "0.12"
 directories = "6"
 dunce = "1"

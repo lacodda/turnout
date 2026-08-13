@@ -88,7 +88,7 @@ pub fn restore(app_name: Option<String>, server_name: Option<String>, from: Opti
     if let Some(restart) = &deploy.restart {
         let step = Step::start(format!("Running: {restart}"));
         let output = remote::exec(&session, restart)?;
-        step.done(format!("Ran: {restart}"));
+        step.done(format!("Restarted: {restart}"));
         if !output.trim().is_empty() {
             println!("{}", output.trim_end());
         }
