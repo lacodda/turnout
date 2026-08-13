@@ -419,8 +419,16 @@ fn use_respects_the_allow_list() {
         .stderr(predicate::str::contains("not allowed"));
 }
 
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+/// A port reserved by an actual bound listener, handed to the caller.
+///
+/// Not bind-close-return: between a close and the next bind the OS is free to
+/// give the port to anyone else - exactly that took the CI down on macOS
+/// during the v0.7.0 release. The stand consumes its listener directly; the
+/// gateway child cannot inherit one, so its reservation is dropped at the
+/// last moment before the spawn.
+fn reserved_port() -> (u16, std::net::TcpListener) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    (listener.local_addr().unwrap().port(), listener)
 }
 
 fn wait_for_port(port: u16) {
@@ -443,7 +451,9 @@ impl Drop for ChildGuard {
 }
 
 /// A tiny "stand": sets a session cookie, echoes cookies back, redirects to itself.
-fn spawn_stand(port: u16) {
+/// Serves on the listener that reserved its port, so the port cannot be lost.
+fn spawn_stand(listener: std::net::TcpListener) -> u16 {
+    let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async move {
@@ -478,19 +488,21 @@ fn spawn_stand(port: u16) {
                         })
                     }),
                 );
-            let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let listener = tokio::net::TcpListener::from_std(listener).unwrap();
             axum::serve(listener, app).await.unwrap();
         });
     });
     wait_for_port(port);
+    port
 }
 
 #[test]
 fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
     let (dir, project) = workspace();
-    let stand_port = free_port();
-    let gateway_port = free_port();
-    spawn_stand(stand_port);
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    spawn_stand(stand_listener);
 
     turnout(dir.path())
         .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
@@ -504,6 +516,10 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
         .success();
     turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
 
+    // Held through the whole setup above; released only now, so the window in
+    // which the OS could hand the port to someone else is the child's startup
+    // alone, not three process spawns.
+    drop(gateway_reservation);
     let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
         .env("TURNOUT_DATA_DIR", dir.path())
         .args(["gateway", "run"])
