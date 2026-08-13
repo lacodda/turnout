@@ -1,5 +1,5 @@
 ---
-title: turnout app
+title: "app"
 description: Manage apps - the local projects turnout works with.
 sidebar:
   order: 3

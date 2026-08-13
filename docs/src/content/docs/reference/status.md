@@ -1,5 +1,5 @@
 ---
-title: turnout status
+title: "status"
 description: Show what turnout knows - apps, servers, bindings, gateway state.
 sidebar:
   order: 2

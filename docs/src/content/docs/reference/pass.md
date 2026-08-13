@@ -1,5 +1,5 @@
 ---
-title: turnout pass
+title: "pass"
 description: Manage access to servers - logins and secrets in the OS keyring.
 sidebar:
   order: 5

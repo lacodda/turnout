@@ -1,9 +1,9 @@
 ---
-title: turnout backup / restore
+title: "backup / restore"
 description: Back up and restore an app's deploy directory on the server.
 sidebar:
   order: 9.5
-  label: turnout backup
+  label: backup
 ---
 
 ```bash

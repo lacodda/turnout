@@ -1,5 +1,5 @@
 ---
-title: turnout server
+title: "server"
 description: Manage servers - the stands turnout routes to and deploys on.
 sidebar:
   order: 4

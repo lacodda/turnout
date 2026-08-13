@@ -1,5 +1,5 @@
 ---
-title: turnout deploy
+title: "deploy"
 description: Deploy an app to a server over SSH/SFTP - build, upload, restart.
 sidebar:
   order: 9

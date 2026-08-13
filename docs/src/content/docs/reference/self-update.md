@@ -1,5 +1,5 @@
 ---
-title: turnout self-update
+title: "self-update"
 description: Replace turnout with the latest release, or find out which command actually updates your installation.
 ---
 

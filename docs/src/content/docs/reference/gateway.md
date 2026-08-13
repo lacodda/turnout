@@ -1,5 +1,5 @@
 ---
-title: turnout gateway
+title: "gateway"
 description: Run the local dev gateway that routes apps to their bound servers.
 sidebar:
   order: 7

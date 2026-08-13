@@ -1,5 +1,5 @@
 ---
-title: turnout setup
+title: "setup"
 description: Initialize the data directory and walk through first-run setup.
 sidebar:
   order: 1

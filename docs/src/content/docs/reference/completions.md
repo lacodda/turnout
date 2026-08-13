@@ -1,5 +1,5 @@
 ---
-title: turnout completions
+title: "completions"
 description: Shell completion scripts for bash, zsh, fish, PowerShell and elvish.
 sidebar:
   order: 10

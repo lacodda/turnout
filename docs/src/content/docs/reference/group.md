@@ -1,5 +1,5 @@
 ---
-title: turnout group
+title: "group"
 description: App groups - switch a whole contour with one use command.
 sidebar:
   order: 6.5
