@@ -21,10 +21,11 @@ Add `--insecure` for a stand with a self-signed certificate.
 ### 2. Save access (optional)
 
 ```bash
-turnout pass set main    # wizard: login + hidden secret, stored in the OS keyring
+turnout credential add main-login --user myname   # who logs in
+turnout pass set main-login                       # hidden secret, into the OS keyring
 ```
 
-Later `turnout pass copy main` puts the password on your clipboard whenever the stand asks for it.
+Later `turnout pass copy main-login` puts the password on your clipboard whenever the stand asks for it.
 
 ### 3. Register the app
 

@@ -68,17 +68,31 @@ Once a day turnout also checks whether a newer release exists and mentions it at
 turnout status
 ```
 
-Shows the data directory, configured apps and servers, and whether the gateway is running.
+Shows the data directory, the four catalogs - apps, servers, credentials, paths - and whether the gateway is running.
 
 ## Describe your first app and server
 
 ```bash
 cd ~/dev/myapp
 turnout app add        # wizard: detects the project type, proposes commands
-turnout server add     # wizard: URL, SSH, TLS policy
+turnout server add     # wizard: URL, SSH host, credential, TLS policy
 ```
 
-See [`turnout app`](/turnout/reference/app/) and [`turnout server`](/turnout/reference/server/) for the full command reference.
+That is enough for the dev gateway. Deploying also needs to know who logs in and where files land:
+
+```bash
+turnout credential add prod-deploy --user deploy
+turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
+turnout server edit prod --credential prod-deploy --deploy-path myapp=wwwroot
+```
+
+Or let one wizard walk all of it, offering to create the credential and path as it goes:
+
+```bash
+turnout deploy-setup myapp
+```
+
+See [`turnout app`](/turnout/reference/app/), [`turnout server`](/turnout/reference/server/), [`turnout credential`](/turnout/reference/credential/) and [`turnout path`](/turnout/reference/path/) for the full command reference.
 
 ## A working day
 
@@ -86,11 +100,12 @@ See [`turnout app`](/turnout/reference/app/) and [`turnout server`](/turnout/ref
 turnout gateway start          # once: the gateway routes apps to their stands
 turnout use myapp staging      # bind the app to a stand
 turnout dev                    # from the project dir: UI local, API on staging
-turnout pass copy staging      # password on the clipboard when the stand asks
+turnout pass copy prod-deploy  # password on the clipboard when the stand asks
 turnout use myapp prod-eu      # switch stands - no restarts, no env edits
 ```
 
 ## Next steps
 
-- Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials and state.
+- Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials, paths and state.
 - See how the [dev gateway](/turnout/concepts/gateway/) routes your apps to stands.
+- Coming from turnout 0.8? Read [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).

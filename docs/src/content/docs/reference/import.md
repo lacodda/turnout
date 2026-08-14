@@ -30,7 +30,7 @@ On a fresh machine that distinction never comes up - everything is new, and the 
 
 `--force` is the opposite instruction: incoming entries win. Use it when the file is the source of truth, for instance restoring a backup over a setup you no longer trust.
 
-Apps, servers and groups are matched by name; access records by server **and** kind, so a password and an SSH key on the same server stay separate records.
+Every entity is matched by its own name - apps, servers, credentials, paths and groups alike.
 
 ## Secrets
 
@@ -53,3 +53,7 @@ printf '%s' "$PASSPHRASE" | turnout import backup.json
 ```
 
 An export written by a newer turnout is refused rather than half-read, with the version it needs.
+
+## Files from turnout 0.8
+
+Exports moved to format 2 in v0.9.0, when logins and remote directories became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/). A file from 0.8 or earlier holds servers with a `user@host` inside them and no separate entities to put that in, so it is refused rather than imported into a catalog of servers nobody can log into. It is still plain JSON and still readable - use it as your reference while re-entering, as described in [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).

@@ -36,5 +36,5 @@ That is deliberate: a prompt nobody can answer would hang a build forever. Scrip
 
 - [`use`](/turnout/reference/use/) offers apps **and** groups; once an app is chosen, the server list shrinks to the ones that app is allowed to use.
 - [`dev`, `build`, `test`, `lint`, `run`](/turnout/reference/run/) still resolve the app from the current directory first - the picker only steps in when you are outside any known project.
-- [`pass`](/turnout/reference/pass/) picks a stored credential, so the list shows only servers that actually have access saved. When a server holds a single kind it is taken without asking.
-- [`app`](/turnout/reference/app/), [`server`](/turnout/reference/server/) and [`group`](/turnout/reference/group/) pick from their own catalog for `show`, `edit` and `remove`.
+- [`pass`](/turnout/reference/pass/) picks a credential, showing who each one logs in as. A catalog holding exactly one is taken without asking - there is nothing to choose between.
+- [`app`](/turnout/reference/app/), [`server`](/turnout/reference/server/), [`credential`](/turnout/reference/credential/), [`path`](/turnout/reference/path/) and [`group`](/turnout/reference/group/) pick from their own catalog for `show`, `edit` and `remove`.

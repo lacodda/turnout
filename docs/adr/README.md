@@ -13,3 +13,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0007](0007-json-catalogs.md) | Catalogs as one JSON file per entity kind | accepted |
 | [0008](0008-state-file-over-ipc.md) | Bindings travel through the state file, not IPC | accepted |
 | [0009](0009-trusted-publishing.md) | Registry publishing via OIDC trusted publishing | accepted |
+| [0010](0010-entity-split.md) | Servers, credentials and paths as three entities | accepted |

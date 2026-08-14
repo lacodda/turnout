@@ -1,6 +1,6 @@
 ---
 title: "export"
-description: Write apps, servers and groups to a file, optionally including secrets under a passphrase.
+description: Write apps, servers, credentials, paths and groups to a file, optionally including secrets under a passphrase.
 ---
 
 Writes this machine's setup to a single JSON file.
@@ -12,7 +12,7 @@ turnout export --output ~/turnout-backup.json
 
 ```text
 Exported to turnout-export.json
-  3 app(s), 2 server(s), 1 group(s), 2 access record(s)
+  3 app(s), 2 server(s), 2 credential(s), 2 path(s), 1 group(s)
   Secrets are NOT included - re-run with --with-secrets to take them along.
 ```
 
@@ -25,11 +25,11 @@ Read it back with [`turnout import`](/turnout/reference/import/).
 
 ## What travels by default
 
-Apps, servers, groups and **access records** - the metadata saying that a server has a password or an SSH key, and under which login. The secret values themselves stay behind.
+Apps, servers, groups, and the **credentials** and **paths** they point at - who logs in and where files land, but never the secret values themselves.
 
-The file is plain JSON, on purpose: it is configuration, and something you can read, diff and edit by hand is worth more than an opaque blob. It is written readable only by you, because even without secrets it lists hosts, logins and deploy paths.
+The file is plain JSON, on purpose: it is configuration, and something you can read, diff and edit by hand is worth more than an opaque blob. It is written readable only by you, because even without secrets it lists hosts, logins and deploy directories.
 
-Import it on the other machine and everything works except the parts that need a secret - those report the access as missing until you run [`turnout pass set`](/turnout/reference/pass/) there.
+Import it on the other machine and everything works except the parts that need a secret - those report it as missing until you run [`turnout pass set`](/turnout/reference/pass/) there.
 
 ## Taking secrets along
 
@@ -39,7 +39,7 @@ turnout export --with-secrets
 
 You are asked for a passphrase (twice), and every stored secret is encrypted into the file as one sealed block. **There is no recovery**: lose the passphrase and the secrets in that file are gone. Nothing else about the export changes.
 
-An export is exactly the kind of file that gets attached to a chat, synced to a cloud folder or forgotten in Downloads. So the sealed block gives up nothing on inspection - not the values, and not even which servers have secrets stored:
+An export is exactly the kind of file that gets attached to a chat, synced to a cloud folder or forgotten in Downloads. So the sealed block gives up nothing on inspection - not the values, and not even how many secrets are stored:
 
 ```json
 "secrets": {

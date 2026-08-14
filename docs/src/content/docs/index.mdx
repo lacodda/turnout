@@ -55,8 +55,11 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 	<Card title="Dev gateway" icon="rocket">
 		Your apps always talk to localhost; turnout routes requests to the selected stand. Switching is one command, and sessions survive it - the gateway keeps a cookie jar per app+server pair.
 	</Card>
+	<Card title="Servers, logins and paths, apart" icon="puzzle">
+		A machine, the credential that logs into it and the directory files land in are three named entities. Define the deploy account once and point every stand at it; the same web root serves staging and production without being retyped.
+	</Card>
 	<Card title="Secrets in the OS keyring" icon="seti:lock">
-		Windows Credential Manager, macOS Keychain or Linux Secret Service. Copy a password to the clipboard with one command; nothing lives in plain files.
+		Windows Credential Manager, macOS Keychain or Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand it reaches. Copy a password to the clipboard with one command; nothing lives in plain files.
 	</Card>
 	<Card title="Commands from anywhere" icon="setting">
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
@@ -65,10 +68,10 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 		Build, upload over SSH/SFTP, restart the service - with remote backup and restore when a release goes wrong. Artifacts travel as one archive instead of thousands of round trips, to Linux and Windows servers alike.
 	</Card>
 	<Card title="Portable settings" icon="seti:config">
-		`export` writes your apps, servers and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase.
+		`export` writes your apps, servers, credentials, paths and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase.
 	</Card>
 	<Card title="Nothing to memorize" icon="approve-check">
-		Leave a name out and pick it from a list; in bash, Tab completes app, server and group names from your own catalogs.
+		Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs.
 	</Card>
 	<Card title="An action journal" icon="document">
 		Every state change appends one JSON line - what happened and to which entities, never secrets. tail, grep and jq work on it directly.

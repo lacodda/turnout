@@ -6,16 +6,18 @@ sidebar:
 ---
 
 ```bash
-turnout deploy [APP] [-s SERVER] [-n] [-b] [-c]
+turnout deploy [APP] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c]
 ```
 
-Builds the app, uploads the artifacts to the server's deploy directory over SFTP and optionally restarts the service - one command, using the same apps, servers and secrets as everything else.
+Builds the app, uploads the artifacts to the target directory over SFTP and optionally restarts the service - one command, using the same apps, servers, credentials and paths as everything else.
 
 ## Options
 
 | Flag | Meaning |
 | --- | --- |
 | `-s, --server <SERVER>` | Target server; defaults to the app's current binding |
+| `-C, --credential <NAME>` | Credential to log in with; defaults to the server's |
+| `-p, --path <NAME>` | Named path to deploy into; defaults to the server's for this app |
 | `-n, --no-build` | Skip the build step and upload what is already built |
 | `-b, --backup` | Archive the remote directory before touching it |
 | `-c, --clear` | Empty the remote directory before uploading |
@@ -23,14 +25,14 @@ Builds the app, uploads the artifacts to the server's deploy directory over SFTP
 
 ## What happens
 
-1. **Resolve.** The app comes from the argument or the current directory; the target server from `--server` or the app's current [binding](/turnout/reference/use/).
+1. **Resolve.** The app comes from the argument or the current directory; the target server from `--server` or the app's current [binding](/turnout/reference/use/); the [credential](/turnout/reference/credential/) and [path](/turnout/reference/path/) from the server's own settings, unless `--credential` or `--path` name others for this run.
 2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy. The build tool's own output streams through unchanged.
 3. **Plan.** The artifact directory is walked to count files and bytes, so the upload can report a percentage and an ETA. An empty artifact directory aborts the deploy before anything is sent.
-4. **Connect.** SSH to the server's configured `user@host:port`. Auth order: the configured key file (`--ssh-key`), then agent keys (ssh-agent / Pageant), then the password stored in the keyring (`--kind ssh`, falling back to `password`).
+4. **Connect.** SSH to the server's host and port as the credential's user. Auth order: the credential's key file, then agent keys (ssh-agent / Pageant), then the secret stored in the keyring under the credential's name.
 5. **Backup** *(only with `--backup`)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/).
-6. **Clear** *(only with `--clear`)*: the remote deploy directory is emptied.
-7. **Upload.** The app's artifact directory (`--dist`) is copied to the server - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
-8. **Restart.** If a post-deploy command is configured for this app, it runs on the server and its output is shown.
+6. **Clear** *(only with `--clear`)*: the target directory is emptied.
+7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
+8. **Restart.** If the path has a post-write command, it runs on the server and its output is shown.
 
 ## How the upload travels
 
@@ -87,25 +89,26 @@ The build tool's own output streams above the frame, unchanged. When stdout is n
 
 ## Configuration
 
-The settings live on two entities - the artifact directory on the app, the SSH access and the per-app target on the server - plus the secret in the keyring. One wizard walks all of them:
+The settings live on four entities - the artifact directory on the app, the host on the server, the login in a credential, the directory in a path - plus the secret in the keyring. One wizard walks all of them:
 
 ```bash
 turnout deploy-setup [APP] [--server SERVER]
 ```
 
-It asks for the artifact directory (suggesting `dist`, `build`, `out` or `public` if one already exists), the SSH `user@host[:port]`, an optional key file, the remote directory, the post-deploy command, and - only when no key was given - a password to store in the keyring. Existing values come pre-filled, so it doubles as an edit pass. Nothing is written until every answer is in.
+It asks for the artifact directory (suggesting `dist`, `build`, `out` or `public` if one already exists), the SSH `host[:port]`, which credential logs in, which path the files land in, and - only for a password credential - a secret to store in the keyring. Existing credentials and paths are offered to pick from, or a new one can be defined inline. Existing values come pre-filled, so it doubles as an edit pass. Nothing is written until every answer is in.
 
 The wizard needs a terminal. In scripts, set the same fields directly:
 
 ```bash
 turnout app edit myapp --dist dist                # what to upload
-turnout server edit prod --ssh deploy@prod.example.com
-turnout server edit prod --deploy-path myapp=/var/www/myapp
-turnout server edit prod --restart-cmd "myapp=systemctl restart myapp"
-echo "$PASSWORD" | turnout pass set prod --kind ssh --login deploy   # if no agent key
+turnout server add prod --url https://prod.example.com --host prod.example.com
+turnout credential add prod-deploy --user deploy
+turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
+turnout server edit prod --credential prod-deploy --deploy-path myapp=wwwroot
+echo "$PASSWORD" | turnout pass set prod-deploy   # if no agent key
 ```
 
-Setting a *POSIX* remote path from Git Bash needs care: it rewrites `/var/www/myapp` into a local path before turnout sees it, and turnout refuses that rather than deploying somewhere nobody chose. Run those lines from PowerShell, or prefix them with `MSYS_NO_PATHCONV=1`. A Windows deploy path (`C:\inetpub\myapp`) is unaffected. See [`turnout server`](/turnout/reference/server/#edit) and [Windows servers](/turnout/concepts/windows-servers/).
+Setting a *POSIX* remote directory from Git Bash needs care: it rewrites `/var/www/myapp` into a local path before turnout sees it, and turnout refuses that rather than deploying somewhere nobody chose. Run those lines from PowerShell, or prefix them with `MSYS_NO_PATHCONV=1`. A Windows directory (`C:\inetpub\myapp`) is unaffected. See [`turnout path`](/turnout/reference/path/) and [Windows servers](/turnout/concepts/windows-servers/).
 
 ## Examples
 
@@ -114,4 +117,6 @@ turnout deploy                          # from the project dir, to the bound ser
 turnout deploy myapp --server prod      # explicit target
 turnout deploy myapp --backup --clear   # archive, then clean, then upload
 turnout deploy myapp --no-build         # upload what is already built
+turnout deploy myapp -s prod -p staging-root   # this run only: a different path
+turnout deploy myapp -s prod -C root           # this run only: a different login
 ```

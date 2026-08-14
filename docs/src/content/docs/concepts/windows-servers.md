@@ -45,10 +45,11 @@ When the probe itself fails, turnout assumes POSIX. That is what every release b
 
 ## Deploy paths
 
-A Windows deploy path is an ordinary drive path:
+A Windows [path](/turnout/reference/path/) holds an ordinary drive directory:
 
 ```bash
-turnout server edit prod --deploy-path myapp=C:\inetpub\wwwroot\myapp
+turnout path add winroot --dir "C:\inetpub\wwwroot\myapp"
+turnout server edit prod --deploy-path myapp=winroot
 ```
 
 Drive letters, backslashes and UNC shares (`\\fileserver\share\myapp`) are all accepted. Spaces are fine too - every value is quoted before it reaches the server.

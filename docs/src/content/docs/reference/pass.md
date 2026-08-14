@@ -1,77 +1,68 @@
 ---
 title: "pass"
-description: Manage access to servers - logins and secrets in the OS keyring.
+description: Manage the secrets credentials authenticate with, stored in the OS keyring.
 sidebar:
-  order: 5
+  order: 7
 ---
 
 ```bash
-turnout pass <set|copy|show|list|remove> [...]
+turnout pass <set|copy|list|remove> [...]
 ```
 
-Access to a server is a **credential**: a login plus a secret. The login and the secret's kind are metadata (`credentials.json`); the secret value itself lives only in the OS keyring - Windows Credential Manager, macOS Keychain or Linux Secret Service. Secrets are never written to config files and never printed unless you explicitly ask.
+A secret belongs to a [credential](/turnout/reference/credential/). The credential holds the metadata - who logs in, and whether by key or password - while the value itself lives only in the OS keyring: Windows Credential Manager, macOS Keychain or Linux Secret Service. Secrets are never written to config files and never printed unless you explicitly ask.
 
-A server can hold several credentials distinguished by `--kind` (`set` defaults to `password`; use e.g. `token` or `ssh` for others).
-
-`copy`, `show` and `remove` take the server and the kind from a [picker](/turnout/concepts/pickers/) when you omit them; when a server holds exactly one kind it is used without asking.
+Every subcommand takes a credential name, or offers a [picker](/turnout/concepts/pickers/) when you omit it.
 
 ## set
 
 ```bash
-turnout pass set [SERVER] [--kind KIND] [--login LOGIN]
+turnout pass set [CREDENTIAL]
 ```
 
-| Flag | Short | Description |
-| --- | --- | --- |
-| `--kind` | `-k` | What this access is: password, token, ssh, ... |
-| `--login` | `-l` | Login for this credential |
+Interactively: type the secret twice (hidden input). For an `auth = key` credential the prompt asks for the key's passphrase instead, which is what the secret means there.
 
-Interactively: pick the server from the catalog, enter the login and type the secret twice (hidden input). In scripts, pass the server and `--login` and pipe the secret via stdin so it never lands in shell history:
+In scripts, pipe the secret via stdin so it never lands in shell history:
 
 ```bash
-echo "$SECRET" | turnout pass set staging --login deploy
+echo "$SECRET" | turnout pass set prod-deploy
 ```
 
-Running `set` again for the same server and kind updates both login and secret.
+Running `set` again replaces the stored value.
 
 ## copy
 
 ```bash
-turnout pass copy [SERVER] [--kind KIND] [--login] [--show]
+turnout pass copy [CREDENTIAL] [--user] [--show]
 ```
 
 | Flag | Short | Description |
 | --- | --- | --- |
-| `--kind` | `-k` | Access kind; when omitted the picker offers every stored kind |
-| `--login` | `-l` | Copy the login instead of the secret |
+| `--user` | `-u` | Copy the user name instead of the secret |
 | `--show` | `-s` | Print to stdout instead of copying to the clipboard |
 
-Copies the secret to the clipboard and prints only a confirmation. `--login` copies the login instead. `--show` prints the value to stdout instead of copying - an explicit opt-in for terminals without a clipboard (e.g. over SSH).
+Copies the secret to the clipboard and prints only a confirmation. `--show` prints the value to stdout instead - an explicit opt-in for terminals without a clipboard (e.g. over SSH).
 
 ```bash
-turnout pass copy staging            # secret -> clipboard
-turnout pass copy staging --login    # login  -> clipboard
-turnout pass copy staging -k token -s  # quick: print a token to stdout
+turnout pass copy prod-deploy          # secret -> clipboard
+turnout pass copy prod-deploy --user   # user    -> clipboard
+turnout pass copy prod-deploy -s       # print the secret to stdout
 ```
 
-## show / list
+## list
 
 ```bash
-turnout pass show [SERVER]  # kinds and logins for one server - never secrets
-turnout pass list           # all stored access metadata
+turnout pass list
 ```
+
+One line per credential: name, user, auth kind, and whether a secret is stored. Never the secrets themselves.
 
 ## remove
 
 ```bash
-turnout pass remove [SERVER] [--kind KIND] [--yes]
+turnout pass remove [CREDENTIAL] [--yes]
 ```
 
-| Flag | Short | Description |
-| --- | --- | --- |
-| `--kind` | `-k` | Access kind; when omitted the picker offers every stored kind |
-
-Deletes the secret from the keyring and the metadata from the catalog. `turnout server remove` does this automatically for all of the server's credentials.
+Deletes the secret from the keyring. **The credential itself stays** - rotating a password should not cost you the account. Use [`turnout credential remove`](/turnout/reference/credential/) to drop both.
 
 :::caution[Test backend]
 `TURNOUT_KEYRING=insecure-file` switches secrets to a plain JSON file in the data directory. It exists for tests and throwaway environments only - the value is stored unprotected. Leave the variable unset in real use.

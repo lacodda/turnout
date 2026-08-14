@@ -6,18 +6,24 @@ description: How turnout upgrades its own data directory when the format changes
 turnout stores its catalogs as JSON in the [data directory](/turnout/getting-started/), and `meta.json` records which shape they are in:
 
 ```json
-{ "schema_version": 1 }
+{ "schema_version": 2 }
 ```
 
 When a release changes that shape, the first command you run afterwards upgrades the directory in place and says so:
 
 ```text
-Migrating settings from schema 1 to 2.
-  A copy of the old files is in ~/.local/share/lacodda/turnout/settings-backup-v1
-  split server credentials into their own catalog
+Migrating settings from schema 2 to 3.
+  A copy of the old files is in ~/.local/share/lacodda/turnout/settings-backup-v2
+  <what the step changed>
 ```
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
+
+## When a change cannot be migrated
+
+Sometimes the new shape needs information the old one does not contain, and inventing it would be worse than stopping. That is what happened in **v0.9.0**: a server used to carry one `user@host` and an inline directory per app, and those became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/) - named entities. turnout has no way to pick names you will still recognize six months from now.
+
+So a schema-1 directory is refused rather than converted. The refusal names what changed, sets a readable copy of the old catalogs aside in `settings-backup-v1`, and lists the commands to re-enter them with. Your original files are untouched, so installing v0.8 again puts you exactly back. The walkthrough is in [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).
 
 ## Your old files are kept
 
@@ -30,7 +36,7 @@ Nothing deletes that folder. If a migration ever gets something wrong, copying t
 If the directory was written by a **newer** release than the one you are running, turnout stops:
 
 ```text
-error: this data directory was written by a newer turnout (schema 2, this build reads 1).
+error: this data directory was written by a newer turnout (schema 3, this build reads 2).
 Update turnout with `turnout self-update`, or point TURNOUT_DATA_DIR at a different directory.
 ```
 

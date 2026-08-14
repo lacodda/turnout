@@ -92,13 +92,14 @@ Recent:
 ## What you get
 
 - **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
-- **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. Copy a password to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
+- **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
+- **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand that credential reaches. Copy it to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
 - **Commands from any directory.** `dev`, `build`, `test`, `lint` and any custom command run in the right project folder. Commands are taken from your actual `package.json` scripts, so a project whose dev script is `serve` still answers to `turnout dev`.
 - **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong. Artifacts travel as a single archive instead of thousands of round trips, falling back to file-by-file when the server cannot unpack one. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
-- **Portable settings.** `export` writes your apps, servers and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
+- **Portable settings.** `export` writes your apps, servers, credentials, paths and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
 - **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
 - **Groups.** Bind a whole contour to one stand with a single `use`.
-- **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server and group names from your own catalogs. The short alias `tn` is installed alongside.
+- **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs. The short alias `tn` is installed alongside.
 - **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
 
 ## Install
@@ -141,6 +142,7 @@ turnout app add                # register a project (detects its commands)
 turnout server add             # register a stand
 turnout use                    # bind one to the other
 turnout gateway start          # route traffic through the gateway
+turnout deploy-setup           # to deploy: walks the credential and path too
 ```
 
 Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\turnout` on Windows); set `TURNOUT_DATA_DIR` to override.
@@ -151,7 +153,7 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 Everything above works today. What is next:
 
-- [ ] **Credentials and paths as their own entities** - one login reused across servers, a remote directory declared once, and named builds so a deploy stays a single word
+- [ ] **Named builds** - app + server + credential + path under one name, so `turnout deploy webui-prod` works from any directory
 - [ ] **Key-based access, set up rather than only used** - generate a key, install it on the server and verify it in one command, including the Windows administrator case
 - [ ] **Background runs** - `dev --detach`, `ps`, `logs`, `stop`, OS notifications
 - [ ] **Observability** - gateway request log, `doctor`, `report` for handing context to an assistant
