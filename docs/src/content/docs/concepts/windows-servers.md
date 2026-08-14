@@ -84,4 +84,4 @@ POSIX servers have no such limit - single-quote escaping can express any byte - 
 
 Everything that travels over SFTP rather than through a shell has always worked on Windows, and is untouched: the file-by-file upload, creating directories for the artifact tree, and the upload progress. The restart command is passed through verbatim, so write it in the server's own shell - `net stop myapp && net start myapp` rather than `systemctl restart myapp`.
 
-Authentication is unchanged as well: key file, then agent, then the password in the keyring. Note that a Windows server puts an administrator's authorized keys in `%ProgramData%\ssh\administrators_authorized_keys` with strict ACLs, not in `~/.ssh/authorized_keys` - the usual reason a key that "was added" still prompts for a password.
+Authentication is unchanged as well: the credential's key file, or the password in the keyring. Note that a Windows server puts an administrator's authorized keys in `%ProgramData%\ssh\administrators_authorized_keys` with strict ACLs, not in `~/.ssh/authorized_keys` - the usual reason a key that "was added" still prompts for a password.

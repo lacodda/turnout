@@ -1,20 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use ssh2::Session;
 
 use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
 use crate::remote::{self, Target};
 use crate::shell::Dialect;
+use crate::ssh::Session;
 
 /// Below this, packing is not worth the extra round trips: a handful of files
 /// go over SFTP faster than tar + upload + untar can set itself up.
 const ARCHIVE_THRESHOLD: u64 = 8;
-
-/// How much goes over the wire between two bar updates. Small enough that the
-/// bar moves several times a second on a home uplink, large enough that the
-/// accounting is noise next to the SFTP round trips.
-const UPLOAD_CHUNK: usize = 64 * 1024;
 
 /// Whether a tree of `files` files should travel as one archive.
 ///
@@ -201,18 +196,11 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: 
 
     let sent = archive.len() as u64;
     let transfer = Transfer::start(1, sent);
-    let sftp = session.sftp().context("cannot open SFTP")?;
-    {
-        let mut remote_file = sftp
-            .create(Path::new(&remote_archive))
-            .with_context(|| format!("cannot create {remote_archive} on the server"))?;
-        // Chunked so the bar earns its keep: one write_all of the whole buffer
-        // would credit every byte after the fact, and the bar would sit at zero
-        // for exactly as long as the upload takes - which is what it is for.
-        let mut archive_slice = &archive[..];
-        copy_chunked(&mut archive_slice, &mut remote_file, |chunk| transfer.advance(chunk))
-            .with_context(|| format!("cannot upload the archive to {remote_archive}"))?;
-    }
+    // Chunked so the bar earns its keep: crediting every byte after the fact
+    // would leave it at zero for exactly as long as the upload takes.
+    session
+        .upload_bytes(&archive, &remote_archive, |chunk| transfer.advance(chunk))
+        .with_context(|| format!("cannot upload the archive to {remote_archive}"))?;
     let elapsed = transfer.elapsed();
     transfer.done(format!(
         "Uploaded {} in {} · {}",
@@ -235,25 +223,6 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, plan: 
     }
     step.done(format!("Unpacked {} files into {}", plan.files, remote_root));
     Ok(Some((plan.files, plan.bytes)))
-}
-
-/// Copy in fixed-size chunks, reporting each as it lands.
-///
-/// This is `std::io::copy` with a progress callback: the per-file upload and
-/// the archive upload both go through it, so a single large file cannot freeze
-/// the bar for its whole duration.
-fn copy_chunked(from: &mut impl std::io::Read, to: &mut impl std::io::Write, mut on_chunk: impl FnMut(u64)) -> std::io::Result<u64> {
-    let mut buffer = vec![0u8; UPLOAD_CHUNK];
-    let mut total = 0;
-    loop {
-        let read = from.read(&mut buffer)?;
-        if read == 0 {
-            return Ok(total);
-        }
-        to.write_all(&buffer[..read])?;
-        on_chunk(read as u64);
-        total += read as u64;
-    }
 }
 
 /// Whether the server can unpack what we would send.
@@ -308,11 +277,12 @@ fn pack(plan: &Plan) -> Result<Vec<u8>> {
 
 /// SFTP upload of a planned tree; remote directories are created as needed.
 fn upload(session: &Session, remote_root: &str, plan: &Plan) -> Result<(u64, u64)> {
-    let sftp = session.sftp().context("cannot open SFTP")?;
     let remote_root = remote_root.trim_end_matches('/');
-    let _ = sftp.mkdir(Path::new(remote_root), 0o755);
+    // Parents before children (the plan is sorted that way), so no directory is
+    // created before the one it sits in.
+    session.mkdir(remote_root)?;
     for dir in &plan.dirs {
-        let _ = sftp.mkdir(Path::new(&format!("{remote_root}/{dir}")), 0o755);
+        session.mkdir(&format!("{remote_root}/{dir}"))?;
     }
 
     let transfer = Transfer::start(plan.files, plan.bytes);
@@ -320,12 +290,9 @@ fn upload(session: &Session, remote_root: &str, plan: &Plan) -> Result<(u64, u64
     let mut bytes = 0;
     for (path, relative) in &plan.entries {
         let remote = format!("{remote_root}/{relative}");
-        let mut local_file = std::fs::File::open(path).with_context(|| format!("cannot open {}", path.display()))?;
-        let mut remote_file = sftp
-            .create(Path::new(&remote))
-            .with_context(|| format!("cannot create {remote} on the server"))?;
-        let copied =
-            copy_chunked(&mut local_file, &mut remote_file, |chunk| transfer.advance(chunk)).with_context(|| format!("cannot upload {}", path.display()))?;
+        let copied = session
+            .upload(path, &remote, |chunk| transfer.advance(chunk))
+            .with_context(|| format!("cannot upload {}", path.display()))?;
         bytes += copied;
         files += 1;
     }
@@ -427,22 +394,6 @@ mod tests {
             archive.len(),
             plan.bytes
         );
-    }
-
-    /// The chunk loop is what keeps the bar honest: bytes are credited as they
-    /// leave, in bounded pieces, and the total matches what was sent.
-    #[test]
-    fn chunked_copies_report_bytes_as_they_leave() {
-        let payload = vec![7u8; super::UPLOAD_CHUNK * 2 + 123];
-        let mut sink = Vec::new();
-        let mut reported = Vec::new();
-        let total = super::copy_chunked(&mut payload.as_slice(), &mut sink, |chunk| reported.push(chunk)).expect("copy");
-
-        assert_eq!(total, payload.len() as u64);
-        assert_eq!(sink, payload, "the copy must be byte-identical");
-        assert_eq!(reported.iter().sum::<u64>(), total, "every byte is reported exactly once");
-        assert!(reported.len() >= 3, "a large payload travels in several chunks: {reported:?}");
-        assert!(reported.iter().all(|c| *c <= super::UPLOAD_CHUNK as u64), "no chunk exceeds the bound");
     }
 
     #[test]

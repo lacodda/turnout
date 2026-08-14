@@ -178,12 +178,12 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
             upgrade = upgrade.protocols(protocols.split(',').map(|p| p.trim().to_string()).collect::<Vec<_>>());
         }
     }
+    // rustls throughout (the SSH transport moved to russh + rustls too), so the
+    // gateway no longer pulls in a second, C-backed TLS stack. `None` uses
+    // tungstenite's own rustls config with the platform roots; the accept-any
+    // path is opt-in per server, exactly as before.
     let connector = if server.accept_invalid_certs {
-        let tls = native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .build()
-            .context("cannot build the TLS connector")?;
-        Some(tokio_tungstenite::Connector::NativeTls(tls))
+        Some(tokio_tungstenite::Connector::Rustls(Arc::new(accept_any_tls_config())))
     } else {
         None
     };
@@ -194,6 +194,63 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
             Err(err) => eprintln!("turnout gateway: websocket to '{server_name}' failed: {err}"),
         }
     }))
+}
+
+/// A rustls client config that accepts any server certificate.
+///
+/// Used only when a server is marked `accept_invalid_certs` - the dev stands
+/// this tool talks to serve self-signed certificates, and the alternative is
+/// not connecting to them at all. It is deliberately confined to that opt-in
+/// path; the default WebSocket connector verifies certificates normally.
+fn accept_any_tls_config() -> rustls::ClientConfig {
+    rustls::ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAnyServerCert))
+        .with_no_client_auth()
+}
+
+/// The verifier behind [`accept_any_tls_config`]: it approves every certificate
+/// and signature. Scoped to opt-in `accept_invalid_certs` servers only.
+#[derive(Debug)]
+struct AcceptAnyServerCert;
+
+impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &rustls::pki_types::CertificateDer<'_>,
+        _dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        // The default aws-lc-rs provider's full set; anything it can verify, we
+        // accept without checking.
+        rustls::crypto::aws_lc_rs::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
 }
 
 async fn pump<S>(client: WebSocket, upstream: tokio_tungstenite::WebSocketStream<S>)

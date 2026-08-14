@@ -1,14 +1,11 @@
-use std::io::Read;
-use std::net::TcpStream;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
-use ssh2::Session;
+use anyhow::{Result, bail};
 
-use crate::model::{App, Auth, Credential, Server};
+use crate::model::{App, Credential, Server};
 use crate::shell::{self, Dialect};
-use crate::{secrets, store};
+use crate::ssh::Session;
+use crate::store;
 
 /// Everything a remote operation needs, resolved from the four catalogs.
 ///
@@ -80,60 +77,17 @@ pub fn resolve(app_name: Option<String>, overrides: Overrides) -> Result<Target>
 
 /// Open a session to `server` as `credential`.
 ///
-/// Order of attempts: the credential's key file, then agent keys (ssh-agent /
-/// Pageant), then the passphrase stored under the credential's name.
+/// The transport lives in [`crate::ssh`]; this is the entry the rest of the
+/// remote layer calls. Auth order: the credential's key file when it uses one,
+/// otherwise the stored password.
 pub fn connect(server: &Server, credential: &Credential) -> Result<Session> {
-    let host = server.ssh_host();
-    let stream = TcpStream::connect((host.as_str(), server.port)).with_context(|| format!("cannot reach {host}:{}", server.port))?;
-    let mut session = Session::new()?;
-    session.set_tcp_stream(stream);
-    session.handshake().context("SSH handshake failed")?;
-
-    if credential.auth == Auth::Key {
-        let key = credential.key.as_deref().ok_or_else(|| {
-            anyhow::anyhow!(
-                "credential '{0}' authenticates by key but has no key file - set one with `turnout credential edit {0} --key PATH`",
-                credential.name
-            )
-        })?;
-        // A passphrase-protected key needs the passphrase; an unprotected one
-        // does not, and asking for one that was never stored is not an error.
-        let passphrase = secrets::get(&credential.name).ok();
-        session
-            .userauth_pubkey_file(&credential.user, None, Path::new(key), passphrase.as_deref())
-            .with_context(|| format!("key auth with {key} failed"))?;
-        return Ok(session);
-    }
-    let _ = session.userauth_agent(&credential.user);
-    if !session.authenticated() {
-        let password = secrets::get(&credential.name).map_err(|_| {
-            anyhow::anyhow!(
-                "agent auth failed and no password stored - save one with `turnout pass set {}`",
-                credential.name
-            )
-        })?;
-        session
-            .userauth_password(&credential.user, &password)
-            .context("SSH password authentication failed")?;
-    }
-    Ok(session)
+    Session::connect(server, credential)
 }
 
 /// Run a remote command and return its stdout; a non-zero exit becomes an error
 /// carrying the remote stderr.
 pub fn exec(session: &Session, command: &str) -> Result<String> {
-    let mut channel = session.channel_session()?;
-    channel.exec(command).with_context(|| format!("cannot run remote command '{command}'"))?;
-    let mut output = String::new();
-    channel.read_to_string(&mut output)?;
-    let mut stderr = String::new();
-    channel.stderr().read_to_string(&mut stderr)?;
-    channel.wait_close()?;
-    let code = channel.exit_status()?;
-    if code != 0 {
-        bail!("remote command '{command}' exited with {code}: {}", stderr.trim());
-    }
-    Ok(output)
+    session.exec(command)
 }
 
 /// Which shell answers on this server, asking it only when we do not know yet.

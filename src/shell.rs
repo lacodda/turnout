@@ -17,9 +17,9 @@
 //!    answer, so it cannot use syntax that only one side understands. See
 //!    [`PROBE`].
 //! 2. **Command strings are pure functions of the dialect.** They take values
-//!    and return a string, with no [`ssh2::Session`] anywhere near them. That
-//!    is what makes the Windows half testable from a Linux CI box and from a
-//!    developer machine that cannot reach a Windows server at all.
+//!    and return a string, with no live [`crate::ssh::Session`] anywhere near
+//!    them. That is what makes the Windows half testable from a Linux CI box and
+//!    from a developer machine that cannot reach a Windows server at all.
 
 use std::fmt;
 

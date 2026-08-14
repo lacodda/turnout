@@ -97,7 +97,7 @@ pub struct Credential {
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum Auth {
-    /// A passphrase in the OS keyring, or the SSH agent when none is stored.
+    /// A password stored in the OS keyring.
     #[default]
     Password,
     /// A private key file on this machine.

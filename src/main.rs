@@ -12,6 +12,7 @@ mod progress;
 mod remote;
 mod secrets;
 mod shell;
+mod ssh;
 mod store;
 mod term;
 mod update;

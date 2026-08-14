@@ -30,7 +30,7 @@ Passing `--key` is enough to mean key authentication; `--auth` is only needed to
 
 ```bash
 turnout credential add                                     # wizard
-turnout credential add prod-deploy --user deploy           # password or agent
+turnout credential add prod-deploy --user deploy           # password auth
 turnout credential add pi --user pi --key ~/.ssh/id_ed25519
 ```
 
@@ -76,4 +76,4 @@ Removes the credential **and** its stored secret. Servers that pointed at it are
 
 For an `auth = key` credential, the key file is used, with the stored secret - if there is one - as its passphrase. An unprotected key needs no secret at all.
 
-For an `auth = password` credential, the SSH agent (ssh-agent, Pageant) is tried first, and the stored secret only if the agent has nothing to offer. That order means an agent-managed key keeps working without anything in the keyring.
+For an `auth = password` credential, the password stored in the OS keyring is sent to the server.

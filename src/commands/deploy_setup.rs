@@ -169,7 +169,7 @@ fn choose_credential(credentials: &mut Vec<Credential>, current: Option<&str>) -
     }
     let auth = if Select::new()
         .with_prompt("Authenticates with")
-        .items(["password (or the SSH agent)", "a private key file"])
+        .items(["a password", "a private key file"])
         .default(0)
         .interact()?
         == 0

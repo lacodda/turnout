@@ -75,7 +75,7 @@ fn add(name: Option<String>, user: Option<String>, auth: Option<String>, key: Op
         None if wizard => {
             let choice = Select::new()
                 .with_prompt("Authenticates with")
-                .items(["password (or the SSH agent)", "a private key file"])
+                .items(["a password", "a private key file"])
                 .default(0)
                 .interact()?;
             if choice == 0 { Auth::Password } else { Auth::Key }
@@ -140,7 +140,7 @@ fn show(name: &str) -> Result<()> {
         if stored {
             "stored in the OS keyring"
         } else if credential.auth == Auth::Key {
-            "none (the key file is unprotected, or the agent holds the passphrase)"
+            "none (the key file is unprotected)"
         } else {
             "none - save one with `turnout pass set`"
         }

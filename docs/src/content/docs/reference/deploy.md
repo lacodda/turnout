@@ -28,7 +28,7 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 1. **Resolve.** The app comes from the argument or the current directory; the target server from `--server` or the app's current [binding](/turnout/reference/use/); the [credential](/turnout/reference/credential/) and [path](/turnout/reference/path/) from the server's own settings, unless `--credential` or `--path` name others for this run.
 2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy. The build tool's own output streams through unchanged.
 3. **Plan.** The artifact directory is walked to count files and bytes, so the upload can report a percentage and an ETA. An empty artifact directory aborts the deploy before anything is sent.
-4. **Connect.** SSH to the server's host and port as the credential's user. Auth order: the credential's key file, then agent keys (ssh-agent / Pageant), then the secret stored in the keyring under the credential's name.
+4. **Connect.** SSH to the server's host and port as the credential's user, with the credential's key file or the password stored in the keyring under its name.
 5. **Backup** *(only with `--backup`)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/).
 6. **Clear** *(only with `--clear`)*: the target directory is emptied.
 7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
@@ -105,7 +105,7 @@ turnout server add prod --url https://prod.example.com --host prod.example.com
 turnout credential add prod-deploy --user deploy
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
 turnout server edit prod --credential prod-deploy --deploy-path myapp=wwwroot
-echo "$PASSWORD" | turnout pass set prod-deploy   # if no agent key
+echo "$PASSWORD" | turnout pass set prod-deploy   # for a password credential
 ```
 
 Setting a *POSIX* remote directory from Git Bash needs care: it rewrites `/var/www/myapp` into a local path before turnout sees it, and turnout refuses that rather than deploying somewhere nobody chose. Run those lines from PowerShell, or prefix them with `MSYS_NO_PATHCONV=1`. A Windows directory (`C:\inetpub\myapp`) is unaffected. See [`turnout path`](/turnout/reference/path/) and [Windows servers](/turnout/concepts/windows-servers/).
