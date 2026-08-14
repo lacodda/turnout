@@ -7,6 +7,19 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.10.0] - 2026-08-14
+
+### Breaking Changes
+
+- **Move the SSH transport to russh, unify TLS on rustls**
+ssh-agent auth is dropped. It rode on libssh2's
+userauth_agent; russh reaches an agent through a separate integration, deferred
+to the key-setup stage. Authentication is now the credential's key file or the
+stored password. A key credential that relied on the agent needs its key file
+set explicitly (`turnout credential edit NAME --key PATH`). See ADR 0011.
+
+### Features
+- Move the SSH transport to russh, unify TLS on rustls
 ## [0.9.1] - 2026-08-14
 
 ### Bug Fixes
