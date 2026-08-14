@@ -74,12 +74,13 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.8.0
+turnout 0.9.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
 Group:   contour (web, api)
-Access:  saved for prod-eu
+Creds:   1 (prod-deploy)
+Paths:   1 (wwwroot)
 Bindings:
   api -> staging
   web -> prod-eu

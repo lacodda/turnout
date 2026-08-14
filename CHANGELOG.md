@@ -7,6 +7,21 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.9.0] - 2026-08-14
+
+### Breaking Changes
+
+- **Split servers into servers, credentials and paths**
+schema 1 data directories are refused, not migrated - the new
+entities need names turnout cannot invent. The refusal sets a readable copy
+aside in settings-backup-v1 and names the commands to re-enter with; the
+originals are untouched. Exports move to format 2 for the same reason.
+
+### Documentation
+- Document credentials, paths and the move off the old shape
+
+### Features
+- Split servers into servers, credentials and paths
 ## [0.8.0] - 2026-08-13
 
 ### Bug Fixes
