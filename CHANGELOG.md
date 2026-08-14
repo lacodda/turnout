@@ -7,6 +7,10 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.9.1] - 2026-08-14
+
+### Bug Fixes
+- Clear the way out of a data directory this build refuses
 ## [0.9.0] - 2026-08-14
 
 ### Breaking Changes
