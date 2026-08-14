@@ -13,6 +13,14 @@ Initializes turnout on this machine: shows where the data directory will be crea
 
 Running `setup` again on an initialized machine is safe - it reports the current location and does nothing.
 
+## On settings this build cannot read
+
+`setup` is the one command that still works when the data directory holds an older schema, because it is what every refusal points at. There it offers to start over instead: the old catalogs move into `settings-backup-v<N>` beside them, and an empty catalog is created at the current schema.
+
+Nothing happens without confirmation, and nothing is deleted - the retired files are what you re-enter from. The journal stays, and secrets in the OS keyring are untouched. See [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/) for the walkthrough.
+
+A directory written by a *newer* turnout is not offered a reset: there the fix is to update turnout, and starting fresh would throw away settings that are perfectly fine.
+
 ## Options
 
 | Option | Description |

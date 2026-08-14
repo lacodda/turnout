@@ -116,6 +116,42 @@ fn copy_for_reference(dir: &Path) -> Result<PathBuf> {
     Ok(backup)
 }
 
+/// Move catalogs this build cannot read out of the way, so a fresh one can be
+/// started in their place. Returns where they went.
+///
+/// Moved rather than deleted, and moved rather than copied: leaving the old
+/// `servers.json` next to a new one would mean two files claiming to be the
+/// catalog, and the next release that *can* migrate would find the wrong shape.
+///
+/// The journal and the update cache stay: they are not catalogs, and a user's
+/// history of what they did survives a reset. Secrets in the OS keyring are not
+/// touched at all - they are not in this directory.
+pub fn retire_catalogs(dir: &Path, from: u32) -> Result<PathBuf> {
+    // Reuse the folder an earlier refusal already made, rather than opening a
+    // second one: the user was told where to read the old values, and splitting
+    // them across `settings-backup-v1` and `-v1-2` would make that a lie.
+    let existing = dir.join(format!("settings-backup-v{from}"));
+    let aside = if existing.is_dir() { existing } else { backup_dir(dir, from) };
+    std::fs::create_dir_all(&aside).with_context(|| format!("cannot create {}", aside.display()))?;
+    for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
+        let entry = entry?;
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let name = entry.file_name();
+        let target = aside.join(&name);
+        // A reference copy from an earlier refusal may already hold this file;
+        // the original is the same content, so keeping the first is fine.
+        if target.exists() {
+            std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
+            continue;
+        }
+        std::fs::rename(&path, &target).with_context(|| format!("cannot move {} aside", path.display()))?;
+    }
+    Ok(aside)
+}
+
 /// Bring `dir` up to [`CURRENT_VERSION`], reporting anything it does.
 ///
 /// Returns the version the directory was on before, so callers can tell a
@@ -286,6 +322,49 @@ mod tests {
             "edited by hand",
             "an existing copy must not be overwritten"
         );
+    }
+
+    /// `setup` is what every refusal points at, so it has to be able to clear
+    /// the way: the old catalogs move aside, the journal stays, and the folder
+    /// is the same one the refusal already named.
+    #[test]
+    fn retiring_catalogs_moves_them_into_the_folder_the_user_was_told_about() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"pi\"}]").unwrap();
+        std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
+        std::fs::write(dir.path().join("journal.jsonl"), "{}").unwrap();
+        // The refusal ran first and already made a reference copy.
+        let _ = run(dir.path(), 1);
+
+        let aside = retire_catalogs(dir.path(), 1).unwrap();
+
+        assert_eq!(aside, dir.path().join("settings-backup-v1"), "a second folder would strand half the files");
+        assert!(!dir.path().join("servers.json").exists(), "catalogs must be gone from the data dir");
+        assert!(dir.path().join("journal.jsonl").exists(), "the journal is not a catalog and stays");
+        assert_eq!(
+            std::fs::read_to_string(aside.join("servers.json")).unwrap(),
+            "[{\"name\":\"pi\"}]",
+            "the old values must survive - they are what gets re-entered"
+        );
+        let folders: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("settings-backup"))
+            .collect();
+        assert_eq!(folders, vec!["settings-backup-v1"], "{folders:?}");
+    }
+
+    /// Without a prior refusal there is nothing to reuse, and the catalogs
+    /// still have to land somewhere named.
+    #[test]
+    fn retiring_catalogs_works_without_a_previous_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[]").unwrap();
+
+        let aside = retire_catalogs(dir.path(), 1).unwrap();
+
+        assert!(aside.join("servers.json").is_file());
+        assert!(!dir.path().join("servers.json").exists());
     }
 
     #[test]

@@ -53,7 +53,9 @@ Your **secrets are still in the OS keyring** and are not in those files. You wil
 turnout setup
 ```
 
-This writes a fresh `meta.json` at schema 2 alongside the old files.
+On a refused directory `setup` explains what starting over means and asks to confirm. Saying yes moves the old catalogs into `settings-backup-v1` - the same folder the refusal named - and starts an empty catalog at the current schema. Saying no changes nothing at all.
+
+Your journal is kept, and the secrets in the OS keyring are not touched; each one simply needs to be attached to whichever credential now owns it (step 4).
 
 ### 3. Re-enter the entities
 

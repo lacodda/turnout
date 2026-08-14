@@ -61,6 +61,38 @@ pub fn is_initialized() -> Result<bool> {
     Ok(meta_path()?.exists())
 }
 
+/// Whether the data directory exists but holds a schema this build refuses.
+///
+/// Only [`crate::commands::setup`] asks: every other command funnels through
+/// [`require_initialized`] and gets the refusal with its instructions. Setup is
+/// what those instructions point at, so it has to see the state rather than
+/// trip over it.
+pub fn needs_reset() -> Result<bool> {
+    let dir = paths::data_dir()?;
+    if !dir.join(META_FILE).exists() {
+        return Ok(false);
+    }
+    let stored = stored_version(&dir);
+    // A *newer* directory is not something to reset over: the fix there is to
+    // update turnout, and starting fresh would discard settings that are fine.
+    Ok(stored < SCHEMA_VERSION)
+}
+
+/// Move the unreadable catalogs aside and start a catalog at the current schema.
+///
+/// Returns where the old files went. They are moved, not deleted: they are the
+/// only record of what the user is about to re-enter.
+pub fn reset_to_current_schema() -> Result<PathBuf> {
+    let dir = paths::data_dir()?;
+    let from = stored_version(&dir);
+    let aside = crate::migrate::retire_catalogs(&dir, from)?;
+    let json = serde_json::to_string_pretty(&Meta {
+        schema_version: SCHEMA_VERSION,
+    })?;
+    fs::write(dir.join(META_FILE), json).context("cannot write meta.json")?;
+    Ok(aside)
+}
+
 pub fn initialize() -> Result<PathBuf> {
     let dir = paths::data_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;

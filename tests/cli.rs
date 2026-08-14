@@ -45,6 +45,64 @@ fn setup_is_idempotent() {
         .stdout(predicate::str::contains("already set up"));
 }
 
+/// The whole way out of a schema-1 directory, end to end.
+///
+/// Every refusal tells the user to run `setup`, so `setup` has to be the one
+/// command that works there - and the walkthrough it points at has to actually
+/// get them to a usable catalog.
+#[test]
+fn setup_clears_the_way_out_of_a_refused_data_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 1}"#).unwrap();
+    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"pi","url":"http://pi:8081"}]"#).unwrap();
+
+    // Any ordinary command refuses - with a non-zero exit, since it did not do
+    // what was asked - and names the way forward.
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("turnout setup"));
+
+    // `setup` must not answer "already set up" here - that was the dead end.
+    turnout(dir.path())
+        .args(["setup", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("older turnout").and(predicate::str::contains("already set up").not()));
+
+    // And now the catalog is usable: the old values are readable beside it.
+    assert!(
+        dir.path().join("settings-backup-v1").join("servers.json").is_file(),
+        "the values being re-entered must survive"
+    );
+    turnout(dir.path()).args(["server", "add", "pi", "--url", "http://pi:8081"]).assert().success();
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Servers: 1 (pi)"));
+}
+
+/// Declining leaves everything exactly as it was - a user who ran `setup` to
+/// see what it says must not lose their catalogs to that.
+#[test]
+fn setup_on_a_refused_directory_changes_nothing_unless_confirmed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 1}"#).unwrap();
+    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"pi"}]"#).unwrap();
+
+    // No terminal to confirm on, and `--yes` withheld: the prompt cannot be
+    // answered, so nothing may be touched.
+    turnout(dir.path()).args(["setup"]).assert().failure();
+    assert_eq!(std::fs::read_to_string(dir.path().join("servers.json")).unwrap(), r#"[{"name":"pi"}]"#);
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("meta.json")).unwrap(),
+        r#"{"schema_version": 1}"#,
+        "the schema marker must not move without confirmation"
+    );
+}
+
 #[test]
 fn status_after_setup_shows_overview() {
     let dir = tempfile::tempdir().unwrap();
