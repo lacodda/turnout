@@ -1,78 +1,52 @@
+//! The secrets credentials authenticate with, kept in the OS keyring.
+//!
+//! Since v0.9.0 a secret belongs to a credential rather than to a
+//! (server, kind) pair: the same deploy account reaches several stands, and its
+//! password is one thing, not one per stand.
+
 use std::io::Read;
 
 use anyhow::{Context, Result, bail};
-use dialoguer::{Input, Password};
+use dialoguer::Password;
 
 use crate::cli::PassCommand;
-use crate::model::Credential;
+use crate::model::Auth;
 use crate::{pick, secrets, store};
 
 pub fn run(command: PassCommand) -> Result<()> {
     match command {
-        PassCommand::Set { server, kind, login } => set(server, &kind, login),
-        PassCommand::Copy { server, kind, login, show } => copy(server, kind, login, show),
-        PassCommand::Show { server } => show(server),
+        PassCommand::Set { credential } => set(credential),
+        PassCommand::Copy { credential, user, show } => copy(credential, user, show),
         PassCommand::List => list(),
-        PassCommand::Remove { server, kind, assume_yes } => remove(server, kind, assume_yes),
+        PassCommand::Remove { credential, assume_yes } => remove(credential, assume_yes),
     }
 }
 
-/// Resolve the (server, kind) pair a command works on. A given server narrows
-/// the choice to its own kinds; with neither argument the picker lists
-/// everything stored.
-fn resolve(server: Option<String>, kind: Option<String>, prompt: &str) -> Result<(String, String)> {
+/// Resolve the credential a command works on, checking it exists.
+fn resolve(name: Option<String>, prompt: &str) -> Result<crate::model::Credential> {
     let credentials = store::load_credentials()?;
-    match (server, kind) {
-        (Some(server), Some(kind)) => Ok((server, kind)),
-        (Some(server), None) => {
-            let matching: Vec<&Credential> = credentials.iter().filter(|c| c.server == server).collect();
-            match matching.as_slice() {
-                [] => bail!("no access saved for '{server}' - run `turnout pass set {server}`"),
-                [only] => Ok((server.clone(), only.kind.clone())),
-                _ => {
-                    let owned: Vec<Credential> = matching.into_iter().cloned().collect();
-                    pick::credential(&owned, None, prompt)
-                }
-            }
-        }
-        (None, kind) => pick::credential(&credentials, kind.as_deref(), prompt),
-    }
+    let name = match name {
+        Some(name) => name,
+        None => pick::credential(&credentials, prompt)?,
+    };
+    credentials
+        .into_iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| anyhow::anyhow!("no credential named '{name}' - see `turnout credential list`"))
 }
 
-fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> {
-    let servers = store::load_servers()?;
-    if servers.is_empty() {
-        bail!("no servers in the catalog yet - run `turnout server add` first");
-    }
+fn set(name: Option<String>) -> Result<()> {
+    let credential = resolve(name, "Set the secret of")?;
     let interactive = pick::interactive();
 
-    let server = match server {
-        Some(server) => server,
-        None => pick::server(&servers, "Server")?,
+    let prompt = if credential.auth == Auth::Key {
+        format!("Passphrase for the key of '{}'", credential.name)
+    } else {
+        format!("Secret for '{}'", credential.name)
     };
-    if !servers.iter().any(|s| s.name == server) {
-        bail!("no server named '{server}' - see `turnout server list`");
-    }
-
-    let mut credentials = store::load_credentials()?;
-    let existing = credentials.iter().position(|c| c.server == server && c.kind == kind);
-
-    let login = match login {
-        Some(login) => login,
-        None => {
-            pick::ensure_interactive("--login is required")?;
-            let current = existing.map(|i| credentials[i].login.clone()).unwrap_or_default();
-            let mut input = Input::new().with_prompt("Login");
-            if !current.is_empty() {
-                input = input.default(current);
-            }
-            input.interact_text()?
-        }
-    };
-
     let secret = if interactive {
         Password::new()
-            .with_prompt(format!("Secret ({kind})"))
+            .with_prompt(prompt)
             .with_confirmation("Repeat to confirm", "Values do not match")
             .interact()?
     } else {
@@ -87,36 +61,23 @@ fn set(server: Option<String>, kind: &str, login: Option<String>) -> Result<()> 
         }
         // Off-terminal the secret comes from stdin, so an empty one usually
         // means nothing was piped in rather than that an empty value was meant.
-        bail!("no secret on stdin - pipe it in, e.g. `echo \"$PASSWORD\" | turnout pass set {server} --kind {kind}`");
+        bail!(
+            "no secret on stdin - pipe it in, e.g. `echo \"$PASSWORD\" | turnout pass set {}`",
+            credential.name
+        );
     }
 
-    secrets::set(&server, kind, &secret)?;
-    match existing {
-        Some(index) => credentials[index].login = login,
-        None => credentials.push(Credential {
-            server: server.clone(),
-            kind: kind.to_string(),
-            login,
-        }),
-    }
-    credentials.sort_by(|a, b| (a.server.as_str(), a.kind.as_str()).cmp(&(b.server.as_str(), b.kind.as_str())));
-    store::save_credentials(&credentials)?;
-    println!("Access to '{server}' ({kind}) saved.");
+    secrets::set(&credential.name, &secret)?;
+    println!("Secret for '{}' saved to the OS keyring.", credential.name);
     Ok(())
 }
 
-fn copy(server: Option<String>, kind: Option<String>, login: bool, show: bool) -> Result<()> {
-    let (server, kind) = resolve(server, kind, "Copy access for")?;
-    let (server, kind) = (server.as_str(), kind.as_str());
-    let credentials = store::load_credentials()?;
-    let credential = credentials
-        .iter()
-        .find(|c| c.server == server && c.kind == kind)
-        .ok_or_else(|| anyhow::anyhow!("no access saved for '{server}' ({kind}) - run `turnout pass set {server}`"))?;
-    let (value, what) = if login {
-        (credential.login.clone(), "Login")
+fn copy(name: Option<String>, user: bool, show: bool) -> Result<()> {
+    let credential = resolve(name, "Copy the secret of")?;
+    let (value, what) = if user {
+        (credential.user.clone(), "User")
     } else {
-        (secrets::get(server, kind)?, "Secret")
+        (secrets::get(&credential.name)?, "Secret")
     };
     if show {
         println!("{value}");
@@ -125,59 +86,38 @@ fn copy(server: Option<String>, kind: Option<String>, login: bool, show: bool) -
     arboard::Clipboard::new()
         .and_then(|mut clipboard| clipboard.set_text(value))
         .context("cannot access the clipboard (use --show to print instead)")?;
-    println!("{what} for '{server}' ({kind}) copied to the clipboard.");
-    Ok(())
-}
-
-fn show(server: Option<String>) -> Result<()> {
-    let credentials = store::load_credentials()?;
-    let server = match server {
-        Some(server) => server,
-        // Only servers that actually have access saved are worth showing.
-        None => pick::credential(&credentials, None, "Show access for")?.0,
-    };
-    let server = server.as_str();
-    let matching: Vec<&Credential> = credentials.iter().filter(|c| c.server == server).collect();
-    if matching.is_empty() {
-        println!("No access saved for '{server}'.");
-        return Ok(());
-    }
-    println!("{server}");
-    for credential in matching {
-        println!("  {:10} login {}", credential.kind, credential.login);
-    }
-    println!("Secrets are stored in the OS keyring; copy with `turnout pass copy {server}`.");
+    println!("{what} for '{}' copied to the clipboard.", credential.name);
     Ok(())
 }
 
 fn list() -> Result<()> {
     let credentials = store::load_credentials()?;
     if credentials.is_empty() {
-        println!("No access saved yet - run `turnout pass set`.");
+        println!("No credentials yet - run `turnout credential add`.");
         return Ok(());
     }
-    let width = credentials.iter().map(|c| c.server.len()).max().unwrap_or(0);
-    for credential in credentials {
-        println!("{:width$}  {:10} login {}", credential.server, credential.kind, credential.login);
+    let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    for credential in &credentials {
+        let stored = if secrets::get(&credential.name).is_ok() { "stored" } else { "-" };
+        println!("{:width$}  {}@  {:8}  {stored}", credential.name, credential.user, credential.auth);
     }
+    println!("Secrets live in the OS keyring; copy one with `turnout pass copy NAME`.");
     Ok(())
 }
 
-fn remove(server: Option<String>, kind: Option<String>, assume_yes: bool) -> Result<()> {
-    let (server, kind) = resolve(server, kind, "Remove access for")?;
-    let (server, kind) = (server.as_str(), kind.as_str());
-    let mut credentials = store::load_credentials()?;
-    if !credentials.iter().any(|c| c.server == server && c.kind == kind) {
-        bail!("no access saved for '{server}' ({kind})");
+fn remove(name: Option<String>, assume_yes: bool) -> Result<()> {
+    let credential = resolve(name, "Remove the secret of")?;
+    if secrets::get(&credential.name).is_err() {
+        bail!("no secret stored for '{}'", credential.name);
     }
-    let confirmed = pick::confirm_destructive(format!("Remove access to '{server}' ({kind})?"), assume_yes)?;
+    let confirmed = pick::confirm_destructive(format!("Remove the stored secret of '{}'?", credential.name), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
         return Ok(());
     }
-    secrets::delete(server, kind)?;
-    credentials.retain(|c| !(c.server == server && c.kind == kind));
-    store::save_credentials(&credentials)?;
-    println!("Access to '{server}' ({kind}) removed.");
+    secrets::delete(&credential.name)?;
+    // The credential itself stays: dropping it too would turn "I rotated my
+    // password" into "I lost the account".
+    println!("Secret for '{}' removed; the credential itself is unchanged.", credential.name);
     Ok(())
 }

@@ -31,7 +31,18 @@ pub enum Command {
         #[command(subcommand)]
         command: ServerCommand,
     },
-    /// Manage access to servers: logins and secrets in the OS keyring
+    /// Manage credentials - who logs in, and with a key or a password
+    #[command(alias = "cred")]
+    Credential {
+        #[command(subcommand)]
+        command: CredentialCommand,
+    },
+    /// Manage paths - named remote directories to deploy into
+    Path {
+        #[command(subcommand)]
+        command: PathCommand,
+    },
+    /// Manage the secrets credentials use, stored in the OS keyring
     Pass {
         #[command(subcommand)]
         command: PassCommand,
@@ -81,6 +92,12 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
+        /// Credential to log in with (defaults to the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Named path to deploy into (defaults to the server's for this app)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
         /// Skip the build step
         #[arg(short = 'n', long)]
         no_build: bool,
@@ -100,6 +117,12 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
+        /// Credential to log in with (defaults to the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Named path to back up (defaults to the server's for this app)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
     },
     /// Restore an app's deploy directory from a backup
     Restore {
@@ -107,6 +130,12 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
+        /// Credential to log in with (defaults to the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Named path to restore into (defaults to the server's for this app)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
         /// Backup archive name (defaults to the newest)
         #[arg(short, long)]
         from: Option<String>,
@@ -161,6 +190,8 @@ pub enum Command {
 pub enum CompleteKind {
     Apps,
     Servers,
+    Credentials,
+    Paths,
     Groups,
     /// Apps and groups together - what `use` accepts first
     Targets,
@@ -218,44 +249,113 @@ pub enum GatewayCommand {
 
 #[derive(Subcommand)]
 pub enum PassCommand {
-    /// Save or update access to a server; asks interactively for what's missing
+    /// Save or replace a credential's secret in the OS keyring
     Set {
-        /// Server name from the catalog
-        server: Option<String>,
-        /// What this access is: password, token, ssh, ...
-        #[arg(short, long, default_value = "password")]
-        kind: String,
-        #[arg(short, long)]
-        login: Option<String>,
+        /// Credential name; picked interactively when omitted
+        credential: Option<String>,
     },
-    /// Copy the secret (or login) to the clipboard
+    /// Copy the secret (or the user) to the clipboard
     Copy {
-        /// Server name; picked interactively when omitted
-        server: Option<String>,
-        /// Access kind; when omitted the picker offers every stored kind
+        /// Credential name; picked interactively when omitted
+        credential: Option<String>,
+        /// Copy the user name instead of the secret
         #[arg(short, long)]
-        kind: Option<String>,
-        /// Copy the login instead of the secret
-        #[arg(short, long)]
-        login: bool,
+        user: bool,
         /// Print to stdout instead of copying to the clipboard
         #[arg(short, long)]
         show: bool,
     },
-    /// Show access metadata for a server (never prints secrets)
-    Show {
-        /// Server name; picked interactively when omitted
-        server: Option<String>,
-    },
-    /// List all stored access metadata
+    /// List which credentials have a secret stored (never prints secrets)
     List,
-    /// Remove stored access to a server
+    /// Remove a credential's stored secret; the credential itself stays
     Remove {
-        /// Server name; picked interactively when omitted
-        server: Option<String>,
-        /// Access kind; when omitted the picker offers every stored kind
+        /// Credential name; picked interactively when omitted
+        credential: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CredentialCommand {
+    /// Add a credential; missing details are asked interactively
+    Add {
+        /// Credential name (lowercase letters, digits, dashes)
+        name: Option<String>,
+        /// Remote user this logs in as
         #[arg(short, long)]
-        kind: Option<String>,
+        user: Option<String>,
+        /// How it authenticates: password or key
+        #[arg(short, long)]
+        auth: Option<String>,
+        /// Private key file (implies --auth key)
+        #[arg(short = 'K', long, value_name = "PATH")]
+        key: Option<String>,
+    },
+    /// List credentials
+    List,
+    /// Show one credential in detail (never prints secrets)
+    Show {
+        /// Credential name; picked interactively when omitted
+        name: Option<String>,
+    },
+    /// Edit a credential; with no flags an interactive wizard walks the fields
+    Edit {
+        /// Credential name; picked interactively when omitted
+        name: Option<String>,
+        #[arg(short, long)]
+        user: Option<String>,
+        #[arg(short, long)]
+        auth: Option<String>,
+        /// Private key file (empty value removes it)
+        #[arg(short = 'K', long, value_name = "PATH")]
+        key: Option<String>,
+    },
+    /// Remove a credential and its stored secret
+    Remove {
+        /// Credential name; picked interactively when omitted
+        name: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PathCommand {
+    /// Add a path; missing details are asked interactively
+    Add {
+        /// Path name (lowercase letters, digits, dashes)
+        name: Option<String>,
+        /// Absolute directory on the server
+        #[arg(short, long)]
+        dir: Option<String>,
+        /// Command to run on the server after writing here
+        #[arg(short, long)]
+        restart: Option<String>,
+    },
+    /// List paths
+    List,
+    /// Show one path in detail
+    Show {
+        /// Path name; picked interactively when omitted
+        name: Option<String>,
+    },
+    /// Edit a path; with no flags an interactive wizard walks the fields
+    Edit {
+        /// Path name; picked interactively when omitted
+        name: Option<String>,
+        #[arg(short, long)]
+        dir: Option<String>,
+        /// Post-write command (empty value removes it)
+        #[arg(short, long)]
+        restart: Option<String>,
+    },
+    /// Remove a path; servers that used it are updated
+    Remove {
+        /// Path name; picked interactively when omitted
+        name: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
@@ -333,9 +433,12 @@ pub enum ServerCommand {
         /// Human-friendly label
         #[arg(short, long)]
         label: Option<String>,
-        /// SSH access for deploy and remote operations
-        #[arg(short, long, value_name = "USER@HOST[:PORT]")]
-        ssh: Option<String>,
+        /// SSH host and port when they differ from the URL's host
+        #[arg(short = 'H', long, value_name = "HOST[:PORT]")]
+        host: Option<String>,
+        /// Credential used to log in here
+        #[arg(short, long)]
+        credential: Option<String>,
         /// Accept self-signed or invalid TLS certificates for this server
         #[arg(short, long)]
         insecure: bool,
@@ -355,23 +458,21 @@ pub enum ServerCommand {
         url: Option<String>,
         #[arg(short, long)]
         label: Option<String>,
-        #[arg(short, long, value_name = "USER@HOST[:PORT]")]
-        ssh: Option<String>,
-        /// Private key file for SSH auth (empty value removes it)
-        #[arg(short = 'K', long = "ssh-key", value_name = "PATH")]
-        ssh_key: Option<String>,
+        /// SSH host and port (empty value falls back to the URL's host)
+        #[arg(short = 'H', long, value_name = "HOST[:PORT]")]
+        host: Option<String>,
+        /// Credential used to log in here (empty value unsets it)
+        #[arg(short, long)]
+        credential: Option<String>,
         /// Accept invalid TLS certificates for this server
         #[arg(short, long, conflicts_with = "secure")]
         insecure: bool,
         /// Require valid TLS certificates for this server
         #[arg(short = 'S', long)]
         secure: bool,
-        /// Set an app's deploy directory as APP=DIR, or APP= to remove (repeatable)
-        #[arg(short = 'd', long = "deploy-path", value_name = "APP=DIR")]
+        /// Point an app at a named path as APP=PATH, or APP= to remove (repeatable)
+        #[arg(short = 'd', long = "deploy-path", value_name = "APP=PATH")]
         deploy_paths: Vec<String>,
-        /// Set an app's post-deploy command as APP=CMD, or APP= to remove (repeatable)
-        #[arg(short = 'r', long = "restart-cmd", value_name = "APP=CMD")]
-        restart_cmds: Vec<String>,
     },
     /// Remove a server from the catalog; apps that allowed it are updated
     Remove {

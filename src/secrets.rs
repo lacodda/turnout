@@ -26,44 +26,48 @@ fn backend() -> Result<Backend> {
     }
 }
 
-fn account(server: &str, kind: &str) -> String {
-    format!("{server}/{kind}")
+/// The keyring account a credential's secret lives under.
+///
+/// The credential's own name since v0.9.0. It used to be `server/kind`, which
+/// tied one secret to one server - exactly what free-standing credentials undo.
+fn account(credential: &str) -> String {
+    credential.to_string()
 }
 
-pub fn set(server: &str, kind: &str, value: &str) -> Result<()> {
+pub fn set(credential: &str, value: &str) -> Result<()> {
     match backend()? {
-        Backend::Keyring => keyring::Entry::new(KEYRING_SERVICE, &account(server, kind))?
+        Backend::Keyring => keyring::Entry::new(KEYRING_SERVICE, &account(credential))?
             .set_password(value)
             .context("cannot write the secret to the OS keyring"),
         Backend::InsecureFile => {
             let mut store = read_file_store()?;
-            store.insert(account(server, kind), value.to_string());
+            store.insert(account(credential), value.to_string());
             write_file_store(&store)
         }
     }
 }
 
-pub fn get(server: &str, kind: &str) -> Result<String> {
-    let missing = || anyhow::anyhow!("no secret stored for '{server}' ({kind}) - run `turnout pass set {server}`");
+pub fn get(credential: &str) -> Result<String> {
+    let missing = || anyhow::anyhow!("no secret stored for credential '{credential}' - run `turnout pass set {credential}`");
     match backend()? {
-        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, &account(server, kind))?.get_password() {
+        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, &account(credential))?.get_password() {
             Ok(value) => Ok(value),
             Err(keyring::Error::NoEntry) => Err(missing()),
             Err(err) => Err(err).context("cannot read the secret from the OS keyring"),
         },
-        Backend::InsecureFile => read_file_store()?.get(&account(server, kind)).cloned().ok_or_else(missing),
+        Backend::InsecureFile => read_file_store()?.get(&account(credential)).cloned().ok_or_else(missing),
     }
 }
 
-pub fn delete(server: &str, kind: &str) -> Result<()> {
+pub fn delete(credential: &str) -> Result<()> {
     match backend()? {
-        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, &account(server, kind))?.delete_credential() {
+        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, &account(credential))?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(err) => Err(err).context("cannot delete the secret from the OS keyring"),
         },
         Backend::InsecureFile => {
             let mut store = read_file_store()?;
-            store.remove(&account(server, kind));
+            store.remove(&account(credential));
             write_file_store(&store)
         }
     }

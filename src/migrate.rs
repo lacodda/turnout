@@ -2,8 +2,8 @@
 //!
 //! `schema_version` has been written since the first release but never read,
 //! which was fine while there was only one shape. This is the machinery that
-//! starts reading it, so the breaking entity split in v0.6.0 has something to
-//! migrate *with* rather than a hard failure to apologize for.
+//! reads it, so a breaking change has somewhere to be handled rather than
+//! becoming a parse error nobody can act on.
 //!
 //! Three rules shape everything here:
 //!
@@ -15,13 +15,24 @@
 //! 3. **Never surprise.** Migrations run automatically because a tool that
 //!    refuses to start until you type a magic command is just a worse error
 //!    message - but they say what they did.
+//!
+//! Schema 1 -> 2 is the exception, and deliberately so: the v0.9.0 entity split
+//! has no automatic migration ([`refuse_schema_1`]). A server's single
+//! `user@host` became a server plus a credential, and its per-app directories
+//! became named paths - choices about what to call things that turnout would
+//! have to invent. Inventing them is how a catalog ends up full of `prod-cred-1`
+//! entries nobody recognizes. The data is left untouched and the user is told
+//! exactly what to do instead.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
-pub const CURRENT_VERSION: u32 = 1;
+///
+/// 2 since v0.9.0: servers hold host/port and point at named credentials and
+/// paths, which are catalogs of their own.
+pub const CURRENT_VERSION: u32 = 2;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -33,14 +44,77 @@ struct Step {
     /// What this step changes, shown to the user when it runs.
     describes: &'static str,
     apply: fn(&Path) -> Result<()>,
+    /// Whether this step rewrites files, and therefore needs the safety copy.
+    ///
+    /// A step that only refuses (see [`refuse_schema_1`]) writes nothing, so
+    /// backing the directory up first would leave a folder the user has to
+    /// clean up after an operation that never happened.
+    rewrites: bool,
 }
 
 /// Every known migration, in order.
+const STEPS: &[Step] = &[Step {
+    from: 1,
+    describes: "refused: the v0.9.0 entity split has no automatic migration",
+    apply: refuse_schema_1,
+    rewrites: false,
+}];
+
+/// The v0.9.0 split, explained instead of guessed at.
 ///
-/// Empty until the first breaking change (the v0.6.0 entity split). The
-/// machinery ships first on purpose: a migration is only useful if the version
-/// that *precedes* the break already knows how to run one.
-const STEPS: &[Step] = &[];
+/// Deciding *not* to migrate is the migration here. Every server used to carry
+/// one `user@host` and a directory per app; those are now three entities that
+/// each need a name, and turnout has no way to pick names a user will recognize
+/// six months later. What it can do is say precisely what changed and leave the
+/// files exactly as they were - a user who downgrades finds their old turnout
+/// still working.
+///
+/// The instructions deliberately do not say "run `turnout export` first":
+/// export reads the catalogs, so it hits this very refusal. The old files are
+/// already plain JSON, and the copy is made here rather than asked for.
+fn refuse_schema_1(dir: &Path) -> Result<()> {
+    let saved = copy_for_reference(dir);
+    let where_to_read = match &saved {
+        Ok(path) => format!("A copy to read the old values from is in\n  {}\n", path.display()),
+        // Not fatal: the originals are untouched either way, and the user can
+        // open them directly.
+        Err(err) => format!("(could not set a copy aside: {err:#} - the originals in that directory are still readable)\n"),
+    };
+    bail!(
+        "these settings were written by turnout 0.8 or older (schema 1), and v0.9.0 changed how they are stored.\n\
+         \n\
+         What changed: a server used to hold the login and every app's remote directory. Now\n\
+         logins are credentials and directories are paths - both named entities you can reuse\n\
+         across servers.\n\
+         \n\
+         There is no automatic conversion: the new entities need names, and turnout would have\n\
+         to invent them. Your files in {} are untouched.\n\
+         {where_to_read}\n\
+         To move over:\n  \
+           1. turnout setup\n  \
+           2. turnout server add / credential add / path add, reading the old values from the copy\n\
+         \n\
+         See https://lacodda.github.io/turnout/guides/upgrading-to-0-9/ for the walkthrough.",
+        dir.display()
+    )
+}
+
+/// Put the pre-split catalogs somewhere the user can read them while
+/// re-entering, without touching the originals.
+///
+/// Idempotent by way of [`backup_dir`]: running a command twice does not
+/// overwrite the first copy, and does not pile up a new one each time either -
+/// an existing copy is reported as-is.
+fn copy_for_reference(dir: &Path) -> Result<PathBuf> {
+    let existing = dir.join("settings-backup-v1");
+    if existing.is_dir() {
+        return Ok(existing);
+    }
+    let backup = backup_dir(dir, 1);
+    std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
+    copy_data_files(dir, &backup)?;
+    Ok(backup)
+}
 
 /// Bring `dir` up to [`CURRENT_VERSION`], reporting anything it does.
 ///
@@ -66,15 +140,25 @@ pub fn run(dir: &Path, from: u32) -> Result<u32> {
         );
     }
 
-    let backup = backup_dir(dir, from);
-    std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
-    copy_data_files(dir, &backup)?;
-    eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
-    eprintln!("  A copy of the old files is in {}", backup.display());
+    // Only when something is actually about to be rewritten: a run that ends in
+    // a refusal must leave the directory exactly as it found it, backup folder
+    // included.
+    if pending.iter().any(|step| step.rewrites) {
+        let backup = backup_dir(dir, from);
+        std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
+        copy_data_files(dir, &backup)?;
+        eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
+        eprintln!("  A copy of the old files is in {}", backup.display());
+    }
 
     for step in pending {
-        (step.apply)(dir).with_context(|| format!("migration {} -> {} failed", step.from, step.from + 1))?;
-        eprintln!("  {}", step.describes);
+        match (step.apply)(dir) {
+            Ok(()) => eprintln!("  {}", step.describes),
+            // A refusal is already a complete explanation; wrapping it in
+            // "migration 1 -> 2 failed" would bury the part the user acts on.
+            Err(err) if !step.rewrites => return Err(err),
+            Err(err) => return Err(err).with_context(|| format!("migration {} -> {} failed", step.from, step.from + 1)),
+        }
     }
     Ok(from)
 }
@@ -144,6 +228,64 @@ mod tests {
         let err = run(dir.path(), 0).unwrap_err().to_string();
         assert!(err.contains("no upgrade path"), "{err}");
         assert!(err.contains("setup"), "the error must offer a way out: {err}");
+    }
+
+    /// The v0.9.0 split: a schema-1 directory is refused with instructions, the
+    /// originals are left exactly as they were, and a readable copy is set
+    /// aside to re-enter the values from.
+    #[test]
+    fn a_schema_1_directory_is_refused_with_a_way_forward() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"prod\"}]").unwrap();
+
+        let err = run(dir.path(), 1).unwrap_err().to_string();
+        assert!(err.contains("schema 1"), "{err}");
+        assert!(err.contains("turnout setup"), "{err}");
+        assert!(err.contains("credential") && err.contains("path"), "it must name what changed: {err}");
+        assert!(
+            !err.contains("migration 1 -> 2 failed"),
+            "the explanation must not be buried in a wrapper: {err}"
+        );
+        // `export` reads the catalogs, so it hits this same refusal - telling
+        // the user to run it first would be a closed loop.
+        assert!(
+            !err.contains("turnout export"),
+            "the way out must not go through a command that also fails: {err}"
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("servers.json")).unwrap(),
+            "[{\"name\":\"prod\"}]",
+            "the originals must be untouched"
+        );
+        let copy = dir.path().join("settings-backup-v1").join("servers.json");
+        assert!(copy.is_file(), "a readable copy must be set aside");
+        assert!(err.contains("settings-backup-v1"), "and the message must say where it is: {err}");
+    }
+
+    /// Running any command twice must not pile up copies, nor overwrite the
+    /// first one - which is the only place the old values still exist if the
+    /// user has started re-entering them.
+    #[test]
+    fn the_reference_copy_is_made_once() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"prod\"}]").unwrap();
+
+        let _ = run(dir.path(), 1);
+        std::fs::write(dir.path().join("settings-backup-v1").join("servers.json"), "edited by hand").unwrap();
+        let _ = run(dir.path(), 1);
+
+        let copies: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("settings-backup"))
+            .collect();
+        assert_eq!(copies, vec!["settings-backup-v1"], "{copies:?}");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings-backup-v1").join("servers.json")).unwrap(),
+            "edited by hand",
+            "an existing copy must not be overwritten"
+        );
     }
 
     #[test]

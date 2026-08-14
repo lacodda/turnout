@@ -23,7 +23,13 @@ pub struct App {
     pub servers: Vec<String>,
 }
 
-/// A stand, machine or environment.
+/// A machine: where it lives and how to reach it.
+///
+/// Split from the access used to log in (`Credential`) and the directories
+/// worked in (`Path`) in v0.9.0. What stayed is everything that is a property of
+/// the machine itself - including the base URL, because "which stand is this"
+/// and "which host is this" are the same answer here, and the gateway routes by
+/// that URL.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Server {
     pub name: String,
@@ -32,8 +38,12 @@ pub struct Server {
     pub label: Option<String>,
     /// Base URL the gateway routes to, e.g. `https://staging.example.com`.
     pub url: String,
+    /// SSH host, when it differs from the URL's - a stand often answers HTTP on
+    /// one name and SSH on another.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ssh: Option<Ssh>,
+    pub host: Option<String>,
+    #[serde(default = "default_ssh_port")]
+    pub port: u16,
     /// Accept self-signed or otherwise invalid TLS certificates for this server only.
     #[serde(default)]
     pub accept_invalid_certs: bool,
@@ -41,46 +51,119 @@ pub struct Server {
     ///
     /// Cached because it cannot change without someone reconfiguring sshd, and
     /// paying a round trip for it on every command would be a tax on the common
-    /// case. `None` means "not asked yet", which is also what every server
-    /// written by an older turnout looks like.
+    /// case. `None` means "not asked yet".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shell: Option<crate::shell::Dialect>,
-    /// Deploy targets on this server, per app.
+    /// Credential used to log in here unless a command names another one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<String>,
+    /// Which named path each app deploys into on this server.
+    ///
+    /// A name rather than an inline directory: the same `/var/www/app` is one
+    /// `Path` entry reused across servers, and v0.10.0's builds address it the
+    /// same way.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub deploy: BTreeMap<String, DeployTarget>,
+    pub deploy: BTreeMap<String, String>,
 }
 
+impl Server {
+    /// The host SSH connects to: the explicit one, or the URL's own host.
+    pub fn ssh_host(&self) -> String {
+        self.host.clone().unwrap_or_else(|| url_host(&self.url).to_string())
+    }
+}
+
+/// A way to log in: who, and with what. The secret itself lives in the OS
+/// keyring under the credential's name.
+///
+/// Free-standing since v0.9.0: one credential serves every server that accepts
+/// it, instead of being re-entered per server.
 #[derive(Serialize, Deserialize, Clone)]
-pub struct DeployTarget {
-    /// Remote directory the app's artifacts land in.
-    pub path: String,
+pub struct Credential {
+    pub name: String,
+    /// The remote user this logs in as.
+    pub user: String,
+    #[serde(default)]
+    pub auth: Auth,
+    /// Private key file on this machine, when `auth` is `key`.
+    ///
+    /// A path, not a secret: it names a file the OS already protects, and
+    /// keeping it in the catalog means `credential show` can display it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+}
+
+/// How a credential proves itself.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Auth {
+    /// A passphrase in the OS keyring, or the SSH agent when none is stored.
+    #[default]
+    Password,
+    /// A private key file on this machine.
+    Key,
+}
+
+impl Auth {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Auth::Password => "password",
+            Auth::Key => "key",
+        }
+    }
+}
+
+impl std::fmt::Display for Auth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for Auth {
+    type Err = anyhow::Error;
+
+    fn from_str(text: &str) -> Result<Self> {
+        match text {
+            "password" => Ok(Auth::Password),
+            "key" => Ok(Auth::Key),
+            other => bail!("unknown auth kind '{other}': expected 'password' or 'key'"),
+        }
+    }
+}
+
+/// A directory to work in on a server, plus what to run after writing to it.
+///
+/// Free-standing since v0.9.0 and deliberately not tied to a server: the same
+/// web root exists on the staging box and the production one, and duplicating
+/// it per server was the thing the split set out to stop.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Path {
+    pub name: String,
+    /// Absolute directory on the server, POSIX or Windows.
+    pub dir: String,
     /// Command run on the server after upload, e.g. a service restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
 }
 
-/// Access metadata for a server; the secret itself lives in the OS keyring.
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Credential {
-    pub server: String,
-    /// What this access is: password, token, ssh, ...
-    pub kind: String,
-    pub login: String,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-pub struct Ssh {
-    pub host: String,
-    #[serde(default = "default_ssh_port")]
-    pub port: u16,
-    pub user: String,
-    /// Path to a private key file; tried before the agent and the stored password.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-}
-
 fn default_ssh_port() -> u16 {
     22
+}
+
+/// The host part of a base URL, without scheme, port, path or credentials.
+///
+/// Hand-written rather than pulled from a URL crate: the input is already
+/// validated by [`validate_url`], and this is the one field ever needed from it.
+fn url_host(url: &str) -> &str {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    // Strip anything that follows the authority, then userinfo, then the port.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    let host = authority.rsplit_once('@').map(|(_, host)| host).unwrap_or(authority);
+    // An IPv6 literal keeps its brackets: `[::1]:8080` splits at the last colon.
+    match host.rsplit_once(':') {
+        Some((before, after)) if !after.is_empty() && after.chars().all(|c| c.is_ascii_digit()) => before,
+        _ => host,
+    }
 }
 
 /// A named set of apps: `turnout use GROUP SERVER` switches the whole contour.
@@ -118,24 +201,27 @@ pub fn validate_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Parse `user@host[:port]` into an SSH config.
-pub fn parse_ssh(spec: &str) -> Result<Ssh> {
-    let (user, rest) = spec
-        .split_once('@')
-        .ok_or_else(|| anyhow::anyhow!("invalid SSH spec '{spec}': expected user@host[:port]"))?;
-    let (host, port) = match rest.split_once(':') {
-        Some((host, port)) => (host, port.parse().map_err(|_| anyhow::anyhow!("invalid SSH port in '{spec}'"))?),
-        None => (rest, default_ssh_port()),
-    };
-    if user.is_empty() || host.is_empty() {
-        bail!("invalid SSH spec '{spec}': expected user@host[:port]");
+/// Parse `host[:port]` - what a server is addressed by since the v0.9.0 split.
+///
+/// The user half that `user@host` used to carry now belongs to a credential, so
+/// a spec that still has one is a leftover from the old shape and says so
+/// rather than silently dropping the name.
+pub fn parse_host(spec: &str) -> Result<(String, u16)> {
+    let spec = spec.trim();
+    if let Some((user, rest)) = spec.split_once('@') {
+        bail!(
+            "'{spec}' names a user: since v0.9.0 the login lives in a credential, not the server.\n\
+             Use the host alone (`{rest}`) and `turnout credential add --user {user}` for who logs in."
+        );
     }
-    Ok(Ssh {
-        host: host.to_string(),
-        port,
-        user: user.to_string(),
-        key: None,
-    })
+    let (host, port) = match spec.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse().map_err(|_| anyhow::anyhow!("invalid SSH port in '{spec}'"))?),
+        None => (spec, default_ssh_port()),
+    };
+    if host.is_empty() {
+        bail!("invalid host '{spec}': expected host[:port]");
+    }
+    Ok((host.to_string(), port))
 }
 
 /// Minimal sanity check for a server base URL.
@@ -236,13 +322,41 @@ mod tests {
     }
 
     #[test]
-    fn ssh_specs() {
-        let ssh = parse_ssh("deploy@staging.example.com").unwrap();
-        assert_eq!((ssh.user.as_str(), ssh.host.as_str(), ssh.port), ("deploy", "staging.example.com", 22));
-        let ssh = parse_ssh("root@10.0.0.1:2222").unwrap();
-        assert_eq!(ssh.port, 2222);
-        assert!(parse_ssh("nohost").is_err());
-        assert!(parse_ssh("user@host:notaport").is_err());
+    fn host_specs() {
+        assert_eq!(parse_host("staging.example.com").unwrap(), ("staging.example.com".to_string(), 22));
+        assert_eq!(parse_host("10.0.0.1:2222").unwrap(), ("10.0.0.1".to_string(), 2222));
+        assert!(parse_host("").is_err());
+        assert!(parse_host("host:notaport").is_err());
+    }
+
+    /// The one shape a user upgrading from v0.8 will type out of habit. Dropping
+    /// the user half silently would connect as the wrong account.
+    #[test]
+    fn a_user_at_host_spec_explains_where_the_user_went() {
+        let err = parse_host("deploy@staging.example.com").unwrap_err().to_string();
+        assert!(err.contains("credential"), "{err}");
+        assert!(err.contains("--user deploy"), "the error must carry the name forward: {err}");
+        assert!(err.contains("staging.example.com"), "and the host to use instead: {err}");
+    }
+
+    /// The SSH host falls back to the URL's, which is right for the common case
+    /// where a stand answers HTTP and SSH on the same name.
+    #[test]
+    fn the_ssh_host_falls_back_to_the_url() {
+        assert_eq!(url_host("https://staging.example.com"), "staging.example.com");
+        assert_eq!(url_host("http://staging.example.com:8081/app"), "staging.example.com");
+        assert_eq!(url_host("https://user@host.example.com/x"), "host.example.com");
+        assert_eq!(url_host("http://[::1]:8080"), "[::1]");
+        // A bare host with no scheme is still just a host.
+        assert_eq!(url_host("example.com"), "example.com");
+    }
+
+    #[test]
+    fn auth_kinds_round_trip() {
+        assert_eq!("password".parse::<Auth>().unwrap(), Auth::Password);
+        assert_eq!("key".parse::<Auth>().unwrap(), Auth::Key);
+        assert_eq!(Auth::Key.to_string(), "key");
+        assert!("agent".parse::<Auth>().is_err());
     }
 
     #[test]

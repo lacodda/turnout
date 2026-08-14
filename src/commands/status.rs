@@ -26,12 +26,22 @@ pub fn run() -> Result<()> {
         }
     }
     let credentials = store::load_credentials()?;
-    if credentials.is_empty() {
-        println!("Access:  none saved");
-    } else {
-        let mut names: Vec<&str> = credentials.iter().map(|c| c.server.as_str()).collect();
-        names.dedup();
-        println!("Access:  saved for {}", names.join(", "));
+    match credentials.len() {
+        0 => println!("Creds:   none yet"),
+        n => println!(
+            "Creds:   {} ({})",
+            n,
+            credentials.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+        ),
+    }
+    let remote_paths = store::load_paths()?;
+    match remote_paths.len() {
+        0 => println!("Paths:   none yet"),
+        n => println!(
+            "Paths:   {} ({})",
+            n,
+            remote_paths.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
+        ),
     }
     let state = store::load_state()?;
     if !state.bindings.is_empty() {

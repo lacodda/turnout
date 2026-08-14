@@ -1,22 +1,26 @@
 //! One wizard for everything a deploy needs, instead of five `edit` calls.
 //!
-//! Deployment settings live in two entities - the artifact directory on the
-//! app, the SSH access and per-app target on the server - plus a secret in the
-//! keyring. This walks all of them in the order they are needed and only
-//! writes once every answer is in.
+//! Since the v0.9.0 split a deploy touches four entities - the app's artifact
+//! directory, the server, the credential that logs in and the path files land
+//! in - plus a secret in the keyring. The wizard exists precisely so nobody has
+//! to assemble that by hand: it walks them in the order they are needed, offers
+//! existing entries where there are any, and only writes once every answer is
+//! in.
 
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use dialoguer::{Confirm, Input, Password};
+use dialoguer::{Confirm, Input, Password, Select};
 
-use crate::model::{App, DeployTarget, Server, Ssh, parse_ssh};
+use crate::model::{App, Auth, Credential, Server, parse_host, validate_name, validate_remote_path};
 use crate::{pick, secrets, store};
 
 pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> {
     pick::ensure_interactive("`deploy-setup` is a wizard; in scripts configure with `turnout app edit` and `turnout server edit`")?;
     let mut apps = store::load_apps()?;
     let mut servers = store::load_servers()?;
+    let mut credentials = store::load_credentials()?;
+    let mut paths = store::load_paths()?;
     let state = store::load_state()?;
 
     let app_name = match app_name {
@@ -62,60 +66,51 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
         );
     }
 
-    // 2. How to reach the server.
-    let current_ssh = servers[server_index]
-        .ssh
+    // 2. How to reach the machine. An empty answer keeps the URL's host, which
+    //    is right for most stands.
+    let current_host = servers[server_index]
+        .host
         .as_ref()
-        .map(|s| format!("{}@{}:{}", s.user, s.host, s.port))
+        .map(|h| format!("{h}:{}", servers[server_index].port))
         .unwrap_or_default();
-    let mut ssh_input = Input::<String>::new().with_prompt("SSH as user@host[:port]");
-    if !current_ssh.is_empty() {
-        ssh_input = ssh_input.default(current_ssh);
-    }
-    let ssh_spec: String = ssh_input.interact_text()?;
-    let mut ssh = parse_ssh(ssh_spec.trim())?;
-    // A key already configured for this server stays unless replaced below.
-    let existing_key = servers[server_index].ssh.as_ref().and_then(|s| s.key.clone());
-    let key: String = Input::new()
-        .with_prompt("Private key file (empty to use the agent or a password)")
-        .default(existing_key.unwrap_or_default())
+    let host_spec: String = Input::new()
+        .with_prompt("SSH host[:port] (empty to use the URL's host)")
+        .default(current_host)
         .allow_empty(true)
         .interact_text()?;
-    ssh.key = if key.trim().is_empty() { None } else { Some(key.trim().to_string()) };
+    let (host, port) = if host_spec.trim().is_empty() {
+        (None, 22)
+    } else {
+        let (host, port) = parse_host(host_spec.trim())?;
+        (Some(host), port)
+    };
 
-    // 3. Where the files land and what runs afterwards.
-    let existing_target = servers[server_index].deploy.get(&app_name);
-    let mut path_input = Input::<String>::new()
-        .with_prompt("Remote directory")
-        .validate_with(|s: &String| crate::model::validate_remote_path(s).map_err(|e| e.to_string()));
-    if let Some(target) = existing_target {
-        path_input = path_input.default(target.path.clone());
-    }
-    let remote_path: String = path_input.interact_text()?;
-    let restart: String = Input::new()
-        .with_prompt("Command to run after upload (empty for none)")
-        .default(existing_target.and_then(|t| t.restart.clone()).unwrap_or_default())
-        .allow_empty(true)
-        .interact_text()?;
+    // 3. Who logs in. An existing credential is reused rather than duplicated -
+    //    that reuse is the whole reason credentials became their own entity.
+    let credential_name = choose_credential(&mut credentials, servers[server_index].credential.as_deref())?;
+    let credential_index = credentials.iter().position(|c| c.name == credential_name).expect("just chosen or created");
 
-    // 4. The secret, only when there is no key to authenticate with.
-    let mut save_secret = None;
-    if ssh.key.is_none() {
-        let has_secret = secrets::get(&server_name, "ssh").is_ok();
+    // 4. Where the files land, as a named path.
+    let path_name = choose_path(&mut paths, servers[server_index].deploy.get(&app_name).map(String::as_str))?;
+
+    // 5. The secret, only when this credential logs in by password.
+    let mut secret_to_save = None;
+    if credentials[credential_index].auth == Auth::Password {
+        let has_secret = secrets::get(&credential_name).is_ok();
         let prompt = if has_secret {
-            "Replace the stored SSH password?"
+            format!("Replace the stored secret of '{credential_name}'?")
         } else {
-            "Store an SSH password in the OS keyring?"
+            format!("Store a secret for '{credential_name}' in the OS keyring?")
         };
         if Confirm::new().with_prompt(prompt).default(!has_secret).interact()? {
             let secret = Password::new()
-                .with_prompt("SSH password")
+                .with_prompt("Secret")
                 .with_confirmation("Repeat to confirm", "Values do not match")
                 .interact()?;
             if secret.is_empty() {
                 bail!("empty secret - nothing saved");
             }
-            save_secret = Some((ssh.user.clone(), secret));
+            secret_to_save = Some(secret);
         }
     }
 
@@ -125,9 +120,10 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
         &mut servers[server_index],
         Answers {
             dist: dist.trim(),
-            ssh,
-            remote_path: remote_path.trim(),
-            restart: restart.trim(),
+            host,
+            port,
+            credential: &credential_name,
+            path: &path_name,
         },
     );
     if allowed {
@@ -135,20 +131,10 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
     }
     store::save_apps(&apps)?;
     store::save_servers(&servers)?;
-
-    if let Some((login, secret)) = save_secret {
-        secrets::set(&server_name, "ssh", &secret)?;
-        let mut credentials = store::load_credentials()?;
-        match credentials.iter_mut().find(|c| c.server == server_name && c.kind == "ssh") {
-            Some(credential) => credential.login = login,
-            None => credentials.push(crate::model::Credential {
-                server: server_name.clone(),
-                kind: "ssh".to_string(),
-                login,
-            }),
-        }
-        credentials.sort_by(|a, b| (a.server.as_str(), a.kind.as_str()).cmp(&(b.server.as_str(), b.kind.as_str())));
-        store::save_credentials(&credentials)?;
+    store::save_credentials(&credentials)?;
+    store::save_paths(&paths)?;
+    if let Some(secret) = secret_to_save {
+        secrets::set(&credential_name, &secret)?;
     }
 
     println!("Done. Deploy with:");
@@ -156,12 +142,101 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
     Ok(())
 }
 
+/// Pick an existing credential or define a new one, appending it to `credentials`.
+fn choose_credential(credentials: &mut Vec<Credential>, current: Option<&str>) -> Result<String> {
+    if !credentials.is_empty() {
+        let mut labels: Vec<String> = credentials.iter().map(|c| format!("{}  ({}@, {})", c.name, c.user, c.auth)).collect();
+        labels.push("+ a new credential".to_string());
+        // Default to the one this server already uses, so re-running the wizard
+        // is a confirmation rather than a re-entry.
+        let default = current.and_then(|name| credentials.iter().position(|c| c.name == name)).unwrap_or(0);
+        let choice = Select::new().with_prompt("Logs in with").items(&labels).default(default).interact()?;
+        if choice < credentials.len() {
+            return Ok(credentials[choice].name.clone());
+        }
+    }
+
+    let name: String = Input::new()
+        .with_prompt("New credential name")
+        .validate_with(|s: &String| validate_name(s).map_err(|e| e.to_string()))
+        .interact_text()?;
+    if credentials.iter().any(|c| c.name == name) {
+        bail!("credential '{name}' already exists");
+    }
+    let user: String = Input::new().with_prompt("Logs in as (remote user)").interact_text()?;
+    if user.trim().is_empty() {
+        bail!("the remote user cannot be empty");
+    }
+    let auth = if Select::new()
+        .with_prompt("Authenticates with")
+        .items(["password (or the SSH agent)", "a private key file"])
+        .default(0)
+        .interact()?
+        == 0
+    {
+        Auth::Password
+    } else {
+        Auth::Key
+    };
+    let key = if auth == Auth::Key {
+        let answer: String = Input::new().with_prompt("Private key file").interact_text()?;
+        Some(answer.trim().to_string())
+    } else {
+        None
+    };
+    credentials.push(Credential {
+        name: name.clone(),
+        user: user.trim().to_string(),
+        auth,
+        key,
+    });
+    credentials.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(name)
+}
+
+/// Pick an existing path or define a new one, appending it to `paths`.
+fn choose_path(paths: &mut Vec<crate::model::Path>, current: Option<&str>) -> Result<String> {
+    if !paths.is_empty() {
+        let mut labels: Vec<String> = paths.iter().map(|p| format!("{}  ({})", p.name, p.dir)).collect();
+        labels.push("+ a new path".to_string());
+        let default = current.and_then(|name| paths.iter().position(|p| p.name == name)).unwrap_or(0);
+        let choice = Select::new().with_prompt("Files land in").items(&labels).default(default).interact()?;
+        if choice < paths.len() {
+            return Ok(paths[choice].name.clone());
+        }
+    }
+
+    let name: String = Input::new()
+        .with_prompt("New path name")
+        .validate_with(|s: &String| validate_name(s).map_err(|e| e.to_string()))
+        .interact_text()?;
+    if paths.iter().any(|p| p.name == name) {
+        bail!("path '{name}' already exists");
+    }
+    let dir: String = Input::new()
+        .with_prompt("Remote directory")
+        .validate_with(|s: &String| validate_remote_path(s).map_err(|e| e.to_string()))
+        .interact_text()?;
+    let restart: String = Input::new()
+        .with_prompt("Command to run after upload (empty for none)")
+        .allow_empty(true)
+        .interact_text()?;
+    paths.push(crate::model::Path {
+        name: name.clone(),
+        dir: crate::model::normalize_remote_path(dir.trim()),
+        restart: if restart.trim().is_empty() { None } else { Some(restart.trim().to_string()) },
+    });
+    paths.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(name)
+}
+
 /// What the wizard collected, ready to be written onto the entities.
 struct Answers<'a> {
     dist: &'a str,
-    ssh: Ssh,
-    remote_path: &'a str,
-    restart: &'a str,
+    host: Option<String>,
+    port: u16,
+    credential: &'a str,
+    path: &'a str,
 }
 
 /// Write the answers onto the app and the server. Returns whether the server
@@ -173,18 +248,10 @@ fn apply(app: &mut App, server: &mut Server, answers: Answers) -> bool {
     if allowed {
         app.servers.push(server.name.clone());
     }
-    server.ssh = Some(answers.ssh);
-    server.deploy.insert(
-        app.name.clone(),
-        DeployTarget {
-            path: crate::model::normalize_remote_path(answers.remote_path),
-            restart: if answers.restart.is_empty() {
-                None
-            } else {
-                Some(answers.restart.to_string())
-            },
-        },
-    );
+    server.host = answers.host;
+    server.port = answers.port;
+    server.credential = Some(answers.credential.to_string());
+    server.deploy.insert(app.name.clone(), answers.path.to_string());
     allowed
 }
 
@@ -209,8 +276,10 @@ mod tests {
             name: "prod".into(),
             label: None,
             url: "https://prod.example.com".into(),
-            ssh: None,
+            host: None,
+            port: 22,
             accept_invalid_certs: false,
+            credential: None,
             deploy: BTreeMap::new(),
             shell: None,
         }
@@ -219,9 +288,10 @@ mod tests {
     fn answers() -> Answers<'static> {
         Answers {
             dist: "dist",
-            ssh: parse_ssh("deploy@prod.example.com").unwrap(),
-            remote_path: "/var/www/web",
-            restart: "systemctl restart web",
+            host: Some("prod.example.com".into()),
+            port: 2222,
+            credential: "deploy",
+            path: "wwwroot",
         }
     }
 
@@ -230,17 +300,21 @@ mod tests {
         let (mut app, mut server) = (an_app(&[]), a_server());
         apply(&mut app, &mut server, answers());
         assert_eq!(app.dist_dir.as_deref(), Some("dist"));
-        let target = server.deploy.get("web").unwrap();
-        assert_eq!(target.path, "/var/www/web");
-        assert_eq!(target.restart.as_deref(), Some("systemctl restart web"));
-        assert_eq!(server.ssh.as_ref().unwrap().user, "deploy");
+        assert_eq!(server.deploy.get("web").map(String::as_str), Some("wwwroot"));
+        assert_eq!(server.credential.as_deref(), Some("deploy"));
+        assert_eq!(server.host.as_deref(), Some("prod.example.com"));
+        assert_eq!(server.port, 2222);
     }
 
+    /// Leaving the host empty is how a user says "same as the URL", and it has
+    /// to survive as `None` rather than being frozen into a copy of the URL's
+    /// host that stops following it.
     #[test]
-    fn an_empty_restart_stays_unset() {
+    fn an_empty_host_keeps_following_the_url() {
         let (mut app, mut server) = (an_app(&[]), a_server());
-        apply(&mut app, &mut server, Answers { restart: "", ..answers() });
-        assert!(server.deploy.get("web").unwrap().restart.is_none());
+        apply(&mut app, &mut server, Answers { host: None, ..answers() });
+        assert!(server.host.is_none());
+        assert_eq!(server.ssh_host(), "prod.example.com", "it resolves through the URL");
     }
 
     #[test]

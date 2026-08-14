@@ -3,9 +3,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use ssh2::Session;
 
-use crate::model::{DeployTarget, Server, Ssh};
 use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
-use crate::remote;
+use crate::remote::{self, Target};
 use crate::shell::Dialect;
 
 /// Below this, packing is not worth the extra round trips: a handful of files
@@ -25,11 +24,9 @@ fn should_archive(files: u64, no_archive: bool) -> bool {
     !no_archive && files >= ARCHIVE_THRESHOLD
 }
 
-pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
-    let target = remote::resolve(app_name, server_name)?;
+pub fn run(app_name: Option<String>, overrides: remote::Overrides, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
+    let target = remote::resolve(app_name, overrides)?;
     let (app, server) = (&target.app, &target.server);
-    let ssh = remote::require_ssh(server)?;
-    let deploy = remote::require_deploy_target(server, &app.name)?;
     let Some(dist) = &app.dist_dir else {
         bail!("app '{0}' has no artifact directory - set it with `turnout app edit {0} --dist DIR`", app.name);
     };
@@ -57,7 +54,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>, no_build: bool
     // The frame opens after the build on purpose: the build tool's raw output
     // streams above it, and the checklist below covers only our own phases.
     progress::intro(format!("Deploying {} → {}", app.name, server.name));
-    match deploy_over_ssh(server, ssh, deploy, &plan, &Options { backup, clear, no_archive }) {
+    match deploy_over_ssh(&target, &plan, &Options { backup, clear, no_archive }) {
         Ok(files) => {
             crate::journal::record("deploy", Some(&app.name), Some(&server.name), Some(&format!("{files} files")));
             progress::outro(format!("Deploy of '{}' to '{}' finished", app.name, server.name));
@@ -78,36 +75,38 @@ struct Options {
 }
 
 /// Every phase that talks to the server, in checklist order.
-fn deploy_over_ssh(server: &Server, ssh: &Ssh, deploy: &DeployTarget, plan: &Plan, options: &Options) -> Result<u64> {
-    let step = Step::start(format!("Connecting to {}@{}:{} ...", ssh.user, ssh.host, ssh.port));
-    let session = remote::connect(ssh, &server.name)?;
+fn deploy_over_ssh(target: &Target, plan: &Plan, options: &Options) -> Result<u64> {
+    let (server, credential, path) = (&target.server, &target.credential, &target.path);
+    let where_to = format!("{}@{}:{}", credential.user, server.ssh_host(), server.port);
+    let step = Step::start(format!("Connecting to {where_to} ..."));
+    let session = remote::connect(server, credential)?;
     // Asked once, before any command is built: everything below is phrased in
     // the dialect this answers with. Under the same step - it is a round trip
     // on a first contact, and a silent one would look like a hang.
     step.update("Detecting the server shell ...");
     let dialect = remote::dialect(&session, server);
-    step.done(format!("Connected to {}@{}:{}", ssh.user, ssh.host, ssh.port));
-    remote::check_quotable(dialect, &[&deploy.path])?;
+    step.done(format!("Connected to {where_to}"));
+    remote::check_quotable(dialect, &[&path.dir])?;
 
     if options.backup {
-        let step = Step::start(format!("Backing up {} ...", deploy.path));
-        let name = remote::run_backup(&session, dialect, &deploy.path)?;
-        step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&deploy.path)));
+        let step = Step::start(format!("Backing up {} ...", path.dir));
+        let name = remote::run_backup(&session, dialect, &path.dir)?;
+        step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(&path.dir)));
     }
     if options.clear {
-        let step = Step::start(format!("Clearing {} ...", deploy.path));
-        remote::exec(&session, &dialect.clear_dir(&deploy.path))?;
-        step.done(format!("Cleared {}", deploy.path));
+        let step = Step::start(format!("Clearing {} ...", path.dir));
+        remote::exec(&session, &dialect.clear_dir(&path.dir))?;
+        step.done(format!("Cleared {}", path.dir));
     }
 
-    let (files, _bytes) = match archive_upload(&session, dialect, &deploy.path, plan, options.no_archive)? {
+    let (files, _bytes) = match archive_upload(&session, dialect, &path.dir, plan, options.no_archive)? {
         Some(counts) => counts,
         // Either the caller opted out, the tree is too small to be worth
         // packing, or the server has no tar - send the files one by one.
-        None => upload(&session, &deploy.path, plan)?,
+        None => upload(&session, &path.dir, plan)?,
     };
 
-    if let Some(restart) = &deploy.restart {
+    if let Some(restart) = &path.restart {
         let step = Step::start(format!("Running: {restart}"));
         let output = remote::exec(&session, restart)?;
         step.done(format!("Restarted: {restart}"));

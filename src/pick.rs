@@ -138,23 +138,31 @@ pub fn app_or_group(apps: &[App], groups: &[Group], state: &State, prompt: &str)
     Ok(names[select(prompt, &labels)?].clone())
 }
 
-/// Pick a stored credential, which identifies both the server and the kind.
-/// `kind` narrows the list when the user passed `--kind` explicitly.
-pub fn credential(credentials: &[Credential], kind: Option<&str>, prompt: &str) -> Result<(String, String)> {
-    let matching: Vec<&Credential> = credentials.iter().filter(|c| kind.is_none_or(|k| c.kind == k)).collect();
-    if matching.is_empty() {
-        bail!("no access saved yet - run `turnout pass set` first");
+/// Pick a credential by name, showing who it logs in as and how.
+pub fn credential(credentials: &[Credential], prompt: &str) -> Result<String> {
+    if credentials.is_empty() {
+        bail!("no credentials yet - run `turnout credential add` first");
     }
-    // A single match needs no picking, so it resolves without a terminal too.
-    if let [only] = matching.as_slice() {
-        return Ok((only.server.clone(), only.kind.clone()));
+    // A single entry needs no picking, so it resolves without a terminal too.
+    if let [only] = credentials {
+        return Ok(only.name.clone());
     }
-    ensure_interactive("server name is required")?;
-    let width = matching.iter().map(|c| c.server.len()).max().unwrap_or(0);
-    let labels: Vec<String> = matching
-        .iter()
-        .map(|c| format!("{:width$}  {:10} login {}", c.server, c.kind, c.login))
-        .collect();
-    let picked = matching[select(prompt, &labels)?];
-    Ok((picked.server.clone(), picked.kind.clone()))
+    ensure_interactive("credential name is required")?;
+    let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
+    let labels: Vec<String> = credentials.iter().map(|c| format!("{:width$}  {}@  {}", c.name, c.user, c.auth)).collect();
+    Ok(credentials[select(prompt, &labels)?].name.clone())
+}
+
+/// Pick a path by name, showing the directory so two roles are told apart.
+pub fn path(paths: &[crate::model::Path], prompt: &str) -> Result<String> {
+    if paths.is_empty() {
+        bail!("no paths yet - run `turnout path add` first");
+    }
+    if let [only] = paths {
+        return Ok(only.name.clone());
+    }
+    ensure_interactive("path name is required")?;
+    let width = paths.iter().map(|p| p.name.len()).max().unwrap_or(0);
+    let labels: Vec<String> = paths.iter().map(|p| format!("{:width$}  {}", p.name, p.dir)).collect();
+    Ok(paths[select(prompt, &labels)?].name.clone())
 }

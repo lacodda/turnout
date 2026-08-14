@@ -208,15 +208,15 @@ fn server_crud_roundtrip() {
             "https://staging.example.com",
             "--label",
             "Staging",
-            "--ssh",
-            "deploy@staging.example.com:2200",
+            "--host",
+            "ssh.staging.example.com:2200",
             "--insecure",
         ])
         .assert()
         .success();
     turnout(dir.path()).args(["server", "show", "staging"]).assert().success().stdout(
         predicate::str::contains("https://staging.example.com")
-            .and(predicate::str::contains("deploy@staging.example.com:2200"))
+            .and(predicate::str::contains("ssh.staging.example.com:2200"))
             .and(predicate::str::contains("accept invalid certificates")),
     );
     turnout(dir.path()).args(["server", "edit", "staging", "--secure"]).assert().success();
@@ -290,9 +290,20 @@ fn add_staging(dir: &std::path::Path) {
         .success();
 }
 
+/// A credential named `deploy`, which most access tests then hang a secret on.
+fn add_credential(dir: &std::path::Path) {
+    turnout(dir).args(["credential", "add", "deploy", "--user", "deploy"]).assert().success();
+}
+
+/// A path named `wwwroot`, the deploy destination in the tests below.
+fn add_path(dir: &std::path::Path) {
+    turnout(dir).args(["path", "add", "wwwroot", "--dir", "/var/www/myapp"]).assert().success();
+}
+
 fn save_access(dir: &std::path::Path) {
+    add_credential(dir);
     turnout_secrets(dir)
-        .args(["pass", "set", "staging", "--login", "deploy"])
+        .args(["pass", "set", "deploy"])
         .write_stdin("s3cret\n")
         .assert()
         .success()
@@ -305,67 +316,104 @@ fn pass_set_copy_roundtrip() {
     add_staging(dir.path());
     save_access(dir.path());
     turnout_secrets(dir.path())
-        .args(["pass", "copy", "staging", "--show"])
+        .args(["pass", "copy", "deploy", "--show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("s3cret"));
     turnout_secrets(dir.path())
-        .args(["pass", "copy", "staging", "--login", "--show"])
+        .args(["pass", "copy", "deploy", "--user", "--show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("deploy"));
     turnout_secrets(dir.path())
-        .args(["pass", "show", "staging"])
+        .args(["credential", "show", "deploy"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("deploy").and(predicate::str::contains("s3cret").not()));
+        .stdout(predicate::str::contains("stored in the OS keyring").and(predicate::str::contains("s3cret").not()));
     turnout_secrets(dir.path())
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Access:  saved for staging"));
+        .stdout(predicate::str::contains("Creds:   1 (deploy)"));
 }
 
 #[test]
-fn pass_set_requires_known_server() {
+fn pass_set_requires_a_known_credential() {
     let (dir, _) = workspace();
-    add_staging(dir.path());
+    add_credential(dir.path());
     turnout_secrets(dir.path())
-        .args(["pass", "set", "nosuch", "--login", "x"])
+        .args(["pass", "set", "nosuch"])
         .write_stdin("value\n")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no server named 'nosuch'"));
+        .stderr(predicate::str::contains("no credential named 'nosuch'"));
 }
 
+/// Removing a secret is a rotation, not a deletion of the account: the
+/// credential has to survive so the next `pass set` has something to attach to.
 #[test]
-fn pass_remove_deletes_secret() {
+fn pass_remove_deletes_the_secret_but_keeps_the_credential() {
     let (dir, _) = workspace();
     add_staging(dir.path());
     save_access(dir.path());
-    turnout_secrets(dir.path()).args(["pass", "remove", "staging", "--yes"]).assert().success();
+    turnout_secrets(dir.path()).args(["pass", "remove", "deploy", "--yes"]).assert().success();
     turnout_secrets(dir.path())
-        .args(["pass", "copy", "staging", "--show"])
+        .args(["pass", "copy", "deploy", "--show"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no access saved"));
+        .stderr(predicate::str::contains("no secret stored"));
+    turnout_secrets(dir.path())
+        .args(["credential", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy"));
 }
 
+/// Credentials outlive the servers that used them: the same login usually
+/// reaches several stands, and losing it with one of them would be surprising.
 #[test]
-fn server_remove_purges_access() {
+fn server_remove_keeps_the_credential() {
     let (dir, _) = workspace();
     add_staging(dir.path());
     save_access(dir.path());
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--credential", "deploy"])
+        .assert()
+        .success();
+    turnout_secrets(dir.path()).args(["server", "remove", "staging", "--yes"]).assert().success();
     turnout_secrets(dir.path())
-        .args(["server", "remove", "staging", "--yes"])
+        .args(["pass", "copy", "deploy", "--show"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Removed stored access: password"));
+        .stdout(predicate::str::contains("s3cret"));
+}
+
+/// The mirror case: removing the credential clears it from the servers that
+/// pointed at it, so no server is left naming something that is gone.
+#[test]
+fn credential_remove_clears_it_from_servers() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--credential", "deploy"])
+        .assert()
+        .success();
     turnout_secrets(dir.path())
-        .args(["pass", "list"])
+        .args(["credential", "remove", "deploy", "--yes"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("No access saved yet"));
+        .stdout(predicate::str::contains("Cleared it from servers: staging"));
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Credential: none"));
+    turnout_secrets(dir.path())
+        .args(["pass", "copy", "deploy", "--show"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no credential named"));
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -375,7 +423,7 @@ fn pass_copy_never_prints_the_secret() {
     add_staging(dir.path());
     save_access(dir.path());
     turnout_secrets(dir.path())
-        .args(["pass", "copy", "staging"])
+        .args(["pass", "copy", "deploy"])
         .assert()
         .success()
         .stdout(predicate::str::contains("copied to the clipboard").and(predicate::str::contains("s3cret").not()));
@@ -608,66 +656,108 @@ fn run_resolves_app_from_current_directory() {
 }
 
 #[test]
-fn server_edit_sets_deploy_targets() {
+fn server_edit_points_apps_at_named_paths() {
     let (dir, project) = workspace();
     add_staging(dir.path());
+    add_path(dir.path());
     turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
     turnout(dir.path())
-        .args([
-            "server",
-            "edit",
-            "staging",
-            "--deploy-path",
-            "myapp=/var/www/myapp",
-            "--restart-cmd",
-            "myapp=systemctl restart myapp",
-        ])
+        .args(["path", "edit", "wwwroot", "--restart", "systemctl restart myapp"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
         .assert()
         .success();
     turnout(dir.path())
         .args(["server", "show", "staging"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("/var/www/myapp").and(predicate::str::contains("systemctl restart myapp")));
+        .stdout(predicate::str::contains("myapp: wwwroot").and(predicate::str::contains("/var/www/myapp")));
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--restart-cmd", "ghost=oops"])
+        .args(["path", "show", "wwwroot"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("systemctl restart myapp").and(predicate::str::contains("staging/myapp")));
+    // Both halves of the pair have to exist before the link can be made.
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--deploy-path", "myapp=ghost"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("has no deploy path"));
+        .stderr(predicate::str::contains("no path named 'ghost'"));
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--deploy-path", "ghost=wwwroot"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no app named 'ghost'"));
 }
 
+/// Removing a path unlinks the servers that deployed into it, and says so -
+/// but never touches the directory on the server itself.
 #[test]
-fn server_edit_manages_the_ssh_key() {
+fn path_remove_unlinks_servers() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_path(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["path", "remove", "wwwroot", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the directory on the server is untouched"));
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("wwwroot").not());
+}
+
+/// A key file is enough to mean key authentication, and `credential show` must
+/// never turn into a way to read the secret back out.
+#[test]
+fn credential_manages_the_key_file() {
+    let (dir, _) = workspace();
+    turnout(dir.path())
+        .args(["credential", "add", "deploy", "--user", "deploy", "--key", "/home/me/.ssh/id_ed25519"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["credential", "show", "deploy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth:     key").and(predicate::str::contains("/home/me/.ssh/id_ed25519")));
+    turnout(dir.path())
+        .args(["credential", "edit", "deploy", "--auth", "password", "--key", ""])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["credential", "show", "deploy"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Auth:     password").and(predicate::str::contains("id_ed25519").not()));
+    // Key auth without a key would fail at connect time; refuse it at edit time.
+    turnout(dir.path())
+        .args(["credential", "edit", "deploy", "--auth", "key"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("needs a key file"));
+}
+
+/// The habit a v0.8 user brings along. Silently dropping the `deploy@` half
+/// would connect as whoever is running turnout.
+#[test]
+fn a_user_at_host_is_refused_with_the_way_over() {
     let (dir, _) = workspace();
     add_staging(dir.path());
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--ssh-key", "/home/me/.ssh/id_ed25519"])
+        .args(["server", "edit", "staging", "--host", "deploy@staging.example.com"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("set SSH access first"));
-    turnout(dir.path())
-        .args([
-            "server",
-            "edit",
-            "staging",
-            "--ssh",
-            "deploy@staging.example.com",
-            "--ssh-key",
-            "/home/me/.ssh/id_ed25519",
-        ])
-        .assert()
-        .success();
-    turnout(dir.path())
-        .args(["server", "show", "staging"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("key: /home/me/.ssh/id_ed25519"));
-    turnout(dir.path()).args(["server", "edit", "staging", "--ssh-key", ""]).assert().success();
-    turnout(dir.path())
-        .args(["server", "show", "staging"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("key:").not());
+        .stderr(predicate::str::contains("credential").and(predicate::str::contains("--user deploy")));
 }
 
 #[test]
@@ -679,16 +769,17 @@ fn backup_and_restore_validate_preconditions() {
         .args(["backup", "myapp", "--server", "staging"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no SSH access"));
+        .stderr(predicate::str::contains("has no credential"));
+    add_credential(dir.path());
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--ssh", "deploy@staging.example.com"])
+        .args(["server", "edit", "staging", "--credential", "deploy"])
         .assert()
         .success();
     turnout(dir.path())
         .args(["restore", "myapp", "--server", "staging", "--list"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no deploy path"));
+        .stderr(predicate::str::contains("no path for 'myapp'"));
 }
 
 #[test]
@@ -705,24 +796,54 @@ fn deploy_validates_its_preconditions() {
         .args(["deploy", "myapp", "--server", "staging", "--no-build"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no SSH access"));
+        .stderr(predicate::str::contains("has no credential"));
+    add_credential(dir.path());
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--ssh", "deploy@staging.example.com"])
+        .args(["server", "edit", "staging", "--credential", "deploy"])
         .assert()
         .success();
     turnout(dir.path())
         .args(["deploy", "myapp", "--server", "staging", "--no-build"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no deploy path"));
+        .stderr(predicate::str::contains("no path for 'myapp'"));
+    add_path(dir.path());
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "myapp=/var/www/myapp"])
+        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
         .assert()
         .success();
     turnout(dir.path())
         .args(["deploy", "myapp", "--server", "staging", "--no-build"])
         .assert()
         .failure()
+        .stderr(predicate::str::contains("no artifact directory"));
+}
+
+/// The overrides exist so a one-off deploy does not require editing the server
+/// first; they must resolve without anything being linked to it at all.
+#[test]
+fn deploy_accepts_a_credential_and_path_for_one_run() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_credential(dir.path());
+    add_path(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "deploy",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+            "--no-build",
+        ])
+        .assert()
+        .failure()
+        // Past both resolution steps: the only thing left missing is the app's
+        // own artifact directory.
         .stderr(predicate::str::contains("no artifact directory"));
 }
 
@@ -856,7 +977,7 @@ fn missing_names_still_fail_without_a_terminal() {
             .args(&args)
             .assert()
             .failure()
-            .stderr(predicate::str::contains("no terminal to prompt on").or(predicate::str::contains("no access saved")));
+            .stderr(predicate::str::contains("no terminal to prompt on").or(predicate::str::contains("no credentials yet")));
     }
 }
 
@@ -907,13 +1028,10 @@ fn destructive_commands_explain_how_to_skip_the_prompt() {
 #[test]
 fn pass_set_says_when_no_secret_arrived_on_stdin() {
     let (dir, _project) = workspace();
-    turnout(dir.path())
-        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
-        .assert()
-        .success();
+    add_credential(dir.path());
 
     turnout(dir.path())
-        .args(["pass", "set", "staging", "--kind", "ssh", "--login", "deploy"])
+        .args(["pass", "set", "deploy"])
         .write_stdin("")
         .assert()
         .failure()
@@ -944,8 +1062,14 @@ fn actions_are_journaled_without_secrets() {
         .success();
     turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
     turnout(dir.path()).args(["use", "web", "staging", "--no-check"]).assert().success();
+    // The remote user is deliberately not the credential's name: the journal
+    // records the entity that was created, and must not carry the login itself.
     turnout(dir.path())
-        .args(["pass", "set", "staging", "--login", "deploy"])
+        .args(["credential", "add", "staging-access", "--user", "deploy-account"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["pass", "set", "staging-access"])
         .env("TURNOUT_KEYRING", "insecure-file")
         .write_stdin("hunter2-topsecret")
         .assert()
@@ -955,7 +1079,7 @@ fn actions_are_journaled_without_secrets() {
     assert!(journal.contains(r#""action":"use""#), "{journal}");
     assert!(journal.contains(r#""action":"app.add""#), "{journal}");
     assert!(!journal.contains("hunter2"), "the secret leaked: {journal}");
-    assert!(!journal.contains("deploy"), "the login leaked: {journal}");
+    assert!(!journal.contains("deploy-account"), "the login leaked: {journal}");
 
     turnout(dir.path())
         .arg("status")
@@ -1128,9 +1252,10 @@ fn a_plain_export_carries_no_secret_values() {
         .assert()
         .success();
     turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    add_credential(dir.path());
     turnout(dir.path())
         .env("TURNOUT_KEYRING", "insecure-file")
-        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .args(["pass", "set", "deploy"])
         .write_stdin("hunter2")
         .assert()
         .success();
@@ -1140,7 +1265,7 @@ fn a_plain_export_carries_no_secret_values() {
 
     let text = std::fs::read_to_string(&file).unwrap();
     assert!(!text.contains("hunter2"), "the secret leaked into a plain export: {text}");
-    assert!(text.contains("\"login\": \"deploy\""), "the access record should still travel: {text}");
+    assert!(text.contains("\"user\": \"deploy\""), "the credential itself should still travel: {text}");
 }
 
 /// Secrets travel only under a passphrase, and arrive usable on the far side.
@@ -1152,9 +1277,10 @@ fn secrets_travel_encrypted_and_arrive_usable() {
         .assert()
         .success();
     turnout(source.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    add_credential(source.path());
     turnout(source.path())
         .env("TURNOUT_KEYRING", "insecure-file")
-        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .args(["pass", "set", "deploy"])
         .write_stdin("hunter2")
         .assert()
         .success();
@@ -1181,7 +1307,7 @@ fn secrets_travel_encrypted_and_arrive_usable() {
         .success();
     turnout(target.path())
         .env("TURNOUT_KEYRING", "insecure-file")
-        .args(["pass", "copy", "staging", "--kind", "password", "--show"])
+        .args(["pass", "copy", "deploy", "--show"])
         .assert()
         .success()
         .stdout(predicate::str::contains("hunter2"));
@@ -1198,9 +1324,10 @@ fn a_wrong_passphrase_imports_nothing_at_all() {
         .assert()
         .success();
     turnout(source.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    add_credential(source.path());
     turnout(source.path())
         .env("TURNOUT_KEYRING", "insecure-file")
-        .args(["pass", "set", "staging", "--kind", "password", "--login", "deploy"])
+        .args(["pass", "set", "deploy"])
         .write_stdin("hunter2")
         .assert()
         .success();

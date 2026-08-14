@@ -6,21 +6,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use ssh2::Session;
 
-use crate::model::{App, DeployTarget, Server, Ssh};
+use crate::model::{App, Auth, Credential, Server};
 use crate::shell::{self, Dialect};
 use crate::{secrets, store};
 
+/// Everything a remote operation needs, resolved from the four catalogs.
+///
+/// The four parts arrive separately since v0.9.0; v0.10.0's named builds are
+/// exactly this tuple given a name.
 pub struct Target {
     pub app: App,
     pub server: Server,
+    pub credential: Credential,
+    pub path: crate::model::Path,
 }
 
-/// Resolve the app (argument or cwd) and the target server (flag or binding),
-/// honoring the app's server allow-list.
-pub fn resolve(app_name: Option<String>, server_name: Option<String>) -> Result<Target> {
+/// What a caller may override for a single command.
+#[derive(Default)]
+pub struct Overrides {
+    pub server: Option<String>,
+    pub credential: Option<String>,
+    pub path: Option<String>,
+}
+
+/// Resolve the app (argument or cwd), the target server (flag or binding), and
+/// the credential and path that server uses for this app unless overridden.
+pub fn resolve(app_name: Option<String>, overrides: Overrides) -> Result<Target> {
     let apps = store::load_apps()?;
     let app = crate::commands::exec::resolve(&apps, app_name)?.clone();
-    let server_name = match server_name {
+    let server_name = match overrides.server {
         Some(name) => name,
         None => store::load_state()?
             .bindings
@@ -35,47 +49,72 @@ pub fn resolve(app_name: Option<String>, server_name: Option<String>) -> Result<
     if !app.servers.is_empty() && !app.servers.contains(&server.name) {
         bail!("server '{server_name}' is not allowed for '{}' (allowed: {})", app.name, app.servers.join(", "));
     }
-    Ok(Target { app, server })
-}
 
-pub fn require_ssh(server: &Server) -> Result<&Ssh> {
-    server.ssh.as_ref().ok_or_else(|| {
+    let credential_name = overrides.credential.or_else(|| server.credential.clone()).ok_or_else(|| {
         anyhow::anyhow!(
-            "server '{0}' has no SSH access - set it with `turnout server edit {0} --ssh USER@HOST[:PORT]`",
+            "server '{0}' has no credential - set one with `turnout server edit {0} --credential NAME`, \
+             or pass --credential for this command only",
             server.name
         )
-    })
-}
+    })?;
+    let credential = store::load_credentials()?
+        .into_iter()
+        .find(|c| c.name == credential_name)
+        .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
 
-pub fn require_deploy_target<'a>(server: &'a Server, app_name: &str) -> Result<&'a DeployTarget> {
-    server.deploy.get(app_name).ok_or_else(|| {
+    let path_name = overrides.path.or_else(|| server.deploy.get(&app.name).cloned()).ok_or_else(|| {
         anyhow::anyhow!(
-            "no deploy path for '{app_name}' on '{0}' - set it with `turnout server edit {0} --deploy-path {app_name}=DIR`",
+            "no path for '{0}' on '{1}' - point it at one with `turnout server edit {1} --deploy-path {0}=PATH`, \
+             or pass --path for this command only",
+            app.name,
             server.name
         )
-    })
+    })?;
+    let path = store::load_paths()?
+        .into_iter()
+        .find(|p| p.name == path_name)
+        .ok_or_else(|| anyhow::anyhow!("no path named '{path_name}' - see `turnout path list`"))?;
+
+    Ok(Target { app, server, credential, path })
 }
 
-/// Configured key file first, then agent keys (ssh-agent / Pageant),
-/// then the keyring password (kind `ssh`, falling back to `password`).
-pub fn connect(ssh: &Ssh, server_name: &str) -> Result<Session> {
-    let stream = TcpStream::connect((ssh.host.as_str(), ssh.port)).with_context(|| format!("cannot reach {}:{}", ssh.host, ssh.port))?;
+/// Open a session to `server` as `credential`.
+///
+/// Order of attempts: the credential's key file, then agent keys (ssh-agent /
+/// Pageant), then the passphrase stored under the credential's name.
+pub fn connect(server: &Server, credential: &Credential) -> Result<Session> {
+    let host = server.ssh_host();
+    let stream = TcpStream::connect((host.as_str(), server.port)).with_context(|| format!("cannot reach {host}:{}", server.port))?;
     let mut session = Session::new()?;
     session.set_tcp_stream(stream);
     session.handshake().context("SSH handshake failed")?;
 
-    if let Some(key) = &ssh.key {
+    if credential.auth == Auth::Key {
+        let key = credential.key.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "credential '{0}' authenticates by key but has no key file - set one with `turnout credential edit {0} --key PATH`",
+                credential.name
+            )
+        })?;
+        // A passphrase-protected key needs the passphrase; an unprotected one
+        // does not, and asking for one that was never stored is not an error.
+        let passphrase = secrets::get(&credential.name).ok();
         session
-            .userauth_pubkey_file(&ssh.user, None, Path::new(key), None)
+            .userauth_pubkey_file(&credential.user, None, Path::new(key), passphrase.as_deref())
             .with_context(|| format!("key auth with {key} failed"))?;
         return Ok(session);
     }
-    let _ = session.userauth_agent(&ssh.user);
+    let _ = session.userauth_agent(&credential.user);
     if !session.authenticated() {
-        let password = secrets::get(server_name, "ssh")
-            .or_else(|_| secrets::get(server_name, "password"))
-            .map_err(|_| anyhow::anyhow!("agent auth failed and no password stored - save one with `turnout pass set {server_name} --kind ssh`"))?;
-        session.userauth_password(&ssh.user, &password).context("SSH password authentication failed")?;
+        let password = secrets::get(&credential.name).map_err(|_| {
+            anyhow::anyhow!(
+                "agent auth failed and no password stored - save one with `turnout pass set {}`",
+                credential.name
+            )
+        })?;
+        session
+            .userauth_password(&credential.user, &password)
+            .context("SSH password authentication failed")?;
     }
     Ok(session)
 }

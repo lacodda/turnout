@@ -22,7 +22,10 @@ use serde::{Deserialize, Serialize};
 use crate::model::{App, Credential, Group, Server};
 
 /// Bumped when the shape below changes in a way an older turnout cannot read.
-const FORMAT_VERSION: u32 = 1;
+///
+/// 2 since v0.9.0: credentials and paths are free-standing entities, and a
+/// v0.8 turnout reading this file would find servers with no login in them.
+const FORMAT_VERSION: u32 = 2;
 
 /// Argon2id parameters. Deliberately above the crate defaults: this guards a
 /// file that can be copied and attacked offline for as long as an attacker
@@ -48,16 +51,18 @@ pub struct Snapshot {
     #[serde(default)]
     pub credentials: Vec<Credential>,
     #[serde(default)]
+    pub paths: Vec<crate::model::Path>,
+    #[serde(default)]
     pub groups: Vec<Group>,
     /// Sealed secrets, present only when exported with `--with-secrets`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SealedSecrets>,
 }
 
-/// The encrypted secret bundle: `server/kind` -> secret, sealed as one unit.
+/// The encrypted secret bundle: credential name -> secret, sealed as one unit.
 ///
 /// Sealing the map as a whole rather than value by value keeps the number of
-/// stored accesses out of a casual reader's view, and means one passphrase
+/// stored secrets out of a casual reader's view, and means one passphrase
 /// prompt instead of one per secret.
 #[derive(Serialize, Deserialize)]
 pub struct SealedSecrets {
@@ -80,24 +85,41 @@ pub struct Kdf {
 }
 
 impl Snapshot {
-    pub fn new(apps: Vec<App>, servers: Vec<Server>, credentials: Vec<Credential>, groups: Vec<Group>) -> Self {
+    pub fn new(apps: Vec<App>, servers: Vec<Server>, credentials: Vec<Credential>, paths: Vec<crate::model::Path>, groups: Vec<Group>) -> Self {
         Self {
             version: FORMAT_VERSION,
             exported_by: format!("turnout {}", env!("CARGO_PKG_VERSION")),
             apps,
             servers,
             credentials,
+            paths,
             groups,
             secrets: None,
         }
     }
 
-    /// Reject a file from a future turnout instead of silently importing the
-    /// parts that happen to still parse.
+    /// Reject a file this build cannot import faithfully - from either
+    /// direction.
+    ///
+    /// A *newer* file may parse and still mean something different, so it is
+    /// refused outright. A version-1 file is refused for the mirror-image
+    /// reason: its servers carry a `user@host` and inline deploy directories,
+    /// which this build has nowhere to put. Both would otherwise import as a
+    /// catalog of servers nobody can log into.
     pub fn check_version(&self) -> Result<()> {
         if self.version > FORMAT_VERSION {
             bail!(
                 "this export uses format version {} but this turnout understands up to {FORMAT_VERSION} - update turnout with `turnout self-update`",
+                self.version
+            );
+        }
+        if self.version < FORMAT_VERSION {
+            bail!(
+                "this export was written by turnout 0.8 or older (format version {}), and v0.9.0 split logins and \
+                 remote directories into credentials and paths.\n\
+                 There is no automatic conversion - the new entities need names. Open the file and re-enter it with \
+                 `turnout server add`, `turnout credential add` and `turnout path add`.\n\
+                 See https://lacodda.github.io/turnout/guides/upgrading-to-0-9/",
                 self.version
             );
         }
@@ -346,10 +368,21 @@ mod tests {
     /// A file from a newer turnout must be refused rather than half-imported.
     #[test]
     fn a_future_format_is_refused() {
-        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         assert!(snapshot.check_version().is_ok());
         snapshot.version = FORMAT_VERSION + 1;
         let err = snapshot.check_version().unwrap_err().to_string();
         assert!(err.contains("self-update"), "the error must say how to move forward: {err}");
+    }
+
+    /// The mirror case: a v0.8 export names logins inside its servers, and this
+    /// build would import them as servers with no way to log in.
+    #[test]
+    fn a_pre_split_format_is_refused_with_instructions() {
+        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        snapshot.version = 1;
+        let err = snapshot.check_version().unwrap_err().to_string();
+        assert!(err.contains("credential") && err.contains("path"), "it must name what changed: {err}");
+        assert!(err.contains("turnout credential add"), "and the way over: {err}");
     }
 }

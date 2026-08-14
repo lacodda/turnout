@@ -13,12 +13,13 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
     let apps = store::load_apps()?;
     let servers = store::load_servers()?;
     let credentials = store::load_credentials()?;
+    let remote_paths = store::load_paths()?;
     let groups = store::load_groups()?;
     if apps.is_empty() && servers.is_empty() && groups.is_empty() {
         bail!("nothing to export - this machine has no apps, servers or groups yet");
     }
 
-    let mut snapshot = Snapshot::new(apps, servers, credentials, groups);
+    let mut snapshot = Snapshot::new(apps, servers, credentials, remote_paths, groups);
     if with_secrets {
         let collected = collect_secrets(&snapshot.credentials)?;
         if collected.is_empty() {
@@ -35,11 +36,12 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
 
     println!("Exported to {}", path.display());
     println!(
-        "  {} app(s), {} server(s), {} group(s), {} access record(s)",
+        "  {} app(s), {} server(s), {} credential(s), {} path(s), {} group(s)",
         snapshot.apps.len(),
         snapshot.servers.len(),
-        snapshot.groups.len(),
-        snapshot.credentials.len()
+        snapshot.credentials.len(),
+        snapshot.paths.len(),
+        snapshot.groups.len()
     );
     match &snapshot.secrets {
         Some(_) => println!("  Secrets are included, encrypted with your passphrase."),
@@ -98,19 +100,25 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
     merge(
         &mut store::load_credentials()?,
         snapshot.credentials,
-        |credential| format!("{}/{}", credential.server, credential.kind),
+        |credential| credential.name.clone(),
         force,
-        "access",
+        "credential",
         &mut report,
         store::save_credentials,
     )?;
+    merge(
+        &mut store::load_paths()?,
+        snapshot.paths,
+        |path| path.name.clone(),
+        force,
+        "path",
+        &mut report,
+        store::save_paths,
+    )?;
 
     if let Some(opened) = opened {
-        for (account, value) in &opened {
-            let Some((server, kind)) = account.split_once('/') else {
-                continue;
-            };
-            secrets::set(server, kind, value)?;
+        for (credential, value) in &opened {
+            secrets::set(credential, value)?;
         }
         report.secrets = opened.len();
     }
@@ -176,15 +184,15 @@ where
     save(existing)
 }
 
-/// Read every stored secret named by the access catalog.
+/// Read every stored secret named by the credential catalog.
 ///
-/// A missing secret is not an error: the catalog records that access exists,
-/// and the keyring may legitimately not have it on this machine.
+/// A missing secret is not an error: a credential may authenticate by an
+/// unprotected key, or the keyring on this machine may legitimately not hold it.
 fn collect_secrets(credentials: &[crate::model::Credential]) -> Result<BTreeMap<String, String>> {
     let mut collected = BTreeMap::new();
     for credential in credentials {
-        if let Ok(value) = secrets::get(&credential.server, &credential.kind) {
-            collected.insert(format!("{}/{}", credential.server, credential.kind), value);
+        if let Ok(value) = secrets::get(&credential.name) {
+            collected.insert(credential.name.clone(), value);
         }
     }
     Ok(collected)
@@ -274,8 +282,10 @@ mod tests {
             name: name.to_string(),
             label: None,
             url: "https://staging.example.com".to_string(),
-            ssh: None,
+            host: None,
+            port: 22,
             accept_invalid_certs: false,
+            credential: None,
             deploy: BTreeMap::new(),
             shell: None,
         }
@@ -341,30 +351,33 @@ mod tests {
         assert!(report.skipped.is_empty());
     }
 
-    /// Access records are keyed by server *and* kind: the same server can hold
-    /// a password and a token, and importing one must not hide the other.
+    /// Credentials are keyed by their own name since v0.9.0 - the same account
+    /// reaching two stands is one record, and a second one with a different
+    /// name is a different login even if it reaches the same machine.
     #[test]
-    fn access_records_are_keyed_by_server_and_kind() {
-        let credential = |server: &str, kind: &str| crate::model::Credential {
-            server: server.to_string(),
-            kind: kind.to_string(),
-            login: "deploy".to_string(),
+    fn credentials_are_keyed_by_name() {
+        let credential = |name: &str, user: &str| crate::model::Credential {
+            name: name.to_string(),
+            user: user.to_string(),
+            auth: crate::model::Auth::Password,
+            key: None,
         };
-        let mut existing = vec![credential("pi", "ssh")];
+        let mut existing = vec![credential("pi-deploy", "deploy")];
         let mut report = Report::default();
         merge(
             &mut existing,
-            vec![credential("pi", "password"), credential("pi", "ssh")],
-            |c| format!("{}/{}", c.server, c.kind),
+            vec![credential("pi-root", "root"), credential("pi-deploy", "someone-else")],
+            |c| c.name.clone(),
             false,
-            "access",
+            "credential",
             &mut report,
             |_| Ok(()),
         )
         .unwrap();
-        assert_eq!(existing.len(), 2, "a different kind on the same server is a different record");
+        assert_eq!(existing.len(), 2, "a different name is a different login");
+        assert_eq!(existing[0].user, "deploy", "the local entry must survive");
         assert_eq!(report.imported, 1);
-        assert_eq!(report.skipped, vec!["access 'pi/ssh'"]);
+        assert_eq!(report.skipped, vec!["credential 'pi-deploy'"]);
     }
 
     #[test]

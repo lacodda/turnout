@@ -2,8 +2,8 @@ use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input};
 
 use crate::cli::ServerCommand;
-use crate::model::{Server, parse_ssh, validate_name, validate_url};
-use crate::{pick, secrets, store};
+use crate::model::{Server, parse_host, validate_name, validate_url};
+use crate::{pick, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
     match command {
@@ -11,24 +11,24 @@ pub fn run(command: ServerCommand) -> Result<()> {
             name,
             url,
             label,
-            ssh,
+            host,
+            credential,
             insecure,
-        } => add(name, url, label, ssh, insecure),
+        } => add(name, url, label, host, credential, insecure),
         ServerCommand::List => list(),
         ServerCommand::Show { name } => show(&resolve(name, "Show server")?),
         ServerCommand::Edit {
             name,
             url,
             label,
-            ssh,
-            ssh_key,
+            host,
+            credential,
             insecure,
             secure,
             deploy_paths,
-            restart_cmds,
         } => {
             let name = resolve(name, "Edit server")?;
-            edit(&name, url, label, ssh, ssh_key, insecure, secure, deploy_paths, restart_cmds)
+            edit(&name, url, label, host, credential, insecure, secure, deploy_paths)
         }
         ServerCommand::Remove { name, assume_yes } => {
             let name = resolve(name, "Remove server")?;
@@ -45,7 +45,15 @@ fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
     }
 }
 
-fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Option<String>, insecure: bool) -> Result<()> {
+/// Check a credential exists before a server is pointed at it.
+fn check_credential(name: &str) -> Result<()> {
+    if !store::load_credentials()?.iter().any(|c| c.name == name) {
+        bail!("no credential named '{name}' - add one with `turnout credential add {name}`");
+    }
+    Ok(())
+}
+
+fn add(name: Option<String>, url: Option<String>, label: Option<String>, host: Option<String>, credential: Option<String>, insecure: bool) -> Result<()> {
     let mut servers = store::load_servers()?;
     let wizard = name.is_none() || url.is_none();
     if wizard {
@@ -82,14 +90,43 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Op
         None => None,
     };
 
-    let ssh = match ssh {
-        Some(spec) => Some(parse_ssh(&spec)?),
+    // The URL's host is the common case, so the prompt says so and an empty
+    // answer keeps it rather than demanding the same name twice.
+    let (host, port) = match host {
+        Some(spec) => {
+            let (host, port) = parse_host(&spec)?;
+            (Some(host), port)
+        }
         None if wizard => {
             let answer: String = Input::new()
-                .with_prompt("SSH access as user@host[:port] (empty to skip)")
+                .with_prompt("SSH host[:port] (empty to use the URL's host on 22)")
                 .allow_empty(true)
                 .interact_text()?;
-            if answer.trim().is_empty() { None } else { Some(parse_ssh(answer.trim())?) }
+            if answer.trim().is_empty() {
+                (None, 22)
+            } else {
+                let (host, port) = parse_host(answer.trim())?;
+                (Some(host), port)
+            }
+        }
+        None => (None, 22),
+    };
+
+    let credential = match credential {
+        Some(name) => {
+            check_credential(&name)?;
+            Some(name)
+        }
+        None if wizard => {
+            let credentials = store::load_credentials()?;
+            if credentials.is_empty() {
+                println!("  No credentials yet - add one later with `turnout credential add`, then point this server at it.");
+                None
+            } else if Confirm::new().with_prompt("Point this server at a credential?").default(true).interact()? {
+                Some(pick::credential(&credentials, "Logs in with")?)
+            } else {
+                None
+            }
         }
         None => None,
     };
@@ -107,8 +144,10 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, ssh: Op
         name: name.clone(),
         label,
         url,
-        ssh,
+        host,
+        port,
         accept_invalid_certs,
+        credential,
         deploy: Default::default(),
         // Learned on the first command that needs a shell, not guessed here.
         shell: None,
@@ -128,7 +167,7 @@ fn list() -> Result<()> {
     }
     let width = servers.iter().map(|s| s.name.len()).max().unwrap_or(0);
     for server in servers {
-        let label = server.label.map(|l| format!("  ({l})")).unwrap_or_default();
+        let label = server.label.as_ref().map(|l| format!("  ({l})")).unwrap_or_default();
         println!("{:width$}  {}{}", server.name, server.url, label);
     }
     Ok(())
@@ -139,42 +178,43 @@ fn show(name: &str) -> Result<()> {
     let server = servers.iter().find(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
     println!("{}", server.name);
     if let Some(label) = &server.label {
-        println!("  Label:    {label}");
+        println!("  Label:      {label}");
     }
-    println!("  URL:      {}", server.url);
-    match &server.ssh {
-        Some(ssh) => {
-            let key = ssh.key.as_ref().map(|k| format!(" (key: {k})")).unwrap_or_default();
-            println!("  SSH:      {}@{}:{}{key}", ssh.user, ssh.host, ssh.port);
-        }
-        None => println!("  SSH:      not configured"),
+    println!("  URL:        {}", server.url);
+    // Say when the host is inherited: it is the difference between "nothing is
+    // configured" and "it is the same name as the URL".
+    match &server.host {
+        Some(host) => println!("  SSH:        {host}:{}", server.port),
+        None => println!("  SSH:        {}:{} (from the URL)", server.ssh_host(), server.port),
+    }
+    match &server.credential {
+        Some(credential) => println!("  Credential: {credential}"),
+        None => println!("  Credential: none - set one with `turnout server edit {name} --credential NAME`"),
     }
     println!(
-        "  TLS:      {}",
+        "  TLS:        {}",
         if server.accept_invalid_certs {
             "accept invalid certificates"
         } else {
             "verify certificates"
         }
     );
-    let credentials = store::load_credentials()?;
-    let kinds: Vec<&str> = credentials.iter().filter(|c| c.server == name).map(|c| c.kind.as_str()).collect();
-    if !kinds.is_empty() {
-        println!("  Access:   {} (secrets in the OS keyring)", kinds.join(", "));
-    }
     if !server.deploy.is_empty() {
+        let paths = store::load_paths()?;
         println!("  Deploy:");
-        for (app, target) in &server.deploy {
-            match &target.restart {
-                Some(restart) => println!("    {app}: {} (then: {restart})", target.path),
-                None => println!("    {app}: {}", target.path),
+        for (app, path_name) in &server.deploy {
+            match paths.iter().find(|p| &p.name == path_name) {
+                Some(path) => println!("    {app}: {path_name} → {}", path.dir),
+                // A name with nothing behind it is worth showing rather than
+                // hiding: it is exactly what a deploy would fail on.
+                None => println!("    {app}: {path_name} (missing from the path catalog)"),
             }
         }
     }
     let apps = store::load_apps()?;
     let used_by: Vec<&str> = apps.iter().filter(|a| a.servers.iter().any(|s| s == name)).map(|a| a.name.as_str()).collect();
     if !used_by.is_empty() {
-        println!("  Used by:  {}", used_by.join(", "));
+        println!("  Used by:    {}", used_by.join(", "));
     }
     Ok(())
 }
@@ -184,20 +224,19 @@ fn edit(
     name: &str,
     url: Option<String>,
     label: Option<String>,
-    ssh: Option<String>,
-    ssh_key: Option<String>,
+    host: Option<String>,
+    credential: Option<String>,
     insecure: bool,
     secure: bool,
     deploy_paths: Vec<String>,
-    restart_cmds: Vec<String>,
 ) -> Result<()> {
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
-    let no_flags =
-        url.is_none() && label.is_none() && ssh.is_none() && ssh_key.is_none() && !insecure && !secure && deploy_paths.is_empty() && restart_cmds.is_empty();
+    let no_flags = url.is_none() && label.is_none() && host.is_none() && credential.is_none() && !insecure && !secure && deploy_paths.is_empty();
 
     if no_flags {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
+        let credentials = store::load_credentials()?;
         let server = &mut servers[index];
         let url: String = Input::new()
             .with_prompt("Base URL")
@@ -211,18 +250,34 @@ fn edit(
             .allow_empty(true)
             .interact_text()?;
         server.label = if label.trim().is_empty() { None } else { Some(label.trim().to_string()) };
-        let current_ssh = server.ssh.as_ref().map(|s| format!("{}@{}:{}", s.user, s.host, s.port)).unwrap_or_default();
-        let ssh: String = Input::new()
-            .with_prompt("SSH as user@host[:port] (empty to unset)")
-            .default(current_ssh)
+        let current_host = server.host.as_ref().map(|h| format!("{h}:{}", server.port)).unwrap_or_default();
+        let host: String = Input::new()
+            .with_prompt("SSH host[:port] (empty to use the URL's host)")
+            .default(current_host)
             .allow_empty(true)
             .interact_text()?;
-        server.ssh = if ssh.trim().is_empty() { None } else { Some(parse_ssh(ssh.trim())?) };
+        if host.trim().is_empty() {
+            server.host = None;
+            server.port = 22;
+        } else {
+            let (parsed, port) = parse_host(host.trim())?;
+            server.host = Some(parsed);
+            server.port = port;
+        }
+        if !credentials.is_empty() && Confirm::new().with_prompt("Change the credential?").default(false).interact()? {
+            server.credential = Some(pick::credential(&credentials, "Logs in with")?);
+        }
         server.accept_invalid_certs = Confirm::new()
             .with_prompt("Accept self-signed / invalid TLS certificates?")
             .default(server.accept_invalid_certs)
             .interact()?;
     } else {
+        // Validated before the mutable borrow: both read from other catalogs.
+        if let Some(credential) = credential.as_deref().filter(|c| !c.trim().is_empty()) {
+            check_credential(credential)?;
+        }
+        let known_apps = store::load_apps()?;
+        let known_paths = store::load_paths()?;
         let server = &mut servers[index];
         if let Some(url) = url {
             validate_url(&url)?;
@@ -231,18 +286,18 @@ fn edit(
         if label.is_some() {
             server.label = label;
         }
-        if let Some(spec) = ssh {
-            // Re-parsing replaces host/port/user; keep an already-configured key.
-            let key = server.ssh.as_ref().and_then(|s| s.key.clone());
-            let mut parsed = parse_ssh(&spec)?;
-            parsed.key = key;
-            server.ssh = Some(parsed);
+        if let Some(spec) = host {
+            if spec.trim().is_empty() {
+                server.host = None;
+                server.port = 22;
+            } else {
+                let (parsed, port) = parse_host(&spec)?;
+                server.host = Some(parsed);
+                server.port = port;
+            }
         }
-        if let Some(key) = ssh_key {
-            let Some(ssh) = server.ssh.as_mut() else {
-                bail!("set SSH access first: `turnout server edit {name} --ssh USER@HOST[:PORT]`");
-            };
-            ssh.key = if key.trim().is_empty() { None } else { Some(key) };
+        if let Some(credential) = credential {
+            server.credential = if credential.trim().is_empty() { None } else { Some(credential) };
         }
         if insecure {
             server.accept_invalid_certs = true;
@@ -250,32 +305,19 @@ fn edit(
         if secure {
             server.accept_invalid_certs = false;
         }
-        let known_apps = store::load_apps()?;
         for spec in &deploy_paths {
-            let (app, dir) = split_spec(spec)?;
-            if dir.is_empty() {
+            let (app, path_name) = split_spec(spec)?;
+            if path_name.is_empty() {
                 server.deploy.remove(app);
-            } else {
-                crate::model::validate_remote_path(dir)?;
-                if !known_apps.iter().any(|a| a.name == app) {
-                    bail!("no app named '{app}' - see `turnout app list`");
-                }
-                server
-                    .deploy
-                    .entry(app.to_string())
-                    .or_insert_with(|| crate::model::DeployTarget {
-                        path: String::new(),
-                        restart: None,
-                    })
-                    .path = crate::model::normalize_remote_path(dir);
+                continue;
             }
-        }
-        for spec in &restart_cmds {
-            let (app, cmd) = split_spec(spec)?;
-            let Some(target) = server.deploy.get_mut(app) else {
-                bail!("app '{app}' has no deploy path on '{name}' - set it first with --deploy-path {app}=DIR");
-            };
-            target.restart = if cmd.is_empty() { None } else { Some(cmd.to_string()) };
+            if !known_apps.iter().any(|a| a.name == app) {
+                bail!("no app named '{app}' - see `turnout app list`");
+            }
+            if !known_paths.iter().any(|p| p.name == path_name) {
+                bail!("no path named '{path_name}' - add one with `turnout path add {path_name}`");
+            }
+            server.deploy.insert(app.to_string(), path_name.to_string());
         }
     }
     store::save_servers(&servers)?;
@@ -319,18 +361,9 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         println!("Removed '{name}' from apps: {}.", touched.join(", "));
     }
 
-    let mut credentials = store::load_credentials()?;
-    let kinds: Vec<String> = credentials.iter().filter(|c| c.server == name).map(|c| c.kind.clone()).collect();
-    if !kinds.is_empty() {
-        for kind in &kinds {
-            if let Err(err) = secrets::delete(name, kind) {
-                eprintln!("warning: {err:#}");
-            }
-        }
-        credentials.retain(|c| c.server != name);
-        store::save_credentials(&credentials)?;
-        println!("Removed stored access: {}.", kinds.join(", "));
-    }
+    // Credentials and paths outlive the server on purpose: they are shared, and
+    // deleting a login because one of the machines it reached went away would
+    // take the others down with it.
     crate::journal::record("server.remove", None, Some(name), None);
     println!("Server '{name}' removed.");
     Ok(())

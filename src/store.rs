@@ -12,6 +12,7 @@ const META_FILE: &str = "meta.json";
 const APPS_FILE: &str = "apps.json";
 const SERVERS_FILE: &str = "servers.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
+const PATHS_FILE: &str = "paths.json";
 const GROUPS_FILE: &str = "groups.json";
 const STATE_FILE: &str = "state.json";
 use crate::migrate::CURRENT_VERSION as SCHEMA_VERSION;
@@ -124,6 +125,14 @@ pub fn load_credentials() -> Result<Vec<Credential>> {
 
 pub fn save_credentials(credentials: &[Credential]) -> Result<()> {
     save_catalog(CREDENTIALS_FILE, credentials)
+}
+
+pub fn load_paths() -> Result<Vec<crate::model::Path>> {
+    load_catalog(PATHS_FILE)
+}
+
+pub fn save_paths(paths: &[crate::model::Path]) -> Result<()> {
+    save_catalog(PATHS_FILE, paths)
 }
 
 pub fn load_groups() -> Result<Vec<Group>> {

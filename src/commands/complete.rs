@@ -13,6 +13,8 @@ pub fn run(what: CompleteKind) -> Result<()> {
     let names = match what {
         CompleteKind::Apps => apps(),
         CompleteKind::Servers => servers(),
+        CompleteKind::Credentials => credentials(),
+        CompleteKind::Paths => remote_paths(),
         CompleteKind::Groups => groups(),
         CompleteKind::Targets => {
             let mut names = apps();
@@ -36,6 +38,18 @@ fn servers() -> Vec<String> {
     store::load_servers()
         .map(|servers| servers.into_iter().map(|s| s.name).collect())
         .unwrap_or_default()
+}
+
+fn credentials() -> Vec<String> {
+    store::load_credentials()
+        .map(|credentials| credentials.into_iter().map(|c| c.name).collect())
+        .unwrap_or_default()
+}
+
+/// Named remote directories - not to be confused with local filesystem paths,
+/// which the shell completes on its own.
+fn remote_paths() -> Vec<String> {
+    store::load_paths().map(|paths| paths.into_iter().map(|p| p.name).collect()).unwrap_or_default()
 }
 
 fn groups() -> Vec<String> {
