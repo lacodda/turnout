@@ -25,15 +25,10 @@ fn is_backup_name(entry: &str) -> bool {
     bytes.len() == 15 && bytes[8] == b'-' && stem.chars().enumerate().all(|(i, c)| if i == 8 { c == '-' } else { c.is_ascii_digit() })
 }
 
-/// How a connection is announced: the account and the machine it reaches.
-fn connecting_to(target: &remote::Target) -> String {
-    format!("{}@{}:{}", target.credential.user, target.server.ssh_host(), target.server.port)
-}
-
 pub fn backup(app_name: Option<String>, overrides: remote::Overrides) -> Result<()> {
     let target = remote::resolve(app_name, overrides)?;
     let dir = &target.path.dir;
-    let step = Step::start(format!("Connecting to {} ...", connecting_to(&target)));
+    let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
     let dialect = remote::dialect(&session, &target.server);
     step.update(format!("Backing up {dir} ..."));
@@ -47,7 +42,7 @@ pub fn restore(app_name: Option<String>, overrides: remote::Overrides, from: Opt
     let target = remote::resolve(app_name, overrides)?;
     let deploy_dir = target.path.dir.clone();
     let backups_raw = remote::backups_dir(&deploy_dir);
-    let step = Step::start(format!("Connecting to {} ...", connecting_to(&target)));
+    let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
     let dialect = remote::dialect(&session, &target.server);
     remote::check_quotable(dialect, &[&deploy_dir, &backups_raw])?;

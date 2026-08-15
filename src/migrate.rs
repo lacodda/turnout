@@ -53,6 +53,11 @@ struct Step {
 }
 
 /// Every known migration, in order.
+///
+/// Schema 2 is current and has no successor yet, so the only entry is a
+/// refusal. That leaves the `rewrites: true` machinery in [`run`] - the safety
+/// copy and the error wrapping - unexercised until a schema 3 exists: it is
+/// future plumbing kept warm, not dead code to delete.
 const STEPS: &[Step] = &[Step {
     from: 1,
     describes: "refused: the v0.9.0 entity split has no automatic migration",

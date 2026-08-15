@@ -162,8 +162,7 @@ fn fetch_latest() -> Option<String> {
 /// Ask for `/releases/latest` without following the redirect and read the tag
 /// out of the `Location` header.
 fn redirect_target(url: &str) -> Result<String> {
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    runtime.block_on(async {
+    crate::utils::run_blocking(async {
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)

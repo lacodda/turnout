@@ -98,7 +98,7 @@ fn from_scripts(scripts: &[String], kind: ProjectKind) -> BTreeMap<String, Strin
 }
 
 /// Default command set for a detected project kind; the user can override any of them.
-pub fn default_commands(kind: ProjectKind) -> BTreeMap<String, String> {
+fn default_commands(kind: ProjectKind) -> BTreeMap<String, String> {
     let pairs: &[(&str, &str)] = match kind {
         ProjectKind::Pnpm => &[("dev", "pnpm dev"), ("build", "pnpm build"), ("test", "pnpm test"), ("lint", "pnpm lint")],
         ProjectKind::Yarn => &[("dev", "yarn dev"), ("build", "yarn build"), ("test", "yarn test"), ("lint", "yarn lint")],

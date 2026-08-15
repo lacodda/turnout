@@ -22,7 +22,11 @@ const BAR_TEMPLATE: &str = "{msg} [{bar:24.cyan/blue}] {percent:>3}% · {bytes}/
 
 fn is_terminal() -> bool {
     use std::io::IsTerminal;
-    std::io::stdout().is_terminal()
+    use std::sync::OnceLock;
+    // Asked once per process: whether stdout is a terminal cannot change
+    // mid-run, and every helper here consults it on every call.
+    static TTY: OnceLock<bool> = OnceLock::new();
+    *TTY.get_or_init(|| std::io::stdout().is_terminal())
 }
 
 /// Open the checklist frame around a multi-phase command.

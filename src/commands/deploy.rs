@@ -72,7 +72,7 @@ struct Options {
 /// Every phase that talks to the server, in checklist order.
 fn deploy_over_ssh(target: &Target, plan: &Plan, options: &Options) -> Result<u64> {
     let (server, credential, path) = (&target.server, &target.credential, &target.path);
-    let where_to = format!("{}@{}:{}", credential.user, server.ssh_host(), server.port);
+    let where_to = target.connection_label();
     let step = Step::start(format!("Connecting to {where_to} ..."));
     let session = remote::connect(server, credential)?;
     // Asked once, before any command is built: everything below is phrased in

@@ -18,6 +18,13 @@ pub struct Target {
     pub path: crate::model::Path,
 }
 
+impl Target {
+    /// How a connection is announced: the account and the machine it reaches.
+    pub fn connection_label(&self) -> String {
+        format!("{}@{}:{}", self.credential.user, self.server.ssh_host(), self.server.port)
+    }
+}
+
 /// What a caller may override for a single command.
 #[derive(Default)]
 pub struct Overrides {
@@ -169,28 +176,9 @@ pub fn join_remote(dir: &str, name: &str) -> String {
 /// next to each other - the name is a sort key first and a wall clock second.
 pub fn backup_name() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let (year, month, day) = civil_from_days((secs / 86_400) as i64);
+    let (year, month, day) = crate::utils::civil_from_days((secs / 86_400) as i64);
     let rest = secs % 86_400;
     format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}.tar.gz", rest / 3600, (rest % 3600) / 60, rest % 60)
-}
-
-/// Days since 1970-01-01 to a calendar date, by Howard Hinnant's `civil_from_days`.
-///
-/// Written out rather than pulled in: a date crate would be a dependency for
-/// one filename, and this is the same arithmetic every one of them performs.
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    // Shift the epoch to 0000-03-01 so leap days land at the end of the cycle.
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    // March is month 0 in this scheme; roll it back to the calendar.
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
 }
 
 /// Create a timestamped tar.gz of the deploy directory.
@@ -260,7 +248,7 @@ fn parent_dir(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_command, backup_name, backups_dir, civil_from_days, join_remote, mentions_permission_denial, parent_dir};
+    use super::{backup_command, backup_name, backups_dir, join_remote, mentions_permission_denial, parent_dir};
     use crate::shell::Dialect;
 
     #[test]
@@ -344,17 +332,5 @@ mod tests {
         assert_eq!(stem.as_bytes()[8], b'-', "{name}");
         assert!(stem.chars().filter(|c| *c != '-').all(|c| c.is_ascii_digit()), "{name}");
         assert!("20260812-000000" < "20260812-181500", "the format has to order lexicographically");
-    }
-
-    /// Dates the deploy tooling will actually see, plus the leap-year cases
-    /// that catch a wrong civil-date conversion.
-    #[test]
-    fn days_since_the_epoch_become_calendar_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        // 2000-02-29: a leap year despite being divisible by 100.
-        assert_eq!(civil_from_days(11_016), (2000, 2, 29));
-        // 2024-02-29, the ordinary leap case.
-        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
-        assert_eq!(civil_from_days(20_313), (2025, 8, 13));
     }
 }

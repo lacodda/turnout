@@ -169,8 +169,7 @@ impl Asset {
 
     fn download(&self) -> Result<Vec<u8>> {
         let url = self.url();
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-        runtime.block_on(async {
+        crate::utils::run_blocking(async {
             let client = reqwest::Client::builder()
                 .user_agent(concat!("turnout/", env!("CARGO_PKG_VERSION")))
                 .timeout(std::time::Duration::from_secs(300))
