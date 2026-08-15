@@ -13,12 +13,13 @@
 //! already drives its own runtime this way (`gateway.rs`), so the pattern is
 //! not new to the codebase.
 
+use std::cell::OnceCell;
 use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, Handle, Msg};
-use russh::keys::{HashAlg, PrivateKeyWithHashAlg, PublicKey, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -49,6 +50,11 @@ impl client::Handler for AcceptAnyHostKey {
 /// `block_on`; dropping the session drops the runtime and closes the
 /// connection.
 pub struct Session {
+    /// One SFTP subsystem for the whole session, opened on first use. A
+    /// file-by-file deploy uploads every file in the tree; opening the
+    /// subsystem per file would pay a channel-open plus subsystem handshake
+    /// for each one.
+    sftp: OnceCell<SftpSession>,
     runtime: Runtime,
     handle: Handle<AcceptAnyHostKey>,
 }
@@ -68,7 +74,22 @@ impl Session {
         let host = server.ssh_host();
         let port = server.port;
         let handle = runtime.block_on(authenticate(&host, port, credential))?;
-        Ok(Self { runtime, handle })
+        Ok(Self {
+            sftp: OnceCell::new(),
+            runtime,
+            handle,
+        })
+    }
+
+    /// The session's SFTP subsystem, opened on first use and shared after.
+    fn sftp(&self) -> Result<&SftpSession> {
+        if self.sftp.get().is_none() {
+            let opened = self.runtime.block_on(open_sftp(&self.handle))?;
+            // The cell was just seen empty and Session is not shared across
+            // threads, so this set cannot lose a race.
+            let _ = self.sftp.set(opened);
+        }
+        Ok(self.sftp.get().expect("the SFTP cell was just filled"))
     }
 
     /// Run a remote command, returning its stdout. A non-zero exit becomes an
@@ -82,22 +103,32 @@ impl Session {
     /// The callback is what keeps the progress bar honest: bytes are credited
     /// as they are written, in bounded pieces.
     pub fn upload(&self, local: &Path, remote: &str, on_chunk: impl FnMut(u64)) -> Result<u64> {
-        self.runtime.block_on(upload(&self.handle, local, remote, on_chunk))
+        let sftp = self.sftp()?;
+        self.runtime.block_on(upload(sftp, local, remote, on_chunk))
     }
 
     /// Upload an in-memory buffer over SFTP, reporting each chunk. The archive
     /// route builds its `tar.gz` in memory, so it never touches local disk.
     pub fn upload_bytes(&self, bytes: &[u8], remote: &str, on_chunk: impl FnMut(u64)) -> Result<u64> {
-        self.runtime.block_on(upload_bytes(&self.handle, bytes, remote, on_chunk))
+        let sftp = self.sftp()?;
+        self.runtime.block_on(upload_bytes(sftp, bytes, remote, on_chunk))
     }
 
-    /// Create a remote directory, ignoring "already exists". Best-effort, like
-    /// the `mkdir -p` it stands in for on the SFTP side.
+    /// Create a remote directory, tolerating only "already exists".
+    ///
+    /// SFTP has no `-p`, so an existing directory answers with an error and
+    /// has to be told apart from a real refusal: a permission problem
+    /// swallowed here would resurface as a baffling failure on the first
+    /// upload into the missing directory.
     pub fn mkdir(&self, remote: &str) -> Result<()> {
+        let sftp = self.sftp()?;
         self.runtime.block_on(async {
-            let sftp = sftp(&self.handle).await?;
-            // An existing directory is success here; SFTP has no -p.
-            let _ = sftp.create_dir(remote).await;
+            if let Err(err) = sftp.create_dir(remote).await {
+                match sftp.metadata(remote).await {
+                    Ok(existing) if existing.is_dir() => {}
+                    _ => return Err(err).with_context(|| format!("cannot create the directory {remote} on the server")),
+                }
+            }
             Ok(())
         })
     }
@@ -126,7 +157,7 @@ async fn authenticate(host: &str, port: u16, credential: &Credential) -> Result<
             let key = load_secret_key(path, passphrase.as_deref()).with_context(|| format!("cannot read the key file {path}"))?;
             // None lets russh pick the signature algorithm; only RSA needs an
             // explicit SHA-2 choice, and ed25519 - the common case - ignores it.
-            let key = PrivateKeyWithHashAlg::new(Arc::new(key), key_hash_alg());
+            let key = PrivateKeyWithHashAlg::new(Arc::new(key), None);
             handle
                 .authenticate_publickey(&credential.user, key)
                 .await
@@ -146,12 +177,6 @@ async fn authenticate(host: &str, port: u16, credential: &Credential) -> Result<
         bail!("SSH authentication failed for '{}' - the server rejected the credential", credential.user);
     }
     Ok(handle)
-}
-
-/// No forced hash algorithm: russh negotiates it, and ed25519 - what
-/// `ssh-keygen` produces by default - does not use one.
-fn key_hash_alg() -> Option<HashAlg> {
-    None
 }
 
 /// Run a command over a fresh channel and collect stdout, stderr and the exit
@@ -178,7 +203,18 @@ async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<String
         }
     }
 
-    let code = code.unwrap_or(0);
+    // A channel that closes without ever reporting an exit status is a dropped
+    // connection, not a success; defaulting to zero here would let a deploy
+    // severed mid-command report a clean finish.
+    let Some(code) = code else {
+        let stderr = String::from_utf8_lossy(&stderr);
+        let detail = if stderr.trim().is_empty() {
+            String::new()
+        } else {
+            format!(": {}", stderr.trim())
+        };
+        bail!("remote command '{command}' ended without an exit status - the connection likely dropped{detail}");
+    };
     if code != 0 {
         bail!("remote command '{command}' exited with {code}: {}", String::from_utf8_lossy(&stderr).trim());
     }
@@ -186,7 +222,7 @@ async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<String
 }
 
 /// Open an SFTP subsystem over a fresh channel.
-async fn sftp(handle: &Handle<AcceptAnyHostKey>) -> Result<SftpSession> {
+async fn open_sftp(handle: &Handle<AcceptAnyHostKey>) -> Result<SftpSession> {
     let channel = handle.channel_open_session().await.context("cannot open an SFTP channel")?;
     channel.request_subsystem(true, "sftp").await.context("cannot start the SFTP subsystem")?;
     SftpSession::new(channel.into_stream()).await.context("cannot open SFTP")
@@ -198,10 +234,10 @@ async fn sftp(handle: &Handle<AcceptAnyHostKey>) -> Result<SftpSession> {
 const CHUNK: usize = 64 * 1024;
 
 /// Stream a local file to `remote` in bounded chunks.
-async fn upload(handle: &Handle<AcceptAnyHostKey>, local: &Path, remote: &str, on_chunk: impl FnMut(u64)) -> Result<u64> {
+async fn upload(sftp: &SftpSession, local: &Path, remote: &str, on_chunk: impl FnMut(u64)) -> Result<u64> {
     use tokio::io::AsyncReadExt;
     let mut file = tokio::fs::File::open(local).await.with_context(|| format!("cannot open {}", local.display()))?;
-    let mut remote_file = open_remote(handle, remote).await?;
+    let mut remote_file = open_remote(sftp, remote).await?;
     let mut buffer = vec![0u8; CHUNK];
     let mut on_chunk = on_chunk;
     let mut total = 0u64;
@@ -219,8 +255,8 @@ async fn upload(handle: &Handle<AcceptAnyHostKey>, local: &Path, remote: &str, o
 }
 
 /// Stream an in-memory buffer to `remote` in the same bounded chunks.
-async fn upload_bytes(handle: &Handle<AcceptAnyHostKey>, bytes: &[u8], remote: &str, mut on_chunk: impl FnMut(u64)) -> Result<u64> {
-    let mut remote_file = open_remote(handle, remote).await?;
+async fn upload_bytes(sftp: &SftpSession, bytes: &[u8], remote: &str, mut on_chunk: impl FnMut(u64)) -> Result<u64> {
+    let mut remote_file = open_remote(sftp, remote).await?;
     for chunk in bytes.chunks(CHUNK) {
         write_chunk(&mut remote_file, chunk, remote).await?;
         on_chunk(chunk.len() as u64);
@@ -229,8 +265,7 @@ async fn upload_bytes(handle: &Handle<AcceptAnyHostKey>, bytes: &[u8], remote: &
     Ok(bytes.len() as u64)
 }
 
-async fn open_remote(handle: &Handle<AcceptAnyHostKey>, remote: &str) -> Result<russh_sftp::client::fs::File> {
-    let sftp = sftp(handle).await?;
+async fn open_remote(sftp: &SftpSession, remote: &str) -> Result<russh_sftp::client::fs::File> {
     sftp.open_with_flags(remote, OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE)
         .await
         .with_context(|| format!("cannot create {remote} on the server"))
