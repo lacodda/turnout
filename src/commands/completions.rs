@@ -1,9 +1,10 @@
 //! Completion scripts.
 //!
 //! clap generates the static part - subcommands and flags. For bash we append a
-//! wrapper that fills in live entity names (apps, servers, groups) by calling
-//! the hidden `turnout complete` helper, and falls back to clap's own function
-//! everywhere else. Other shells get the static script unchanged.
+//! wrapper that fills in live entity names (apps, servers, credentials, paths,
+//! groups) by calling the hidden `turnout complete` helper, and falls back to
+//! clap's own function everywhere else. Other shells get the static script
+//! unchanged.
 
 use anyhow::Result;
 use clap::CommandFactory;
@@ -64,8 +65,15 @@ _turnout_dynamic() {
         group)
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(show|edit|remove)$ ]] && kind="groups"
             ;;
+        credential|cred)
+            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(show|edit|remove)$ ]] && kind="credentials"
+            ;;
+        path)
+            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(show|edit|remove)$ ]] && kind="paths"
+            ;;
         pass)
-            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|copy|show|remove)$ ]] && kind="servers"
+            # `pass` works on credentials since the v0.9.0 split; `list` takes no name.
+            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|copy|remove)$ ]] && kind="credentials"
             ;;
     esac
 
@@ -73,6 +81,8 @@ _turnout_dynamic() {
     case "${prev}" in
         --server|--add-server|--rm-server) kind="servers" ;;
         --app|--add-app|--rm-app) kind="apps" ;;
+        --credential) kind="credentials" ;;
+        --path) kind="paths" ;;
     esac
 
     if [[ -n "${kind}" ]]; then
