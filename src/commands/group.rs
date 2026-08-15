@@ -77,6 +77,7 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
     groups.push(Group { name: name.clone(), apps });
     groups.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_groups(&groups)?;
+    crate::journal::record("group.add", None, None, Some(&name));
     println!("Group '{name}' added.");
     Ok(())
 }
@@ -128,6 +129,7 @@ fn edit(name: &str, add_apps: Vec<String>, rm_apps: Vec<String>) -> Result<()> {
         bail!("removing these apps would leave '{name}' empty - remove the group instead");
     }
     store::save_groups(&groups)?;
+    crate::journal::record("group.edit", None, None, Some(name));
     println!("Group '{name}' updated.");
     Ok(())
 }
@@ -144,6 +146,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     }
     groups.retain(|g| g.name != name);
     store::save_groups(&groups)?;
+    crate::journal::record("group.remove", None, None, Some(name));
     println!("Group '{name}' removed. Its apps are untouched.");
     Ok(())
 }

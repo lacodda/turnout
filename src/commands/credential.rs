@@ -172,7 +172,7 @@ fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<Stri
             .interact_text()?;
         let choice = Select::new()
             .with_prompt("Authenticates with")
-            .items(["password (or the SSH agent)", "a private key file"])
+            .items(["a password", "a private key file"])
             .default(usize::from(credential.auth == Auth::Key))
             .interact()?;
         credential.auth = if choice == 0 { Auth::Password } else { Auth::Key };
@@ -206,6 +206,7 @@ fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<Stri
         bail!("key authentication needs a key file - pass --key PATH");
     }
     store::save_credentials(&credentials)?;
+    crate::journal::record("credential.edit", None, None, Some(name));
     println!("Credential '{name}' updated.");
     Ok(())
 }

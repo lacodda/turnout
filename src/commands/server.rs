@@ -276,8 +276,13 @@ fn edit(
         if let Some(credential) = credential.as_deref().filter(|c| !c.trim().is_empty()) {
             check_credential(credential)?;
         }
-        let known_apps = store::load_apps()?;
-        let known_paths = store::load_paths()?;
+        // Loaded only when --deploy-path was passed: both reads serve just
+        // that validation loop below.
+        let (known_apps, known_paths) = if deploy_paths.is_empty() {
+            (Vec::new(), Vec::new())
+        } else {
+            (store::load_apps()?, store::load_paths()?)
+        };
         let server = &mut servers[index];
         if let Some(url) = url {
             validate_url(&url)?;
@@ -321,6 +326,7 @@ fn edit(
         }
     }
     store::save_servers(&servers)?;
+    crate::journal::record("server.edit", None, Some(name), None);
     println!("Server '{name}' updated.");
     Ok(())
 }

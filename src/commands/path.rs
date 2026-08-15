@@ -163,6 +163,7 @@ fn edit(name: &str, dir: Option<String>, restart: Option<String>) -> Result<()> 
         }
     }
     store::save_paths(&paths)?;
+    crate::journal::record("path.edit", None, None, Some(name));
     println!("Path '{name}' updated.");
     Ok(())
 }

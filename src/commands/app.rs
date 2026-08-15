@@ -233,6 +233,7 @@ fn edit(
         app.servers.retain(|s| !rm_servers.contains(s));
     }
     store::save_apps(&apps)?;
+    crate::journal::record("app.edit", Some(name), None, None);
     println!("App '{name}' updated.");
     Ok(())
 }
