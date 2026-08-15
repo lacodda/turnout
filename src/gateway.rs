@@ -98,24 +98,24 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
     let server_name = server.name.clone();
     let client = client_for(&ctx.clients, &server)?;
 
-    let path_query = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
+    // The request is consumed either way, so its parts are moved, not cloned -
+    // this is the hot path of the whole gateway.
+    let (parts, body) = req.into_parts();
+    let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
     let target = format!("{}{}", server.url.trim_end_matches('/'), path_query);
-    let method = req.method().clone();
-    let mut headers = req.headers().clone();
+    let mut headers = parts.headers;
     strip_hop_headers(&mut headers);
     headers.remove(HOST);
     // Only jar cookies travel to the stand; the browser's localhost cookies stay home.
     headers.remove(COOKIE);
     let jar_key = (ctx.app.clone(), server_name.clone());
-    if let Some(cookie) = jar_cookie_header(&ctx.jars, &jar_key) {
-        headers.insert(COOKIE, HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value")?);
+    if let Some(cookie) = stored_cookie_header(&ctx.jars, &jar_key)? {
+        headers.insert(COOKIE, cookie);
     }
 
-    let body = axum::body::to_bytes(req.into_body(), MAX_REQUEST_BODY)
-        .await
-        .context("request body too large")?;
+    let body = axum::body::to_bytes(body, MAX_REQUEST_BODY).await.context("request body too large")?;
     let upstream = client
-        .request(method, &target)
+        .request(parts.method, &target)
         .headers(headers)
         .body(body)
         .send()
@@ -148,7 +148,7 @@ fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
 /// both ways until either side closes.
 async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
     let (mut parts, _body) = req.into_parts();
-    let upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &())
+    let mut upgrade = WebSocketUpgrade::from_request_parts(&mut parts, &())
         .await
         .map_err(|err| anyhow!("invalid websocket upgrade: {err}"))?;
     let server = resolve_binding(&ctx)?;
@@ -166,12 +166,9 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
 
     let mut request = target.into_client_request().context("cannot build the upstream websocket request")?;
     let jar_key = (ctx.app.clone(), server_name.clone());
-    if let Some(cookie) = jar_cookie_header(&ctx.jars, &jar_key) {
-        request
-            .headers_mut()
-            .insert(COOKIE, HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value")?);
+    if let Some(cookie) = stored_cookie_header(&ctx.jars, &jar_key)? {
+        request.headers_mut().insert(COOKIE, cookie);
     }
-    let mut upgrade = upgrade;
     if let Some(protocol) = parts.headers.get(SEC_WEBSOCKET_PROTOCOL) {
         request.headers_mut().insert(SEC_WEBSOCKET_PROTOCOL, protocol.clone());
         if let Ok(protocols) = protocol.to_str() {
@@ -285,7 +282,12 @@ fn client_to_stand(message: ClientMessage) -> StandMessage {
         ClientMessage::Binary(data) => StandMessage::binary(data.to_vec()),
         ClientMessage::Ping(data) => StandMessage::Ping(data.to_vec().into()),
         ClientMessage::Pong(data) => StandMessage::Pong(data.to_vec().into()),
-        ClientMessage::Close(_) => StandMessage::Close(None),
+        // The close code and reason travel through: 1008 from a stand is a
+        // different diagnosis than 1000, and dropping them here would erase it.
+        ClientMessage::Close(frame) => StandMessage::Close(frame.map(|f| tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: f.code.into(),
+            reason: f.reason.as_str().into(),
+        })),
     }
 }
 
@@ -295,7 +297,10 @@ fn stand_to_client(message: StandMessage) -> Option<ClientMessage> {
         StandMessage::Binary(data) => Some(ClientMessage::Binary(data.to_vec().into())),
         StandMessage::Ping(data) => Some(ClientMessage::Ping(data.to_vec().into())),
         StandMessage::Pong(data) => Some(ClientMessage::Pong(data.to_vec().into())),
-        StandMessage::Close(_) => Some(ClientMessage::Close(None)),
+        StandMessage::Close(frame) => Some(ClientMessage::Close(frame.map(|f| axum::extract::ws::CloseFrame {
+            code: f.code.into(),
+            reason: f.reason.as_str().into(),
+        }))),
         StandMessage::Frame(_) => None,
     }
 }
@@ -314,6 +319,16 @@ fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
         .context("cannot build the HTTP client")?;
     cache.insert(server.name.clone(), client.clone());
     Ok(client)
+}
+
+/// The jar's cookies as a ready `Cookie` header value, when the jar has any.
+///
+/// Shared by the HTTP and WebSocket proxies so the "stored cookie is not a
+/// valid header value" complaint has exactly one home.
+fn stored_cookie_header(jars: &Jars, key: &(String, String)) -> Result<Option<HeaderValue>> {
+    jar_cookie_header(jars, key)
+        .map(|cookie| HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value"))
+        .transpose()
 }
 
 fn jar_cookie_header(jars: &Jars, key: &(String, String)) -> Option<String> {
@@ -352,6 +367,12 @@ fn rewrite_location(headers: &mut HeaderMap, server_url: &str, port: u16) -> Res
     Ok(())
 }
 
+/// Drop headers that describe the hop, not the message.
+///
+/// `CONTENT_LENGTH` is in the list because both directions re-buffer the body
+/// (the request into bytes, the response into a stream), so the original
+/// length may no longer hold - reqwest and axum recompute it for the body they
+/// actually send.
 fn strip_hop_headers(headers: &mut HeaderMap) {
     for name in [CONNECTION, TRANSFER_ENCODING, UPGRADE, CONTENT_LENGTH] {
         headers.remove(&name);
