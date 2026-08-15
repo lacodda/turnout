@@ -22,7 +22,7 @@ if (-not $tag) {
     }
 }
 if (-not $tag -or $tag -notmatch '^v\d') {
-    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.9.0"
+    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.10.1"
 }
 
 $name = "turnout-$tag-x86_64-pc-windows-msvc"

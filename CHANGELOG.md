@@ -7,6 +7,16 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.10.1] - 2026-08-15
+
+### Bug Fixes
+- Reuse the SFTP session and report failures honestly
+- Complete credentials and paths since the v0.9 split
+- Journal edits and group changes, drop the agent label
+- Forward websocket close frames, stop cloning headers
+
+### Refactoring
+- Dedupe the shared helpers grown apart since v0.9
 ## [0.10.0] - 2026-08-14
 
 ### Breaking Changes
