@@ -585,6 +585,16 @@ fn spawn_stand(listener: std::net::TcpListener) -> u16 {
                         ws.on_upgrade(|mut socket| async move {
                             while let Some(Ok(message)) = socket.recv().await {
                                 if let axum::extract::ws::Message::Text(text) = message {
+                                    // "bye" closes with a code and reason, the
+                                    // way a stand signals a policy rejection.
+                                    if text.as_str() == "bye" {
+                                        let frame = axum::extract::ws::CloseFrame {
+                                            code: 1008,
+                                            reason: "policy".into(),
+                                        };
+                                        let _ = socket.send(axum::extract::ws::Message::Close(Some(frame))).await;
+                                        break;
+                                    }
                                     let reply = axum::extract::ws::Message::Text(format!("echo: {text}").into());
                                     if socket.send(reply).await.is_err() {
                                         break;
@@ -663,6 +673,17 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
         socket.send(tokio_tungstenite::tungstenite::Message::text("ping")).await.unwrap();
         let reply = socket.next().await.unwrap().unwrap();
         assert_eq!(reply.to_text().unwrap(), "echo: ping");
+
+        // A close crosses the gateway with its code and reason intact
+        // (v0.10.1 fix: close frames used to be dropped on the floor).
+        socket.send(tokio_tungstenite::tungstenite::Message::text("bye")).await.unwrap();
+        match socket.next().await.unwrap().unwrap() {
+            tokio_tungstenite::tungstenite::Message::Close(Some(frame)) => {
+                assert_eq!(u16::from(frame.code), 1008, "the close code must survive the proxy");
+                assert_eq!(frame.reason.as_str(), "policy", "the close reason must survive the proxy");
+            }
+            other => panic!("expected a close frame through the gateway, got {other:?}"),
+        }
     });
 }
 
@@ -980,6 +1001,15 @@ fn complete_lists_live_entity_names() {
     turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
     turnout(dir.path()).args(["group", "add", "contour", "--app", "web"]).assert().success();
 
+    turnout(dir.path())
+        .args(["credential", "add", "deployer", "--user", "deploy"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["path", "add", "webroot", "--dir", "/var/www/site"])
+        .assert()
+        .success();
+
     turnout(dir.path()).args(["complete", "apps"]).assert().success().stdout("web\n");
     turnout(dir.path()).args(["complete", "servers"]).assert().success().stdout("staging\n");
     turnout(dir.path())
@@ -987,6 +1017,10 @@ fn complete_lists_live_entity_names() {
         .assert()
         .success()
         .stdout(predicate::str::contains("web").and(predicate::str::contains("contour")));
+    // The two catalogs born in the v0.9 split complete too - their absence
+    // went unnoticed until v0.10.1.
+    turnout(dir.path()).args(["complete", "credentials"]).assert().success().stdout("deployer\n");
+    turnout(dir.path()).args(["complete", "paths"]).assert().success().stdout("webroot\n");
 }
 
 /// bash gets the dynamic wrapper appended; other shells stay untouched.
@@ -1133,9 +1167,15 @@ fn actions_are_journaled_without_secrets() {
         .assert()
         .success();
 
+    // Edits and group actions went unjournaled until v0.10.1; keep them pinned.
+    turnout(dir.path()).args(["server", "edit", "staging", "--label", "Staging"]).assert().success();
+    turnout(dir.path()).args(["group", "add", "contour", "--app", "web"]).assert().success();
+
     let journal = std::fs::read_to_string(dir.path().join("journal.jsonl")).unwrap();
     assert!(journal.contains(r#""action":"use""#), "{journal}");
     assert!(journal.contains(r#""action":"app.add""#), "{journal}");
+    assert!(journal.contains(r#""action":"server.edit""#), "{journal}");
+    assert!(journal.contains(r#""action":"group.add""#), "{journal}");
     assert!(!journal.contains("hunter2"), "the secret leaked: {journal}");
     assert!(!journal.contains("deploy-account"), "the login leaked: {journal}");
 
