@@ -1298,9 +1298,31 @@ fn a_leftover_binary_from_self_update_is_swept() {
 
     // A plain command, unrelated to updating. Not `--version`: clap answers
     // that one itself and exits before any of our code runs.
-    let mut cmd = Command::new(&exe);
-    cmd.env("TURNOUT_DATA_DIR", dir.path()).env("TURNOUT_UPDATE_CHECK", "0");
-    cmd.arg("status").assert().success();
+    //
+    // Retried on ETXTBSY: on Unix a concurrently spawning test can inherit
+    // the copy's write descriptor between fork and exec (descriptors only
+    // close when exec flips CLOEXEC), and executing our fresh binary in that
+    // window answers "Text file busy". The window is microseconds; retrying
+    // is the standard cure, failing the suite over it is a flake.
+    let output = {
+        let mut tries = 0;
+        loop {
+            let attempt = std::process::Command::new(&exe)
+                .env("TURNOUT_DATA_DIR", dir.path())
+                .env("TURNOUT_UPDATE_CHECK", "0")
+                .arg("status")
+                .output();
+            match attempt {
+                Ok(output) => break output,
+                Err(err) if err.raw_os_error() == Some(26) && tries < 50 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(err) => panic!("cannot run the copied binary: {err}"),
+            }
+        }
+    };
+    assert!(output.status.success(), "status must succeed: {}", String::from_utf8_lossy(&output.stderr));
 
     assert!(!leftover.exists(), "the leftover binary should have been removed");
     assert!(exe.exists(), "the running binary must survive the sweep");
