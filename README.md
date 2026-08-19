@@ -117,6 +117,8 @@ macOS / Linux:
 curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
 ```
 
+On Windows use the PowerShell line above: `install.sh` carries the macOS and Linux builds only, and run from Git Bash it stops with a pointer back here.
+
 **With npm:**
 
 ```bash

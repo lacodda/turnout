@@ -134,6 +134,53 @@ mod tests {
     }
 
     #[test]
+    fn the_unix_installer_redirects_windows_shells() {
+        // Field report from kasl, 19.08: run in Git Bash on Windows, the
+        // script matched no case arm and answered "No prebuilt binary for
+        // MINGW64_NT-…", which reads as "unsupported platform" although a
+        // Windows release exists - it is just installed by the other script.
+        let installer = read("tools/install.sh");
+
+        for shell in ["MINGW*", "MSYS*", "CYGWIN*"] {
+            assert!(
+                installer.contains(shell),
+                "install.sh does not recognise {shell}; Windows shells fall through to the                  generic 'no prebuilt binary' message"
+            );
+        }
+        assert!(
+            installer.contains("install.ps1"),
+            "install.sh does not name the PowerShell installer, leaving Windows users at a dead end"
+        );
+    }
+
+    #[test]
+    fn installers_name_the_crate_that_actually_exists() {
+        // A `cargo install <name>` fallback that does not resolve is worse
+        // than none: in kasl the suggestion named `kasl` while the crate is
+        // published as `kasl-cli`, so the advice in the error message failed.
+        let crate_name = cargo_field("name");
+
+        for file in ["tools/install.sh", "tools/install.ps1"] {
+            let text = read(file);
+            for (line_no, line) in text.lines().enumerate() {
+                let Some(at) = line.find("cargo install ") else { continue };
+                // Trim shell quoting around the suggestion, e.g. `... turnout" >&2`.
+                let named = line[at + "cargo install ".len()..]
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or("")
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+                assert_eq!(
+                    named,
+                    crate_name,
+                    "{file} line {} suggests `cargo install {named}`, but the crate is `{crate_name}`",
+                    line_no + 1
+                );
+            }
+        }
+    }
+
+    #[test]
     fn readme_only_shows_commands_that_exist() {
         // Every `$ turnout <word>` in a console block must name a real
         // subcommand. A README outlives the surface it documents: kasl's

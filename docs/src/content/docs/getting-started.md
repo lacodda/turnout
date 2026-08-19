@@ -17,6 +17,12 @@ One line on macOS / Linux:
 curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
 ```
 
+:::caution[On Windows, use the PowerShell line]
+`install.sh` carries the macOS and Linux builds only. Running it from Git Bash,
+MSYS2 or Cygwin stops with a pointer to `install.ps1` rather than installing
+anything.
+:::
+
 Via npm:
 
 ```bash
