@@ -12,6 +12,7 @@ and nothing is missing - the number is simply unused.
 ### Testing
 - Cover the transport against an in-process russh server
 - Pin the v0.10.1 fixes the patch shipped without
+- Retry ETXTBSY when running the freshly copied binary
 ## [0.10.1] - 2026-08-15
 
 ### Bug Fixes
