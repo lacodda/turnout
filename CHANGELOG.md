@@ -7,7 +7,14 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.10.3] - 2026-08-19
+
+### Bug Fixes
+- Point Windows shells at the PowerShell installer
 ## [0.10.2] - 2026-08-19
+
+### Documentation
+- Include the flake fix in 0.10.2
 
 ### Testing
 - Cover the transport against an in-process russh server
