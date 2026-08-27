@@ -7,6 +7,10 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.10.4] - 2026-08-27
+
+### Bug Fixes
+- Make the tn alias a link instead of a copy of the binary
 ## [0.10.3] - 2026-08-19
 
 ### Bug Fixes

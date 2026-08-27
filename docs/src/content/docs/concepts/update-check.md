@@ -6,7 +6,7 @@ description: How turnout notices a new release without ever making you wait - an
 Once a day turnout looks up its own latest release and, if you are behind, says so at the end of a command:
 
 ```text
-turnout 0.10.2 is available (you have 0.10.1).
+turnout 0.10.4 is available (you have 0.10.3).
   Update with `turnout self-update`
 ```
 
