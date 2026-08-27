@@ -10,10 +10,11 @@ turnout self-update
 ```
 
 ```text
-turnout 0.10.2 is available (you have 0.10.1).
+turnout 0.10.4 is available (you have 0.10.3).
 It will replace /home/dev/.local/bin/turnout
 Update now? yes
-Updated to turnout 0.10.2
+Updated to turnout 0.10.4
+Alias /home/dev/.local/bin/tn updated too.
 ```
 
 | Flag | Short | Effect |
@@ -46,6 +47,19 @@ The executable being replaced is the one currently running. Windows keeps it loc
 That leftover is deleted by the next turnout command you run, whatever it is, since by then it is no longer the running image. Unix does not need the dance, but follows the same path so there is one behaviour to reason about.
 
 If installing the new binary fails partway, the old one is moved back: the command never leaves you without a working turnout.
+
+## The `tn` alias
+
+The [short alias](/turnout/getting-started/#the-tn-alias) is a link to the binary rather than a copy of it, so both names always answer with the same code - there is nothing to keep in sync, and an install costs one binary instead of two.
+
+The swap above breaks that link, though: it renames the file the alias points at. So the alias is pointed back at the new binary as the last step of an update, and the command says so when it does.
+
+An install without an alias does not grow one - `TURNOUT_NO_ALIAS=1` is a choice the update has no business overruling. And if the relink fails, the command says that too, because a stale alias keeps answering under its own name:
+
+```text
+Warning: /home/dev/.local/bin/tn still points at the previous version and could not be relinked (permission denied).
+Re-run the installer to fix it.
+```
 
 ## Updating while the gateway or a dev server is running
 

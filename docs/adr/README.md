@@ -15,3 +15,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0009](0009-trusted-publishing.md) | Registry publishing via OIDC trusted publishing | accepted |
 | [0010](0010-entity-split.md) | Servers, credentials and paths as three entities | accepted |
 | [0011](0011-russh-transport.md) | SSH on russh, and one TLS stack (rustls) | accepted |
+| [0012](0012-alias-as-a-link.md) | The short alias is a link, not a second binary | accepted |

@@ -1,3 +1,4 @@
+mod alias;
 mod cli;
 mod commands;
 mod detect;

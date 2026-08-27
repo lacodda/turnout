@@ -180,6 +180,56 @@ mod tests {
         }
     }
 
+    /// The `tn` alias must be a link, never a second copy of the binary.
+    ///
+    /// Field report, 19.08: after `self-update`, `tn --version` still printed
+    /// the previous release. The alias was a copy the installer made, and
+    /// self-update only replaces the file it is running from - so the same
+    /// name kept answering with old code, which reads as an unexplained
+    /// downgrade. A copy also doubles the install for no new code.
+    #[test]
+    fn the_alias_is_a_link_rather_than_a_second_binary() {
+        let unix = read("tools/install.sh");
+        assert!(
+            unix.contains("ln -sf turnout"),
+            "install.sh must symlink the alias; a copy goes stale on the next self-update"
+        );
+
+        let windows = read("tools/install.ps1");
+        assert!(
+            windows.contains("-ItemType HardLink"),
+            "install.ps1 must hard-link the alias (symlinks need elevation on Windows); a plain copy goes stale on the next self-update"
+        );
+        // A copy is still the fallback for filesystems without hard links, so
+        // the check is that the link is tried first, not that no copy exists.
+        let link_at = windows.find("-ItemType HardLink").expect("checked above");
+        let copy_at = windows.find("Copy-Item (Join-Path $dir \"turnout.exe\") $alias");
+        if let Some(copy_at) = copy_at {
+            assert!(
+                link_at < copy_at,
+                "install.ps1 copies the alias before trying to link it - the copy would always win"
+            );
+        }
+    }
+
+    /// The release archive carries one binary. Shipping a second copy under
+    /// the alias name would double every download for no new code - the whole
+    /// reason the alias is a link.
+    #[test]
+    fn the_alias_is_not_packaged_as_a_second_binary() {
+        let manifest = read("Cargo.toml");
+        assert!(
+            !manifest.contains("[[bin]]"),
+            "Cargo.toml declares an extra binary; the `tn` alias is a link made at install time, not a packaged copy"
+        );
+
+        let workflow = read(".github/workflows/release.yml");
+        assert!(
+            !workflow.contains("tn.exe") && !workflow.contains("/tn "),
+            "release.yml packages a `tn` binary; the alias is created by the installer as a link"
+        );
+    }
+
     #[test]
     fn readme_only_shows_commands_that_exist() {
         // Every `$ turnout <word>` in a console block must name a real

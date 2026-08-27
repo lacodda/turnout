@@ -43,12 +43,14 @@ Both scripts read two environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `TURNOUT_VERSION` | Install this tag (e.g. `v0.10.1`) instead of the newest release |
+| `TURNOUT_VERSION` | Install this tag (e.g. `v0.10.3`) instead of the newest release |
 | `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
 
 ### The `tn` alias
 
 The installers and the npm package also set up `tn` as a short second name, so `tn use web staging` is the same as `turnout use web staging`. It is skipped when something else in your `PATH` already answers to `tn`; set `TURNOUT_NO_ALIAS=1` to opt out entirely. Installing through `cargo install` gives you `turnout` only - add your own alias if you want the short form.
+
+The alias is a link to the binary, not a second copy of it: a symlink on macOS and Linux, a hard link on Windows (a symlink there would need elevation, which an installer has no business asking for). One binary on disk answers to both names, so an install costs half of what two copies would and the two names can never drift apart - including across [`turnout self-update`](/turnout/reference/self-update/), which points the alias back at the new binary as its last step.
 
 ## First run
 

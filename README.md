@@ -74,7 +74,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.10.2
+turnout 0.10.4
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
@@ -133,7 +133,7 @@ cargo install turnout
 
 **Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
 
-The installers and the npm package also register the short alias `tn` (skipped if the name is already taken; `TURNOUT_NO_ALIAS=1` opts out). `cargo install` gives you `turnout` only.
+The installers and the npm package also register the short alias `tn` (skipped if the name is already taken; `TURNOUT_NO_ALIAS=1` opts out). `cargo install` gives you `turnout` only. The alias is a link to the binary rather than a copy of it, so an install costs one binary and both names always answer with the same version.
 
 Both installers take the newest release by default; set `TURNOUT_VERSION` to a tag to pin one, and `TURNOUT_INSTALL_DIR` to choose where the binary lands.
 

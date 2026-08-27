@@ -36,7 +36,7 @@ fi
 case "$TAG" in
     v[0-9]*) ;;
     *)
-        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a tag like v0.10.2" >&2
+        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a tag like v0.10.4" >&2
         exit 1
         ;;
 esac
@@ -54,8 +54,10 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$TMP/$NAME/turnout" "$BIN_DIR/turnout"
 echo "Installed turnout $TAG to $BIN_DIR/turnout"
 
-# Short alias `tn`, unless something else in PATH already answers to that name
-# (ours from a previous run does not count). TURNOUT_NO_ALIAS=1 skips it.
+# Short alias `tn` as a symlink, never a copy: a copy doubles the install for
+# no new code and goes stale the moment self-update replaces the binary.
+# Skipped when something else in PATH already answers to that name (ours from a
+# previous run does not count). TURNOUT_NO_ALIAS=1 skips it.
 if [ -z "${TURNOUT_NO_ALIAS:-}" ]; then
     EXISTING=$(command -v tn 2>/dev/null || true)
     if [ -z "$EXISTING" ] || [ "$EXISTING" = "$BIN_DIR/tn" ]; then
@@ -65,6 +67,9 @@ if [ -z "${TURNOUT_NO_ALIAS:-}" ]; then
         echo "Note: 'tn' already resolves to $EXISTING - alias skipped."
     fi
 fi
+
+# Binaries left behind by updates that ran before the alias became a link.
+rm -f "$BIN_DIR/turnout.old" "$BIN_DIR/tn.old"
 
 case ":$PATH:" in
     *":$BIN_DIR:"*) ;;

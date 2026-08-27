@@ -12,6 +12,11 @@
 //! rename is allowed while the image is mapped, and the leftover is swept on
 //! the next run. Unix allows the unlink outright, but the same dance costs
 //! nothing there and keeps one code path.
+//!
+//! That swap also breaks the `tn` alias, which is a link to the binary rather
+//! than a copy of it (see [`crate::alias`]): the link follows the file that
+//! was renamed aside. So the alias is re-pointed once the new binary is in
+//! place.
 
 use std::path::{Path, PathBuf};
 
@@ -55,8 +60,11 @@ pub fn run(assume_yes: bool, force: bool) -> Result<()> {
     step.update("Unpacking ...".to_string());
     let binary = asset.extract_binary(&archive)?;
     step.update("Replacing the binary ...".to_string());
-    replace_running_binary(&exe, &binary)?;
+    let alias = install_binary(&exe, &binary)?;
     step.done(format!("Updated to turnout {latest}"));
+    if let Some(line) = alias.message() {
+        println!("{line}");
+    }
 
     crate::journal::record("self-update", None, None, Some(&format!("{current} -> {latest}")));
     println!("Run `turnout --version` in a new shell to confirm.");
@@ -234,6 +242,18 @@ fn extract_from_tar_gz(archive: &[u8], wanted: &str) -> Result<Vec<u8>> {
     bail!("no {wanted} inside the downloaded archive")
 }
 
+/// Put the downloaded binary in place and leave the `tn` alias pointing at it.
+///
+/// The two belong together: the swap renames the outgoing file aside, which
+/// breaks the link the alias is, so an install that stops after the swap
+/// leaves `tn` answering with the previous release under the same name. They
+/// are one function so that neither can be done without the other - the field
+/// report this fixes was exactly that half-update.
+fn install_binary(exe: &Path, replacement: &Path) -> Result<crate::alias::Outcome> {
+    replace_running_binary(exe, replacement)?;
+    Ok(crate::alias::refresh(exe))
+}
+
 /// Swap `replacement` in for `exe`, moving the running image aside first.
 ///
 /// The old binary is only removed on a later run: on Windows it is still
@@ -268,7 +288,21 @@ fn backup_path(exe: &Path) -> PathBuf {
 /// still locked, the next command tries again.
 pub fn sweep_backup() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(backup_path(&exe));
+        sweep_backups_beside(&exe);
+    }
+}
+
+/// The leftovers to remove for a binary at `exe`.
+///
+/// Two of them, not one: an update run under the alias name left a
+/// `tn.exe.old` of its own, and back when the alias was a copy that could
+/// happen. Each is the size of a whole binary, and nothing will ever come back
+/// for either.
+fn sweep_backups_beside(exe: &Path) {
+    let _ = std::fs::remove_file(backup_path(exe));
+    let alias = crate::alias::path_beside(exe);
+    if alias != exe {
+        let _ = std::fs::remove_file(backup_path(&alias));
     }
 }
 
@@ -395,6 +429,66 @@ mod tests {
     fn a_corrupt_archive_is_an_error() {
         assert!(extract_from_zip(b"not a zip at all", "turnout.exe").is_err());
         assert!(extract_from_tar_gz(b"not a gzip at all", "turnout").is_err());
+    }
+
+    /// The field report of 19.08, end to end: `turnout` updated but `tn` kept
+    /// answering with the previous release, because the swap breaks the link
+    /// the alias is and nothing put it back.
+    #[test]
+    fn an_update_leaves_the_alias_on_the_new_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("turnout");
+        std::fs::write(&exe, b"old version").unwrap();
+        let alias = crate::alias::path_beside(&exe);
+        crate::alias::link(&exe, &alias).unwrap();
+        let replacement = dir.path().join("staged-turnout");
+        std::fs::write(&replacement, b"new version").unwrap();
+
+        let outcome = install_binary(&exe, &replacement).unwrap();
+
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new version");
+        assert_eq!(
+            std::fs::read(&alias).unwrap(),
+            b"new version",
+            "the alias still answers with the release the update replaced"
+        );
+        assert!(matches!(outcome, crate::alias::Outcome::Relinked(_)));
+    }
+
+    /// Both leftovers go, not just the one beside the running name. Found on
+    /// the owner's machine 19.08: `turnout.exe.old` had been swept, while a
+    /// `tn.exe.old` from an update run under the alias name sat there for
+    /// weeks - a whole binary nobody was ever going to collect.
+    #[test]
+    fn the_sweep_takes_the_alias_leftover_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("turnout.exe");
+        std::fs::write(&exe, b"binary").unwrap();
+        let exe_backup = backup_path(&exe);
+        let alias_backup = backup_path(&crate::alias::path_beside(&exe));
+        std::fs::write(&exe_backup, b"previous turnout").unwrap();
+        std::fs::write(&alias_backup, b"previous tn").unwrap();
+
+        sweep_backups_beside(&exe);
+
+        assert!(!exe_backup.exists());
+        assert!(!alias_backup.exists(), "tn.exe.old survives the sweep and never gets collected");
+        assert!(exe.exists(), "the sweep must not touch the binary itself");
+    }
+
+    /// An install that never had an alias must not grow one from an update.
+    #[test]
+    fn an_update_does_not_invent_an_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("turnout");
+        std::fs::write(&exe, b"old version").unwrap();
+        let replacement = dir.path().join("staged-turnout");
+        std::fs::write(&replacement, b"new version").unwrap();
+
+        let outcome = install_binary(&exe, &replacement).unwrap();
+
+        assert!(!crate::alias::path_beside(&exe).exists());
+        assert!(matches!(outcome, crate::alias::Outcome::Absent));
     }
 
     /// The swap must leave a working binary in place, and the outgoing one
