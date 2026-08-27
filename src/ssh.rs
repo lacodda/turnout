@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, Handle, Msg};
-use russh::keys::{PrivateKeyWithHashAlg, PublicKey, load_secret_key};
+use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -39,7 +39,7 @@ struct AcceptAnyHostKey;
 impl client::Handler for AcceptAnyHostKey {
     type Error = anyhow::Error;
 
-    async fn check_server_key(&mut self, _key: &PublicKey) -> Result<bool, Self::Error> {
+    async fn check_server_key(&mut self, _key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
         Ok(true)
     }
 }
