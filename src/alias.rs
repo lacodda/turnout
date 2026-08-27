@@ -115,12 +115,34 @@ impl Outcome {
 mod tests {
     use super::*;
 
+    /// Windows paths are only paths on Windows: elsewhere `C:\dir\turnout.exe`
+    /// is one filename with backslashes in it, so the two cases have to be
+    /// asserted on the platform that parses them.
     #[test]
+    #[cfg(windows)]
     fn the_alias_sits_beside_the_binary_with_the_same_extension() {
-        let windows = PathBuf::from(r"C:\Users\dev\AppData\Local\Programs\turnout\turnout.exe");
-        assert_eq!(path_beside(&windows), PathBuf::from(r"C:\Users\dev\AppData\Local\Programs\turnout\tn.exe"));
-        let unix = PathBuf::from("/home/dev/.local/bin/turnout");
-        assert_eq!(path_beside(&unix), PathBuf::from("/home/dev/.local/bin/tn"));
+        let exe = PathBuf::from(r"C:\Users\dev\AppData\Local\Programs\turnout\turnout.exe");
+        assert_eq!(path_beside(&exe), PathBuf::from(r"C:\Users\dev\AppData\Local\Programs\turnout\tn.exe"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_alias_sits_beside_the_binary() {
+        let exe = PathBuf::from("/home/dev/.local/bin/turnout");
+        assert_eq!(path_beside(&exe), PathBuf::from("/home/dev/.local/bin/tn"));
+    }
+
+    /// Whatever the platform, the alias is a sibling of the binary and keeps
+    /// its extension - that is what makes it answer as a command.
+    #[test]
+    fn the_alias_is_a_sibling_that_keeps_the_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join(if cfg!(windows) { "turnout.exe" } else { "turnout" });
+        let alias = path_beside(&exe);
+
+        assert_eq!(alias.parent(), exe.parent());
+        assert_eq!(alias.extension(), exe.extension());
+        assert_eq!(alias.file_stem().unwrap(), ALIAS);
     }
 
     /// The whole point of the link: one set of bytes answers to both names, so
