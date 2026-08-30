@@ -1,0 +1,19 @@
+# Line endings are normalized in the repository, not left to whoever edits.
+#
+# Eight files had drifted to CRLF by v0.11.0 - not by choice, but because a
+# Windows editor or a scripted edit rewrote them. The cost is invisible until a
+# one-line change shows up as a whole-file diff, which hides the real change and
+# makes review useless. `git diff --ignore-all-space` is how it gets caught, and
+# this file is how it stops happening.
+* text=auto eol=lf
+
+# Windows shells need CRLF to run reliably.
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Binary assets are never touched.
+*.png binary
+*.jpg binary
+*.ico binary
+*.svg text eol=lf
