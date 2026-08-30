@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
-use crate::remote::{self, Target};
+use crate::remote::{self, Resolved};
 use crate::shell::Dialect;
 use crate::ssh::Session;
 
@@ -19,8 +19,41 @@ fn should_archive(files: u64, no_archive: bool) -> bool {
     !no_archive && files >= ARCHIVE_THRESHOLD
 }
 
-pub fn run(app_name: Option<String>, overrides: remote::Overrides, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
-    let target = remote::resolve(app_name, overrides)?;
+/// How far a deploy got before it failed.
+///
+/// A deploy that dies between the upload and the restart leaves the stand in a
+/// state that looks fine from outside: the files are new, the service is still
+/// running whatever it loaded last. That was a field report from lyrid - the
+/// image was rebuilt from new sources that never took effect, and the only way
+/// to find out was to log in and look. The error has to say which side of the
+/// upload it fell on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Reached {
+    /// Nothing was written; the remote directory is as it was.
+    BeforeUpload,
+    /// The files are on the server, and the post-write command did not finish.
+    Uploaded,
+}
+
+impl Reached {
+    /// What the user has to know about the state they were left in.
+    fn note(self, path: &crate::model::Path) -> Option<String> {
+        match self {
+            Reached::BeforeUpload => None,
+            Reached::Uploaded => Some(match &path.restart {
+                Some(restart) => format!(
+                    "The files are already in {} - only `{restart}` did not finish, so the service is still running what it had.\n\
+                     Re-run it there, or deploy again with --no-build once the cause is fixed.",
+                    path.dir
+                ),
+                None => format!("The files are already in {}; the deploy failed after writing them.", path.dir),
+            }),
+        }
+    }
+}
+
+pub fn run(target_name: Option<String>, overrides: remote::Overrides, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
+    let target = remote::resolve(target_name, overrides)?;
     let (app, server) = (&target.app, &target.server);
     let Some(dist) = &app.dist_dir else {
         bail!("app '{0}' has no artifact directory - set it with `turnout app edit {0} --dist DIR`", app.name);
@@ -48,17 +81,49 @@ pub fn run(app_name: Option<String>, overrides: remote::Overrides, no_build: boo
 
     // The frame opens after the build on purpose: the build tool's raw output
     // streams above it, and the checklist below covers only our own phases.
-    progress::intro(format!("Deploying {} → {}", app.name, server.name));
-    match deploy_over_ssh(&target, &plan, &Options { backup, clear, no_archive }) {
+    let heading = match &target.target {
+        Some(name) => format!("Deploying {name}: {} → {}", app.name, server.name),
+        None => format!("Deploying {} → {}", app.name, server.name),
+    };
+    progress::intro(heading);
+    let mut reached = Reached::BeforeUpload;
+    match deploy_over_ssh(&target, &plan, &Options { backup, clear, no_archive }, &mut reached) {
         Ok(files) => {
-            crate::journal::record("deploy", Some(&app.name), Some(&server.name), Some(&format!("{files} files")));
+            let what = target.target.clone().unwrap_or_else(|| app.name.clone());
+            crate::journal::record("deploy", Some(&what), Some(&server.name), Some(&format!("{files} files")));
             progress::outro(format!("Deploy of '{}' to '{}' finished", app.name, server.name));
+            // Only once it worked: offering to remember a target that just
+            // failed would be saving a route nobody has driven.
+            if target.target.is_none() {
+                offer_target(&target)?;
+            }
             Ok(())
         }
         Err(err) => {
             // Closes the frame so the error prints on a clean line below it.
             progress::outro_error(format!("Deploy of '{}' to '{}' failed", app.name, server.name));
-            Err(err)
+            match reached.note(&target.path) {
+                Some(note) => Err(err.context(note)),
+                None => Err(err),
+            }
+        }
+    }
+}
+
+/// Offer to save an unnamed tuple as a target, so the next deploy is one word.
+///
+/// Best-effort: the deploy already succeeded, and failing to write the catalog
+/// must not turn a finished deploy into an error. It says so and moves on.
+fn offer_target(target: &Resolved) -> Result<()> {
+    match crate::commands::target::offer_to_save(&target.app.name, &target.server.name, &target.credential.name, &target.path.name) {
+        Ok(Some(name)) => {
+            println!("Saved as target '{name}' - next time: `turnout deploy {name}`.");
+            Ok(())
+        }
+        Ok(None) => Ok(()),
+        Err(err) => {
+            progress::warn(&format!("could not save the target: {err:#}"));
+            Ok(())
         }
     }
 }
@@ -70,7 +135,10 @@ struct Options {
 }
 
 /// Every phase that talks to the server, in checklist order.
-fn deploy_over_ssh(target: &Target, plan: &Plan, options: &Options) -> Result<u64> {
+///
+/// `reached` is written as the deploy passes each point of no return, so the
+/// caller can describe the state a failure left behind.
+fn deploy_over_ssh(target: &Resolved, plan: &Plan, options: &Options, reached: &mut Reached) -> Result<u64> {
     let (server, credential, path) = (&target.server, &target.credential, &target.path);
     let where_to = target.connection_label();
     let step = Step::start(format!("Connecting to {where_to} ..."));
@@ -92,6 +160,9 @@ fn deploy_over_ssh(target: &Target, plan: &Plan, options: &Options) -> Result<u6
         let step = Step::start(format!("Clearing {} ...", path.dir));
         remote::exec(&session, &dialect.clear_dir(&path.dir))?;
         step.done(format!("Cleared {}", path.dir));
+        // Emptying the directory is itself a change to the stand: failing after
+        // this leaves it serving nothing, which the note has to cover.
+        *reached = Reached::Uploaded;
     }
 
     let (files, _bytes) = match archive_upload(&session, dialect, &path.dir, plan, options.no_archive)? {
@@ -100,16 +171,32 @@ fn deploy_over_ssh(target: &Target, plan: &Plan, options: &Options) -> Result<u6
         // packing, or the server has no tar - send the files one by one.
         None => upload(&session, &path.dir, plan)?,
     };
+    *reached = Reached::Uploaded;
 
     if let Some(restart) = &path.restart {
         let step = Step::start(format!("Running: {restart}"));
-        let output = remote::exec(&session, restart)?;
+        remote::check_quotable(dialect, &[&path.dir])?;
+        let output = remote::exec(&session, &restart_command(dialect, &path.dir, restart))?;
         step.done(format!("Restarted: {restart}"));
         if !output.trim().is_empty() {
             progress::info(output.trim_end());
         }
     }
     Ok(files)
+}
+
+/// The post-write command, phrased to run where the files just landed.
+///
+/// In the deploy directory, not the home one: a path's post-write command is
+/// defined as "after writing *here*", and up to v0.10 it ran wherever the SSH
+/// session dropped the user - so every path had to open with a `cd` of its own
+/// to make its own definition true.
+///
+/// A named function rather than a call spliced into the deploy, because the
+/// thing worth asserting is that the `cd` is *there*: a mutation that dropped
+/// it went unnoticed while only `Dialect::run_in` was covered.
+fn restart_command(dialect: Dialect, deploy_dir: &str, restart: &str) -> String {
+    dialect.run_in(deploy_dir, restart)
 }
 
 /// What the upload is about to send: directories to create and files to copy,
@@ -310,7 +397,71 @@ fn upload(session: &Session, remote_root: &str, plan: &Plan) -> Result<(u64, u64
 
 #[cfg(test)]
 mod tests {
-    use super::plan_upload;
+    use super::{Reached, plan_upload};
+
+    fn a_path(restart: Option<&str>) -> crate::model::Path {
+        crate::model::Path {
+            name: "wwwroot".into(),
+            dir: "/var/www/site".into(),
+            restart: restart.map(str::to_string),
+        }
+    }
+
+    /// The field report from lyrid: the upload landed, the rebuild did not, and
+    /// the stand kept serving the old image off new sources. From outside that
+    /// reads as "the deploy worked but the version is old", and the only way to
+    /// find out was to log in. The failure has to name the state it left.
+    #[test]
+    fn a_failure_after_the_upload_says_the_files_are_already_there() {
+        let note = Reached::Uploaded.note(&a_path(Some("docker compose up -d"))).expect("a note");
+        assert!(note.contains("/var/www/site"), "it must name where the files landed: {note}");
+        assert!(note.contains("docker compose up -d"), "and which command did not finish: {note}");
+        assert!(
+            note.contains("still running what it had"),
+            "the point is that the service did not pick them up: {note}"
+        );
+    }
+
+    /// Without a post-write command there is nothing half-done to explain, but
+    /// the files are still on the server and saying so is still the difference
+    /// between "nothing happened" and "something did".
+    #[test]
+    fn a_failure_after_the_upload_reports_even_without_a_restart() {
+        let note = Reached::Uploaded.note(&a_path(None)).expect("a note");
+        assert!(note.contains("/var/www/site"), "{note}");
+        assert!(!note.contains("did not finish"), "there was no command to not finish: {note}");
+    }
+
+    /// A deploy that never wrote anything must not claim it did - that would
+    /// send the user looking for changes on a server that has none.
+    #[test]
+    fn a_failure_before_the_upload_claims_nothing() {
+        assert!(Reached::BeforeUpload.note(&a_path(Some("systemctl restart site"))).is_none());
+        assert!(Reached::BeforeUpload.note(&a_path(None)).is_none());
+    }
+
+    /// The post-write command has to arrive at the server already anchored to
+    /// the deploy directory. Asserting `Dialect::run_in` alone was not enough:
+    /// a mutation that sent the bare command survived every test, which is the
+    /// exact shape of the defect this release fixes.
+    #[test]
+    fn the_post_write_command_carries_the_deploy_directory() {
+        let posix = super::restart_command(crate::shell::Dialect::Posix, "/var/www/site", "docker compose up -d");
+        assert_eq!(posix, "cd '/var/www/site' && docker compose up -d");
+
+        let windows = super::restart_command(crate::shell::Dialect::Windows, "C:\\inetpub\\site", "iisreset");
+        assert!(windows.starts_with("cd /d "), "cmd.exe needs /d to change drive: {windows}");
+        assert!(windows.ends_with("&& iisreset"), "{windows}");
+    }
+
+    /// A path whose command already opens with its own `cd` - the shape every
+    /// pre-0.11 setup had to use - still works: the second `cd` lands in the
+    /// directory the first one already chose.
+    #[test]
+    fn a_command_that_still_cds_itself_keeps_working() {
+        let command = super::restart_command(crate::shell::Dialect::Posix, "/srv/app", "cd /srv/app && docker compose up -d");
+        assert_eq!(command, "cd '/srv/app' && cd /srv/app && docker compose up -d");
+    }
 
     /// The plan drives both the progress total and the order of remote mkdirs,
     /// so it has to count every nested file and list parents before children.

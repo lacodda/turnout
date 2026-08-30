@@ -19,13 +19,13 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, Credential, Group, Server};
+use crate::model::{App, Credential, Group, Server, Target};
 
 /// Bumped when the shape below changes in a way an older turnout cannot read.
 ///
-/// 2 since v0.9.0: credentials and paths are free-standing entities, and a
-/// v0.8 turnout reading this file would find servers with no login in them.
-const FORMAT_VERSION: u32 = 2;
+/// 3 since v0.11.0: the deploy target is a named entity of its own, and the
+/// server no longer carries the app-to-path map a v0.10 turnout would look for.
+const FORMAT_VERSION: u32 = 3;
 
 /// Argon2id parameters. Deliberately above the crate defaults: this guards a
 /// file that can be copied and attacked offline for as long as an attacker
@@ -54,6 +54,8 @@ pub struct Snapshot {
     pub paths: Vec<crate::model::Path>,
     #[serde(default)]
     pub groups: Vec<Group>,
+    #[serde(default)]
+    pub targets: Vec<Target>,
     /// Sealed secrets, present only when exported with `--with-secrets`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SealedSecrets>,
@@ -85,7 +87,14 @@ pub struct Kdf {
 }
 
 impl Snapshot {
-    pub fn new(apps: Vec<App>, servers: Vec<Server>, credentials: Vec<Credential>, paths: Vec<crate::model::Path>, groups: Vec<Group>) -> Self {
+    pub fn new(
+        apps: Vec<App>,
+        servers: Vec<Server>,
+        credentials: Vec<Credential>,
+        paths: Vec<crate::model::Path>,
+        groups: Vec<Group>,
+        targets: Vec<Target>,
+    ) -> Self {
         Self {
             version: FORMAT_VERSION,
             exported_by: format!("turnout {}", env!("CARGO_PKG_VERSION")),
@@ -94,6 +103,7 @@ impl Snapshot {
             credentials,
             paths,
             groups,
+            targets,
             secrets: None,
         }
     }
@@ -106,6 +116,11 @@ impl Snapshot {
     /// reason: its servers carry a `user@host` and inline deploy directories,
     /// which this build has nowhere to put. Both would otherwise import as a
     /// catalog of servers nobody can log into.
+    ///
+    /// A version-2 file is neither: it is readable, and the only thing it
+    /// carries that this build has no field for - the server's app-to-path map -
+    /// converts into named targets by the same rule the schema-3 migration uses
+    /// (ADR 0013). [`Snapshot::adopt_v2_targets`] does that on import.
     pub fn check_version(&self) -> Result<()> {
         if self.version > FORMAT_VERSION {
             bail!(
@@ -113,7 +128,7 @@ impl Snapshot {
                 self.version
             );
         }
-        if self.version < FORMAT_VERSION {
+        if self.version < 2 {
             bail!(
                 "this export was written by turnout 0.8 or older (format version {}), and v0.9.0 split logins and \
                  remote directories into credentials and paths.\n\
@@ -124,6 +139,51 @@ impl Snapshot {
             );
         }
         Ok(())
+    }
+
+    /// Turn a format-2 file's `server.deploy` map into named targets.
+    ///
+    /// Version 2 stored the app-to-path relationship inside each server, where
+    /// `Server` no longer has a field for it - serde drops it on parse, so the
+    /// raw JSON is the only place it still exists. Without this an import from a
+    /// v0.10 machine would arrive with every server and path intact and no way
+    /// to deploy to any of them.
+    ///
+    /// Names come from [`crate::model::unique_target_name`], the same generator
+    /// the data-directory migration uses, so a machine reached either way ends
+    /// up with the same names.
+    pub fn adopt_v2_targets(&mut self, raw: &str) -> Result<usize> {
+        if self.version >= FORMAT_VERSION {
+            return Ok(0);
+        }
+        let parsed: serde_json::Value = serde_json::from_str(raw)?;
+        let Some(servers) = parsed.get("servers").and_then(|v| v.as_array()) else {
+            return Ok(0);
+        };
+        let before = self.targets.len();
+        for server in servers {
+            let (Some(server_name), Some(deploy)) = (server.get("name").and_then(|v| v.as_str()), server.get("deploy").and_then(|v| v.as_object())) else {
+                continue;
+            };
+            // A server with no credential could not have deployed anywhere on
+            // the machine this file came from either, so there is no route to
+            // carry over.
+            let Some(credential) = server.get("credential").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            for (app, path) in deploy {
+                let Some(path) = path.as_str() else { continue };
+                let name = crate::model::unique_target_name(app, server_name, &self.targets);
+                self.targets.push(Target {
+                    name,
+                    app: app.clone(),
+                    server: server_name.to_string(),
+                    credential: credential.to_string(),
+                    path: path.to_string(),
+                });
+            }
+        }
+        Ok(self.targets.len() - before)
     }
 }
 
@@ -368,7 +428,7 @@ mod tests {
     /// A file from a newer turnout must be refused rather than half-imported.
     #[test]
     fn a_future_format_is_refused() {
-        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         assert!(snapshot.check_version().is_ok());
         snapshot.version = FORMAT_VERSION + 1;
         let err = snapshot.check_version().unwrap_err().to_string();
@@ -379,7 +439,7 @@ mod tests {
     /// build would import them as servers with no way to log in.
     #[test]
     fn a_pre_split_format_is_refused_with_instructions() {
-        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut snapshot = Snapshot::new(Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
         snapshot.version = 1;
         let err = snapshot.check_version().unwrap_err().to_string();
         assert!(err.contains("credential") && err.contains("path"), "it must name what changed: {err}");

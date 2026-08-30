@@ -7,18 +7,25 @@ use crate::shell::{self, Dialect};
 use crate::ssh::Session;
 use crate::store;
 
-/// Everything a remote operation needs, resolved from the four catalogs.
+/// Everything a remote operation needs, resolved from the catalogs.
 ///
-/// The four parts arrive separately since v0.9.0; v0.10.0's named builds are
-/// exactly this tuple given a name.
-pub struct Target {
+/// The four parts became free-standing entities in v0.9.0 and gained a name in
+/// v0.11.0: a [`crate::model::Target`] *is* this tuple, and `target` below says
+/// which one it came from when it came from one at all.
+pub struct Resolved {
     pub app: App,
     pub server: Server,
     pub credential: Credential,
     pub path: crate::model::Path,
+    /// The named target this was resolved from, when it was resolved from one.
+    ///
+    /// `None` after an override changed a field, or when the tuple was
+    /// assembled from the binding with nothing saved yet - which is what the
+    /// offer to save a target keys on.
+    pub target: Option<String>,
 }
 
-impl Target {
+impl Resolved {
     /// How a connection is announced: the account and the machine it reaches.
     pub fn connection_label(&self) -> String {
         format!("{}@{}:{}", self.credential.user, self.server.ssh_host(), self.server.port)
@@ -33,26 +40,118 @@ pub struct Overrides {
     pub path: Option<String>,
 }
 
-/// Resolve the app (argument or cwd), the target server (flag or binding), and
-/// the credential and path that server uses for this app unless overridden.
-pub fn resolve(app_name: Option<String>, overrides: Overrides) -> Result<Target> {
+impl Overrides {
+    /// Whether anything was actually overridden.
+    fn any(&self) -> bool {
+        self.server.is_some() || self.credential.is_some() || self.path.is_some()
+    }
+}
+
+/// Resolve a deploy target: a named one, or the app's target on the server it
+/// is bound to - with `--server`/`--credential`/`--path` overriding fields for
+/// this run only.
+///
+/// `name` is a target name when one matches, and an app name otherwise. The two
+/// are separate catalogs, so a lookup has to choose: targets win, because
+/// `turnout deploy web-prod` naming a target is the point of v0.11.0, and an app
+/// that happens to share the name is still reachable through its own target.
+pub fn resolve(name: Option<String>, overrides: Overrides) -> Result<Resolved> {
+    let targets = store::load_targets()?;
+    if let Some(name) = &name
+        && let Some(target) = targets.iter().find(|t| &t.name == name)
+    {
+        return from_target(target.clone(), overrides);
+    }
+
     let apps = store::load_apps()?;
-    let app = crate::commands::exec::resolve(&apps, app_name)?.clone();
-    let server_name = match overrides.server {
-        Some(name) => name,
-        None => store::load_state()?
-            .bindings
-            .get(&app.name)
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("no target: pass --server or bind one with `turnout use {} SERVER`", app.name))?,
+    let app = crate::commands::exec::resolve(&apps, name)?.clone();
+    let server_name = match &overrides.server {
+        Some(name) => name.clone(),
+        None => store::load_state()?.bindings.get(&app.name).cloned().ok_or_else(|| {
+            anyhow::anyhow!(
+                "nowhere to deploy '{0}': name a target (see `turnout target list`), pass --server, \
+                 or bind one with `turnout use {0} SERVER`",
+                app.name
+            )
+        })?,
     };
+
+    // The app's target on that server, when there is one. Two targets for the
+    // same pair is a legitimate shape - a staging root beside the live one - and
+    // picking one arbitrarily would deploy somewhere nobody chose.
+    let mut matching = targets.iter().filter(|t| t.app == app.name && t.server == server_name);
+    let found = match (matching.next(), matching.next()) {
+        (Some(only), None) => Some(only.clone()),
+        (Some(first), Some(second)) => bail!(
+            "'{}' has more than one target on '{server_name}' ('{}', '{}') - name the one to deploy",
+            app.name,
+            first.name,
+            second.name
+        ),
+        (None, _) => None,
+    };
+
+    match found {
+        Some(target) => from_target(target, overrides),
+        None => assemble(app, server_name, overrides),
+    }
+}
+
+/// Load the four entities a target names, applying single-run overrides.
+fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Resolved> {
+    let overridden = overrides.any();
+    let app = store::load_apps()?
+        .into_iter()
+        .find(|a| a.name == target.app)
+        .ok_or_else(|| dangling(&target.name, "app", &target.app, "turnout app list"))?;
+    let server_name = overrides.server.unwrap_or_else(|| target.server.clone());
+    let server = store::load_servers()?
+        .into_iter()
+        .find(|s| s.name == server_name)
+        .ok_or_else(|| dangling(&target.name, "server", &server_name, "turnout server list"))?;
+    check_allowed(&app, &server.name)?;
+    let credential_name = overrides.credential.unwrap_or_else(|| target.credential.clone());
+    let credential = store::load_credentials()?
+        .into_iter()
+        .find(|c| c.name == credential_name)
+        .ok_or_else(|| dangling(&target.name, "credential", &credential_name, "turnout credential list"))?;
+    let path_name = overrides.path.unwrap_or_else(|| target.path.clone());
+    let path = store::load_paths()?
+        .into_iter()
+        .find(|p| p.name == path_name)
+        .ok_or_else(|| dangling(&target.name, "path", &path_name, "turnout path list"))?;
+    Ok(Resolved {
+        app,
+        server,
+        credential,
+        path,
+        // An overridden run is not this target any more, and recording it as one
+        // would let a `--path other` run be journaled under the target's name.
+        target: (!overridden).then_some(target.name),
+    })
+}
+
+/// A target naming an entity that is no longer in the catalog.
+///
+/// Removing a server or a path leaves the targets that used it pointing at
+/// nothing; saying which target broke is the difference between a fix and a
+/// hunt.
+fn dangling(target: &str, kind: &str, name: &str, list: &str) -> anyhow::Error {
+    anyhow::anyhow!("target '{target}' names {kind} '{name}', which is not in the catalog - see `{list}`")
+}
+
+/// Assemble a tuple with no named target behind it: the binding gives the
+/// server, the server its credential, and the path still has to be named.
+///
+/// This is what a first deploy looks like before anything is saved. It ends in
+/// a `Resolved` with `target: None`, which is the caller's cue to offer saving
+/// it.
+fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resolved> {
     let server = store::load_servers()?
         .into_iter()
         .find(|s| s.name == server_name)
         .ok_or_else(|| anyhow::anyhow!("no server named '{server_name}' - see `turnout server list`"))?;
-    if !app.servers.is_empty() && !app.servers.contains(&server.name) {
-        bail!("server '{server_name}' is not allowed for '{}' (allowed: {})", app.name, app.servers.join(", "));
-    }
+    check_allowed(&app, &server.name)?;
 
     let credential_name = overrides.credential.or_else(|| server.credential.clone()).ok_or_else(|| {
         anyhow::anyhow!(
@@ -66,22 +165,42 @@ pub fn resolve(app_name: Option<String>, overrides: Overrides) -> Result<Target>
         .find(|c| c.name == credential_name)
         .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
 
-    let path_name = overrides.path.or_else(|| server.deploy.get(&app.name).cloned()).ok_or_else(|| {
-        anyhow::anyhow!(
-            "no path for '{0}' on '{1}' - point it at one with `turnout server edit {1} --deploy-path {0}=PATH`, \
-             or pass --path for this command only",
-            app.name,
-            server.name
-        )
-    })?;
-    let path = store::load_paths()?
+    let paths = store::load_paths()?;
+    let path_name = match overrides.path {
+        Some(name) => name,
+        None => {
+            // A terminal gets the picker; a script gets the way to say it
+            // without one. Saving the answer as a target is what stops the next
+            // run from asking again.
+            crate::pick::ensure_interactive(&format!(
+                "no target for '{}' on '{}': create one with `turnout target add`, or pass --path",
+                app.name, server.name
+            ))?;
+            eprintln!("No target for '{}' on '{}' yet.", app.name, server.name);
+            crate::pick::path(&paths, "Deploy into which path")?
+        }
+    };
+    let path = paths
         .into_iter()
         .find(|p| p.name == path_name)
         .ok_or_else(|| anyhow::anyhow!("no path named '{path_name}' - see `turnout path list`"))?;
 
-    Ok(Target { app, server, credential, path })
+    Ok(Resolved {
+        app,
+        server,
+        credential,
+        path,
+        target: None,
+    })
 }
 
+/// An app with an allow-list may only reach the servers on it.
+fn check_allowed(app: &App, server: &str) -> Result<()> {
+    if !app.servers.is_empty() && !app.servers.iter().any(|s| s == server) {
+        bail!("server '{server}' is not allowed for '{}' (allowed: {})", app.name, app.servers.join(", "));
+    }
+    Ok(())
+}
 /// Open a session to `server` as `credential`.
 ///
 /// The transport lives in [`crate::ssh`]; this is the entry the rest of the

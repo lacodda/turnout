@@ -91,7 +91,8 @@ That is enough for the dev gateway. Deploying also needs to know who logs in and
 ```bash
 turnout credential add prod-deploy --user deploy
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
-turnout server edit prod --credential prod-deploy --deploy-path myapp=wwwroot
+turnout server edit prod --credential prod-deploy
+turnout target add --app myapp --server prod --credential prod-deploy --path wwwroot
 ```
 
 Or let one wizard walk all of it, offering to create the credential and path as it goes:
@@ -100,7 +101,7 @@ Or let one wizard walk all of it, offering to create the credential and path as 
 turnout deploy-setup myapp
 ```
 
-See [`turnout app`](/turnout/reference/app/), [`turnout server`](/turnout/reference/server/), [`turnout credential`](/turnout/reference/credential/) and [`turnout path`](/turnout/reference/path/) for the full command reference.
+Either way, `turnout deploy myapp-prod` deploys from any directory afterwards. See [`turnout app`](/turnout/reference/app/), [`turnout server`](/turnout/reference/server/), [`turnout credential`](/turnout/reference/credential/), [`turnout path`](/turnout/reference/path/) and [`turnout target`](/turnout/reference/target/) for the full command reference.
 
 ## A working day
 
@@ -114,6 +115,6 @@ turnout use myapp prod-eu      # switch stands - no restarts, no env edits
 
 ## Next steps
 
-- Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials, paths and state.
+- Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials, paths, targets and state.
 - See how the [dev gateway](/turnout/concepts/gateway/) routes your apps to stands.
 - Coming from turnout 0.8? Read [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).

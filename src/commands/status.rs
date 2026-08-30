@@ -43,6 +43,11 @@ pub fn run() -> Result<()> {
             remote_paths.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", ")
         ),
     }
+    let targets = store::load_targets()?;
+    match targets.len() {
+        0 => println!("Targets: none yet"),
+        n => println!("Targets: {} ({})", n, targets.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", ")),
+    }
     let state = store::load_state()?;
     if !state.bindings.is_empty() {
         println!("Bindings:");

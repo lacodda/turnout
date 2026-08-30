@@ -30,9 +30,10 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
-/// 2 since v0.9.0: servers hold host/port and point at named credentials and
-/// paths, which are catalogs of their own.
-pub const CURRENT_VERSION: u32 = 2;
+/// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
+/// the server's own `deploy` map - which held the app-to-path relationship - is
+/// gone (ADR 0013).
+pub const CURRENT_VERSION: u32 = 3;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -53,17 +54,20 @@ struct Step {
 }
 
 /// Every known migration, in order.
-///
-/// Schema 2 is current and has no successor yet, so the only entry is a
-/// refusal. That leaves the `rewrites: true` machinery in [`run`] - the safety
-/// copy and the error wrapping - unexercised until a schema 3 exists: it is
-/// future plumbing kept warm, not dead code to delete.
-const STEPS: &[Step] = &[Step {
-    from: 1,
-    describes: "refused: the v0.9.0 entity split has no automatic migration",
-    apply: refuse_schema_1,
-    rewrites: false,
-}];
+const STEPS: &[Step] = &[
+    Step {
+        from: 1,
+        describes: "refused: the v0.9.0 entity split has no automatic migration",
+        apply: refuse_schema_1,
+        rewrites: false,
+    },
+    Step {
+        from: 2,
+        describes: "deploy targets moved out of the servers into a catalog of their own",
+        apply: targets_from_server_deploy,
+        rewrites: true,
+    },
+];
 
 /// The v0.9.0 split, explained instead of guessed at.
 ///
@@ -102,6 +106,100 @@ fn refuse_schema_1(dir: &Path) -> Result<()> {
          See https://lacodda.github.io/turnout/guides/upgrading-to-0-9/ for the walkthrough.",
         dir.display()
     )
+}
+
+/// Schema 2 -> 3: every `server.deploy[app] = path` becomes a named target.
+///
+/// This one *does* name things, where [`refuse_schema_1`] refused to - and the
+/// difference is the whole reason it is allowed to (ADR 0013). The v0.9.0 split
+/// had to invent a credential out of a `user@host` string, producing names like
+/// `prod-cred-1` that mean nothing six months later. Here both halves of
+/// `{app}-{server}` were typed by the user; the migration joins them, and the
+/// same generator serves the interactive "save this as a target?" prompt, so the
+/// two can never drift apart.
+///
+/// The server's credential comes along because that is what a deploy from that
+/// server used to log in as. A server with a deploy entry but no credential
+/// could never have deployed at all, so its entries are dropped rather than
+/// turned into a target that cannot run - and the user is told, because a
+/// silently missing target is worse than a named gap.
+fn targets_from_server_deploy(dir: &Path) -> Result<()> {
+    let servers_file = dir.join("servers.json");
+    let mut servers: Vec<serde_json::Value> = read_json_array(&servers_file)?;
+    // Whatever is already in `targets.json` wins over anything generated here:
+    // a partially-migrated directory must not gain a second copy of its own
+    // targets on the next run.
+    let mut targets: Vec<crate::model::Target> = read_json_array(&dir.join("targets.json"))?;
+    let mut created = Vec::new();
+    let mut skipped = Vec::new();
+
+    for server in servers.iter_mut() {
+        let Some(server_name) = server.get("name").and_then(|v| v.as_str()).map(String::from) else {
+            continue;
+        };
+        // Taken out whether or not it yields targets: the field is gone from the
+        // schema, and leaving it behind would have `Server` silently ignore it.
+        let Some(deploy) = server.as_object_mut().and_then(|o| o.remove("deploy")) else {
+            continue;
+        };
+        let credential = server.get("credential").and_then(|v| v.as_str()).map(String::from);
+        let Some(entries) = deploy.as_object() else {
+            continue;
+        };
+        for (app, path) in entries {
+            let Some(path) = path.as_str() else { continue };
+            let Some(credential) = credential.clone() else {
+                skipped.push(format!("{app} on {server_name}"));
+                continue;
+            };
+            let name = crate::model::unique_target_name(app, &server_name, &targets);
+            created.push(format!("{name} ({app} -> {server_name}:{path})"));
+            targets.push(crate::model::Target {
+                name,
+                app: app.clone(),
+                server: server_name.clone(),
+                credential,
+                path: path.to_string(),
+            });
+        }
+    }
+
+    targets.sort_by(|a, b| a.name.cmp(&b.name));
+    write_json(&dir.join("targets.json"), &targets)?;
+    write_json(&servers_file, &servers)?;
+
+    for line in &created {
+        eprintln!("    target {line}");
+    }
+    if !skipped.is_empty() {
+        // Named rather than counted: the user has to know which deploy stopped
+        // being addressable, and re-creating it needs the name.
+        eprintln!(
+            "    no target for {} - the server had no credential to log in with;
+    re-create with `turnout target add`",
+            skipped.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// Read a JSON array, treating a missing file as an empty one.
+///
+/// A catalog that has never been written is not an error at any schema: a user
+/// who set turnout up and added nothing has no `targets.json` either.
+fn read_json_array<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
+    serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))
+}
+
+/// Write a catalog the way [`crate::store`] does, so a migrated file is
+/// byte-identical to one turnout would have written itself.
+fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    let json = serde_json::to_string_pretty(value)?;
+    std::fs::write(path, json).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// Put the pre-split catalogs somewhere the user can read them while
@@ -181,18 +279,21 @@ pub fn run(dir: &Path, from: u32) -> Result<u32> {
         );
     }
 
-    // Only when something is actually about to be rewritten: a run that ends in
-    // a refusal must leave the directory exactly as it found it, backup folder
-    // included.
-    if pending.iter().any(|step| step.rewrites) {
-        let backup = backup_dir(dir, from);
-        std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
-        copy_data_files(dir, &backup)?;
-        eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
-        eprintln!("  A copy of the old files is in {}", backup.display());
-    }
-
+    // The safety copy is made lazily, right before the first step that
+    // actually rewrites something - not up front for the whole chain. A run
+    // that ends in a refusal must leave the directory exactly as it found it,
+    // backup folder included, and a chain can refuse at step one and still
+    // contain a rewriting step later (1 -> 2 -> 3 is exactly that shape).
+    let mut copied = false;
     for step in pending {
+        if step.rewrites && !copied {
+            let backup = backup_dir(dir, from);
+            std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
+            copy_data_files(dir, &backup)?;
+            eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
+            eprintln!("  A copy of the old files is in {}", backup.display());
+            copied = true;
+        }
         match (step.apply)(dir) {
             Ok(()) => eprintln!("  {}", step.describes),
             // A refusal is already a complete explanation; wrapping it in
@@ -302,6 +403,118 @@ mod tests {
         let copy = dir.path().join("settings-backup-v1").join("servers.json");
         assert!(copy.is_file(), "a readable copy must be set aside");
         assert!(err.contains("settings-backup-v1"), "and the message must say where it is: {err}");
+    }
+
+    /// Schema 2 -> 3: the relationship the server used to own becomes a named
+    /// target, and the field it lived in is taken off the server.
+    #[test]
+    fn deploy_maps_become_named_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("servers.json"),
+            r#"[{"name":"prod","url":"https://prod.example.com","credential":"deploy","deploy":{"web":"wwwroot","api":"api-root"}}]"#,
+        )
+        .unwrap();
+
+        run(dir.path(), 2).unwrap();
+
+        let targets: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("targets.json")).unwrap()).unwrap();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        let web = targets.iter().find(|t| t["name"] == "web-prod").expect("web-prod");
+        assert_eq!(web["app"], "web");
+        assert_eq!(web["server"], "prod");
+        assert_eq!(web["path"], "wwwroot");
+        // The login comes from the server, because that is what a deploy there
+        // used to authenticate as.
+        assert_eq!(web["credential"], "deploy");
+        assert!(targets.iter().any(|t| t["name"] == "api-prod"), "{targets:?}");
+
+        // The field is gone from the server, not merely ignored: leaving it
+        // behind would have `Server` silently drop it on the next write.
+        let servers: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("servers.json")).unwrap()).unwrap();
+        assert!(servers[0].get("deploy").is_none(), "{servers:?}");
+        assert_eq!(servers[0]["url"], "https://prod.example.com", "the rest of the server survives");
+    }
+
+    /// A server that could never log in produced no deploys either, so it
+    /// yields no target - but the user has to be told, or a route silently
+    /// vanishes.
+    #[test]
+    fn a_server_without_a_credential_yields_no_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("servers.json"),
+            r#"[{"name":"prod","url":"https://prod.example.com","deploy":{"web":"wwwroot"}}]"#,
+        )
+        .unwrap();
+
+        run(dir.path(), 2).unwrap();
+
+        let targets: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("targets.json")).unwrap()).unwrap();
+        assert!(targets.is_empty(), "{targets:?}");
+        let servers: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("servers.json")).unwrap()).unwrap();
+        assert!(servers[0].get("deploy").is_none(), "the field goes either way: {servers:?}");
+    }
+
+    /// Two servers deploying the same app collide on the generated name. Losing
+    /// one of them silently would drop a deploy target on the floor.
+    #[test]
+    fn a_second_run_does_not_duplicate_what_it_already_made() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("servers.json"),
+            r#"[{"name":"prod","url":"https://prod.example.com","credential":"deploy","deploy":{"web":"wwwroot"}}]"#,
+        )
+        .unwrap();
+
+        run(dir.path(), 2).unwrap();
+        // The second run finds no `deploy` field left, so it adds nothing - the
+        // shape a half-finished migration leaves behind.
+        run(dir.path(), 2).unwrap();
+
+        let targets: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("targets.json")).unwrap()).unwrap();
+        assert_eq!(targets.len(), 1, "{targets:?}");
+    }
+
+    /// A migrated catalog has to be readable by the code that owns it, not just
+    /// well-formed JSON: the names it generates go straight into `build add`
+    /// and the pickers.
+    #[test]
+    fn migrated_targets_parse_as_the_entity() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("servers.json"),
+            r#"[{"name":"kib-2","url":"https://kib2.example.com","credential":"deploy","deploy":{"my-app":"wwwroot"}}]"#,
+        )
+        .unwrap();
+
+        run(dir.path(), 2).unwrap();
+
+        let targets: Vec<crate::model::Target> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("targets.json")).unwrap()).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].name, "my-app-kib-2");
+        crate::model::validate_name(&targets[0].name).expect("a generated name must be a valid entity name");
+    }
+
+    /// The chain 1 -> 3 refuses at its first step but contains a rewriting one
+    /// after it. The safety copy must not be made for work that never happens -
+    /// a refusal has to leave the directory exactly as it found it.
+    #[test]
+    fn a_refusing_chain_leaves_no_backup_even_when_a_later_step_rewrites() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"prod\"}]").unwrap();
+
+        assert!(run(dir.path(), 1).is_err());
+
+        let folders: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("settings-backup"))
+            .collect();
+        // Exactly one, and it is the reference copy the refusal itself makes -
+        // not a second one from the migration machinery.
+        assert_eq!(folders, vec!["settings-backup-v1"], "{folders:?}");
+        assert!(!dir.path().join("targets.json").exists(), "a refused chain writes nothing");
     }
 
     /// Running any command twice must not pile up copies, nor overwrite the

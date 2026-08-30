@@ -15,11 +15,12 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
     let credentials = store::load_credentials()?;
     let remote_paths = store::load_paths()?;
     let groups = store::load_groups()?;
+    let targets = store::load_targets()?;
     if apps.is_empty() && servers.is_empty() && groups.is_empty() {
         bail!("nothing to export - this machine has no apps, servers or groups yet");
     }
 
-    let mut snapshot = Snapshot::new(apps, servers, credentials, remote_paths, groups);
+    let mut snapshot = Snapshot::new(apps, servers, credentials, remote_paths, groups, targets);
     if with_secrets {
         let collected = collect_secrets(&snapshot.credentials)?;
         if collected.is_empty() {
@@ -36,11 +37,12 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
 
     println!("Exported to {}", path.display());
     println!(
-        "  {} app(s), {} server(s), {} credential(s), {} path(s), {} group(s)",
+        "  {} app(s), {} server(s), {} credential(s), {} path(s), {} target(s), {} group(s)",
         snapshot.apps.len(),
         snapshot.servers.len(),
         snapshot.credentials.len(),
         snapshot.paths.len(),
+        snapshot.targets.len(),
         snapshot.groups.len()
     );
     match &snapshot.secrets {
@@ -55,8 +57,15 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
 
 pub fn import(path: PathBuf, force: bool) -> Result<()> {
     let text = std::fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
-    let snapshot: Snapshot = serde_json::from_str(&text).with_context(|| format!("{} is not a turnout export", path.display()))?;
+    let mut snapshot: Snapshot = serde_json::from_str(&text).with_context(|| format!("{} is not a turnout export", path.display()))?;
     snapshot.check_version()?;
+    // A format-2 file keeps its deploy routes inside the servers, where this
+    // build has no field for them; they become named targets before anything is
+    // written, so an older export still arrives able to deploy.
+    let adopted = snapshot.adopt_v2_targets(&text)?;
+    if adopted > 0 {
+        println!("Converted {adopted} deploy route(s) from the older format into named targets.");
+    }
 
     // Decrypt before writing anything. A wrong passphrase must not leave the
     // catalogs imported and the secrets missing - the user would see an error,
@@ -114,6 +123,17 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         "path",
         &mut report,
         store::save_paths,
+    )?;
+    // Last: a target names the four entities above, so importing it after them
+    // means a report of what arrived reads in dependency order.
+    merge(
+        &mut store::load_targets()?,
+        snapshot.targets,
+        |target| target.name.clone(),
+        force,
+        "target",
+        &mut report,
+        store::save_targets,
     )?;
 
     if let Some(opened) = opened {
@@ -286,7 +306,6 @@ mod tests {
             port: 22,
             accept_invalid_certs: false,
             credential: None,
-            deploy: BTreeMap::new(),
             shell: None,
         }
     }

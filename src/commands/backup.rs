@@ -25,8 +25,8 @@ fn is_backup_name(entry: &str) -> bool {
     bytes.len() == 15 && bytes[8] == b'-' && stem.chars().enumerate().all(|(i, c)| if i == 8 { c == '-' } else { c.is_ascii_digit() })
 }
 
-pub fn backup(app_name: Option<String>, overrides: remote::Overrides) -> Result<()> {
-    let target = remote::resolve(app_name, overrides)?;
+pub fn backup(target_name: Option<String>, overrides: remote::Overrides) -> Result<()> {
+    let target = remote::resolve(target_name, overrides)?;
     let dir = &target.path.dir;
     let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
@@ -38,8 +38,8 @@ pub fn backup(app_name: Option<String>, overrides: remote::Overrides) -> Result<
     Ok(())
 }
 
-pub fn restore(app_name: Option<String>, overrides: remote::Overrides, from: Option<String>, list: bool) -> Result<()> {
-    let target = remote::resolve(app_name, overrides)?;
+pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: Option<String>, list: bool) -> Result<()> {
+    let target = remote::resolve(target_name, overrides)?;
     let deploy_dir = target.path.dir.clone();
     let backups_raw = remote::backups_dir(&deploy_dir);
     let step = Step::start(format!("Connecting to {} ...", target.connection_label()));

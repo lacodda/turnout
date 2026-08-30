@@ -224,8 +224,15 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         .filter(|s| s.credential.as_deref() == Some(name))
         .map(|s| s.name.as_str())
         .collect();
+    // Targets name it too, and a target without a login cannot deploy at all -
+    // unlike a server, which is still a routable stand.
+    let targets = store::load_targets()?;
+    let target_users: Vec<&str> = targets.iter().filter(|t| t.credential == name).map(|t| t.name.as_str()).collect();
     if !used_by.is_empty() {
-        println!("Used by: {}. They will be left without a credential.", used_by.join(", "));
+        println!("Used by servers: {}. They will be left without a credential.", used_by.join(", "));
+    }
+    if !target_users.is_empty() {
+        println!("Used by targets: {}. They will be removed with it.", target_users.join(", "));
     }
     let confirmed = pick::confirm_destructive(format!("Remove credential '{name}' and its stored secret?"), assume_yes)?;
     if !confirmed {
@@ -249,6 +256,12 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !touched.is_empty() {
         store::save_servers(&servers)?;
         println!("Cleared it from servers: {}.", touched.join(", "));
+    }
+    let mut targets = targets;
+    let before = targets.len();
+    targets.retain(|t| t.credential != name);
+    if targets.len() != before {
+        store::save_targets(&targets)?;
     }
     crate::journal::record("credential.remove", None, None, Some(name));
     println!("Credential '{name}' removed.");

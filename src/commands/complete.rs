@@ -15,8 +15,9 @@ pub fn run(what: CompleteKind) -> Result<()> {
         CompleteKind::Servers => servers(),
         CompleteKind::Credentials => credentials(),
         CompleteKind::Paths => remote_paths(),
+        CompleteKind::Targets => targets(),
         CompleteKind::Groups => groups(),
-        CompleteKind::Targets => {
+        CompleteKind::Bindable => {
             let mut names = apps();
             names.extend(groups());
             names.sort();
@@ -50,6 +51,12 @@ fn credentials() -> Vec<String> {
 /// which the shell completes on its own.
 fn remote_paths() -> Vec<String> {
     store::load_paths().map(|paths| paths.into_iter().map(|p| p.name).collect()).unwrap_or_default()
+}
+
+fn targets() -> Vec<String> {
+    store::load_targets()
+        .map(|targets| targets.into_iter().map(|t| t.name).collect())
+        .unwrap_or_default()
 }
 
 fn groups() -> Vec<String> {

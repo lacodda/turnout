@@ -25,10 +25,9 @@ pub fn run(command: ServerCommand) -> Result<()> {
             credential,
             insecure,
             secure,
-            deploy_paths,
         } => {
             let name = resolve(name, "Edit server")?;
-            edit(&name, url, label, host, credential, insecure, secure, deploy_paths)
+            edit(&name, url, label, host, credential, insecure, secure)
         }
         ServerCommand::Remove { name, assume_yes } => {
             let name = resolve(name, "Remove server")?;
@@ -148,7 +147,6 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, host: O
         port,
         accept_invalid_certs,
         credential,
-        deploy: Default::default(),
         // Learned on the first command that needs a shell, not guessed here.
         shell: None,
     });
@@ -199,15 +197,19 @@ fn show(name: &str) -> Result<()> {
             "verify certificates"
         }
     );
-    if !server.deploy.is_empty() {
+    // Which deploy targets land here. The server used to own this list; since
+    // v0.11.0 the targets do, and this reads it back the other way round.
+    let targets = store::load_targets()?;
+    let landing: Vec<&crate::model::Target> = targets.iter().filter(|t| t.server == name).collect();
+    if !landing.is_empty() {
         let paths = store::load_paths()?;
-        println!("  Deploy:");
-        for (app, path_name) in &server.deploy {
-            match paths.iter().find(|p| &p.name == path_name) {
-                Some(path) => println!("    {app}: {path_name} → {}", path.dir),
+        println!("  Targets:");
+        for target in landing {
+            match paths.iter().find(|p| p.name == target.path) {
+                Some(path) => println!("    {}: {} → {}", target.name, target.app, path.dir),
                 // A name with nothing behind it is worth showing rather than
                 // hiding: it is exactly what a deploy would fail on.
-                None => println!("    {app}: {path_name} (missing from the path catalog)"),
+                None => println!("    {}: {} → {} (missing from the path catalog)", target.name, target.app, target.path),
             }
         }
     }
@@ -220,19 +222,10 @@ fn show(name: &str) -> Result<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn edit(
-    name: &str,
-    url: Option<String>,
-    label: Option<String>,
-    host: Option<String>,
-    credential: Option<String>,
-    insecure: bool,
-    secure: bool,
-    deploy_paths: Vec<String>,
-) -> Result<()> {
+fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<String>, credential: Option<String>, insecure: bool, secure: bool) -> Result<()> {
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
-    let no_flags = url.is_none() && label.is_none() && host.is_none() && credential.is_none() && !insecure && !secure && deploy_paths.is_empty();
+    let no_flags = url.is_none() && label.is_none() && host.is_none() && credential.is_none() && !insecure && !secure;
 
     if no_flags {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
@@ -276,13 +269,6 @@ fn edit(
         if let Some(credential) = credential.as_deref().filter(|c| !c.trim().is_empty()) {
             check_credential(credential)?;
         }
-        // Loaded only when --deploy-path was passed: both reads serve just
-        // that validation loop below.
-        let (known_apps, known_paths) = if deploy_paths.is_empty() {
-            (Vec::new(), Vec::new())
-        } else {
-            (store::load_apps()?, store::load_paths()?)
-        };
         let server = &mut servers[index];
         if let Some(url) = url {
             validate_url(&url)?;
@@ -310,35 +296,11 @@ fn edit(
         if secure {
             server.accept_invalid_certs = false;
         }
-        for spec in &deploy_paths {
-            let (app, path_name) = split_spec(spec)?;
-            if path_name.is_empty() {
-                server.deploy.remove(app);
-                continue;
-            }
-            if !known_apps.iter().any(|a| a.name == app) {
-                bail!("no app named '{app}' - see `turnout app list`");
-            }
-            if !known_paths.iter().any(|p| p.name == path_name) {
-                bail!("no path named '{path_name}' - add one with `turnout path add {path_name}`");
-            }
-            server.deploy.insert(app.to_string(), path_name.to_string());
-        }
     }
     store::save_servers(&servers)?;
     crate::journal::record("server.edit", None, Some(name), None);
     println!("Server '{name}' updated.");
     Ok(())
-}
-
-fn split_spec(spec: &str) -> Result<(&str, &str)> {
-    let (app, value) = spec
-        .split_once('=')
-        .ok_or_else(|| anyhow::anyhow!("invalid value '{spec}': expected APP=VALUE"))?;
-    if app.is_empty() {
-        bail!("invalid value '{spec}': expected APP=VALUE");
-    }
-    Ok((app, value))
 }
 
 fn remove(name: &str, assume_yes: bool) -> Result<()> {
@@ -365,6 +327,16 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !touched.is_empty() {
         store::save_apps(&apps)?;
         println!("Removed '{name}' from apps: {}.", touched.join(", "));
+    }
+
+    // Targets do not outlive it: a target names exactly one server, so without
+    // it there is no route left to describe.
+    let mut targets = store::load_targets()?;
+    let dropped: Vec<String> = targets.iter().filter(|t| t.server == name).map(|t| t.name.clone()).collect();
+    if !dropped.is_empty() {
+        targets.retain(|t| t.server != name);
+        store::save_targets(&targets)?;
+        println!("Removed targets: {}.", dropped.join(", "));
     }
 
     // Credentials and paths outlive the server on purpose: they are shared, and

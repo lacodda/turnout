@@ -42,6 +42,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PathCommand,
     },
+    /// Manage targets - a named deploy route: app, server, credential and path
+    Target {
+        #[command(subcommand)]
+        command: TargetCommand,
+    },
     /// Manage the secrets credentials use, stored in the OS keyring
     Pass {
         #[command(subcommand)]
@@ -86,9 +91,10 @@ pub enum Command {
         #[arg(short, long)]
         server: Option<String>,
     },
-    /// Deploy an app to a server over SSH/SFTP: build, upload, restart
+    /// Deploy to a target over SSH/SFTP: build, upload, restart
     Deploy {
-        app: Option<String>,
+        /// Target name, or an app name to use its target on the bound server
+        target: Option<String>,
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
@@ -111,9 +117,10 @@ pub enum Command {
         #[arg(short = 'A', long)]
         no_archive: bool,
     },
-    /// Back up an app's deploy directory on the server
+    /// Back up a target's deploy directory on the server
     Backup {
-        app: Option<String>,
+        /// Target name, or an app name to use its target on the bound server
+        target: Option<String>,
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
@@ -124,9 +131,10 @@ pub enum Command {
         #[arg(short = 'p', long)]
         path: Option<String>,
     },
-    /// Restore an app's deploy directory from a backup
+    /// Restore a target's deploy directory from a backup
     Restore {
-        app: Option<String>,
+        /// Target name, or an app name to use its target on the bound server
+        target: Option<String>,
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
@@ -154,7 +162,7 @@ pub enum Command {
         /// What to list
         what: CompleteKind,
     },
-    /// Write apps, servers and groups to a file for another machine
+    /// Write the catalogs to a file for another machine
     Export {
         /// Where to write; defaults to turnout-export.json in the current directory
         #[arg(short, long)]
@@ -192,9 +200,11 @@ pub enum CompleteKind {
     Servers,
     Credentials,
     Paths,
+    /// Named deploy targets - what `deploy` accepts
+    Targets,
     Groups,
     /// Apps and groups together - what `use` accepts first
-    Targets,
+    Bindable,
     /// Command names defined across all apps - what `run` accepts
     Commands,
 }
@@ -363,6 +373,60 @@ pub enum PathCommand {
 }
 
 #[derive(Subcommand)]
+pub enum TargetCommand {
+    /// Add a target; missing parts are picked interactively
+    Add {
+        /// Target name (defaults to APP-SERVER)
+        name: Option<String>,
+        /// The app whose artifacts travel
+        #[arg(short, long)]
+        app: Option<String>,
+        /// The server they land on
+        #[arg(short, long)]
+        server: Option<String>,
+        /// The credential that logs in (defaults to the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// The named path they are written to
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// List targets
+    List,
+    /// Show one target in detail
+    Show {
+        /// Target name; picked interactively when omitted
+        name: Option<String>,
+    },
+    /// Edit a target; with no flags an interactive wizard walks the fields
+    Edit {
+        /// Target name; picked interactively when omitted
+        name: Option<String>,
+        #[arg(short, long)]
+        server: Option<String>,
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        #[arg(short, long)]
+        path: Option<String>,
+    },
+    /// Rename a target
+    Rename {
+        /// Target name; picked interactively when omitted
+        name: Option<String>,
+        /// The new name
+        to: Option<String>,
+    },
+    /// Remove a target (the entities it names are untouched)
+    Remove {
+        /// Target name; picked interactively when omitted
+        name: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum AppCommand {
     /// Add an app; missing details are asked interactively
     Add {
@@ -470,9 +534,6 @@ pub enum ServerCommand {
         /// Require valid TLS certificates for this server
         #[arg(short = 'S', long)]
         secure: bool,
-        /// Point an app at a named path as APP=PATH, or APP= to remove (repeatable)
-        #[arg(short = 'd', long = "deploy-path", value_name = "APP=PATH")]
-        deploy_paths: Vec<String>,
     },
     /// Remove a server from the catalog; apps that allowed it are updated
     Remove {

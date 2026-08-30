@@ -263,6 +263,15 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         store::save_groups(&groups)?;
         println!("Removed '{name}' from groups: {}.", touched.join(", "));
     }
+    // A target names exactly one app; without it there is nothing left to
+    // deploy, so it goes too.
+    let mut targets = store::load_targets()?;
+    let dropped: Vec<String> = targets.iter().filter(|t| t.app == name).map(|t| t.name.clone()).collect();
+    if !dropped.is_empty() {
+        targets.retain(|t| t.app != name);
+        store::save_targets(&targets)?;
+        println!("Removed targets: {}.", dropped.join(", "));
+    }
     crate::journal::record("app.remove", Some(name), None, None);
     println!("App '{name}' removed. The project on disk is untouched.");
     Ok(())

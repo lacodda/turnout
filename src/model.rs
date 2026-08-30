@@ -57,13 +57,6 @@ pub struct Server {
     /// Credential used to log in here unless a command names another one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<String>,
-    /// Which named path each app deploys into on this server.
-    ///
-    /// A name rather than an inline directory: the same `/var/www/app` is one
-    /// `Path` entry reused across servers, and v0.10.0's builds address it the
-    /// same way.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub deploy: BTreeMap<String, String>,
 }
 
 impl Server {
@@ -144,6 +137,53 @@ pub struct Path {
     /// Command run on the server after upload, e.g. a service restart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart: Option<String>,
+}
+
+/// A named deploy target: which app goes to which server, as whom, and where.
+///
+/// The four coordinates were free-standing entities since v0.9.0, but the
+/// relationship between them lived inside the server as a map from app to path.
+/// A relationship hidden inside one of its participants cannot be named, listed
+/// or reused - which is exactly what ADR 0010 pulled `user@host` out of the
+/// server for. Since v0.11.0 it is an entity of its own (ADR 0013), and the one
+/// way a deploy is addressed.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Target {
+    pub name: String,
+    /// The app whose artifacts travel.
+    pub app: String,
+    /// The server they land on.
+    pub server: String,
+    /// The credential that logs in.
+    pub credential: String,
+    /// The named path they are written to.
+    pub path: String,
+}
+
+/// The name a target gets when nobody typed one: `{app}-{server}`.
+///
+/// Both halves were named by the user, so this joins rather than invents - the
+/// distinction ADR 0013 leans on to let the schema-3 migration name things at
+/// all. Used by the migration and by the "save this as a target?" prompt, so the
+/// two agree by construction.
+pub fn target_name(app: &str, server: &str) -> String {
+    format!("{app}-{server}")
+}
+
+/// A generated name that no existing target claims, suffixed if it has to be.
+///
+/// A collision means two different four-tuples produced the same pair, which
+/// happens when one is a leftover; overwriting either silently would lose a
+/// deploy target, and an ugly name is the cheaper outcome.
+pub fn unique_target_name(app: &str, server: &str, taken: &[Target]) -> String {
+    let base = target_name(app, server);
+    if !taken.iter().any(|b| b.name == base) {
+        return base;
+    }
+    (2..)
+        .map(|n| format!("{base}-{n}"))
+        .find(|name| !taken.iter().any(|b| &b.name == name))
+        .expect("an unused suffix exists")
 }
 
 fn default_ssh_port() -> u16 {
@@ -349,6 +389,45 @@ mod tests {
         assert_eq!(url_host("http://[::1]:8080"), "[::1]");
         // A bare host with no scheme is still just a host.
         assert_eq!(url_host("example.com"), "example.com");
+    }
+
+    fn a_target(name: &str) -> Target {
+        Target {
+            name: name.into(),
+            app: "web".into(),
+            server: "prod".into(),
+            credential: "deploy".into(),
+            path: "wwwroot".into(),
+        }
+    }
+
+    /// The generated name joins two names the user already chose - that is what
+    /// separates it from inventing one, and what lets the schema-3 migration
+    /// name targets at all (ADR 0013).
+    #[test]
+    fn a_generated_target_name_joins_the_parts() {
+        assert_eq!(target_name("web", "prod"), "web-prod");
+        assert_eq!(unique_target_name("web", "prod", &[]), "web-prod");
+    }
+
+    /// Two four-tuples can collide on the pair. Overwriting either would drop a
+    /// deploy target on the floor, so the second one gets an ugly name instead.
+    #[test]
+    fn a_colliding_target_name_gains_a_suffix() {
+        let taken = vec![a_target("web-prod")];
+        assert_eq!(unique_target_name("web", "prod", &taken), "web-prod-2");
+        let taken = vec![a_target("web-prod"), a_target("web-prod-2")];
+        assert_eq!(unique_target_name("web", "prod", &taken), "web-prod-3");
+        // A different pair is untouched by either of them.
+        assert_eq!(unique_target_name("api", "prod", &taken), "api-prod");
+    }
+
+    /// Generated names have to survive `validate_name`, or the migration would
+    /// write a catalog that `build add` refuses to touch afterwards.
+    #[test]
+    fn generated_names_are_valid_names() {
+        assert!(validate_name(&target_name("my-app", "kib-2")).is_ok());
+        assert!(validate_name(&unique_target_name("web", "prod", &[a_target("web-prod")])).is_ok());
     }
 
     #[test]

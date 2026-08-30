@@ -49,7 +49,7 @@ A Windows [path](/turnout/reference/path/) holds an ordinary drive directory:
 
 ```bash
 turnout path add winroot --dir "C:\inetpub\wwwroot\myapp"
-turnout server edit prod --deploy-path myapp=winroot
+turnout target add --app myapp --server prod --credential prod-deploy --path winroot
 ```
 
 Drive letters, backslashes and UNC shares (`\\fileserver\share\myapp`) are all accepted. Spaces are fine too - every value is quoted before it reaches the server.
@@ -83,5 +83,7 @@ POSIX servers have no such limit - single-quote escaping can express any byte - 
 ## What is not different
 
 Everything that travels over SFTP rather than through a shell has always worked on Windows, and is untouched: the file-by-file upload, creating directories for the artifact tree, and the upload progress. The restart command is passed through verbatim, so write it in the server's own shell - `net stop myapp && net start myapp` rather than `systemctl restart myapp`.
+
+It also runs **in the deploy directory**, like on a POSIX server - but getting there takes an extra step on Windows, because `cmd.exe`'s plain `cd` will not cross drives. turnout uses `cd /d` instead, so a path on `D:` is reached correctly even when the SSH session starts on `C:`.
 
 Authentication is unchanged as well: the credential's key file, or the password in the keyring. Note that a Windows server puts an administrator's authorized keys in `%ProgramData%\ssh\administrators_authorized_keys` with strict ACLs, not in `~/.ssh/authorized_keys` - the usual reason a key that "was added" still prompts for a password.

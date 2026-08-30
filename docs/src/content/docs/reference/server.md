@@ -42,7 +42,7 @@ turnout server add lab -u https://10.0.0.42 -i             # same, short form
 
 ```bash
 turnout server list         # one line per server: name, URL, label
-turnout server show prod    # full card: URL, SSH, credential, deploy paths, which apps use it
+turnout server show prod    # full card: URL, SSH, credential, which targets land here
 ```
 
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
@@ -64,25 +64,20 @@ turnout server edit lab --insecure       # accept invalid TLS certificates
 | `--credential` | `-c` | Credential used to log in here (empty value unsets it) |
 | `--insecure` | `-i` | Accept invalid TLS certificates for this server |
 | `--secure` | `-S` | Require valid TLS certificates for this server |
-| `--deploy-path` | `-d` | Point an app at a named path as `APP=PATH`, or `APP=` to remove (repeatable) |
 
-Who logs in, and where each app's files land:
+Who logs in:
 
 ```bash
 turnout server edit prod --credential prod-deploy
-turnout server edit prod --deploy-path myapp=wwwroot
-turnout server edit prod --deploy-path myapp=      # unlink the path
-turnout server edit prod -c prod-deploy -d myapp=wwwroot   # same, short form
+turnout server edit prod -c prod-deploy   # same, short form
 ```
 
-Both halves have to exist first: the app in the catalog, the path in the [path catalog](/turnout/reference/path/). A name with nothing behind it is refused rather than stored, because a deploy would only discover it later.
-
-:::note[Where the directory went]
-The remote directory and the post-deploy command used to be typed here as `--deploy-path myapp=/var/www/myapp` and `--restart-cmd`. Both now belong to a named path, so the same web root is defined once and reused across servers:
+:::note[Where app-to-path routing went]
+A server used to carry a `--deploy-path APP=PATH` map from app to path. That relationship is now a [target](/turnout/reference/target/) - a named entity of its own, so it can be listed, renamed and reused instead of living as a hidden field on the server:
 
 ```bash
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
-turnout server edit prod --deploy-path myapp=wwwroot
+turnout target add --app myapp --server prod --credential prod-deploy --path wwwroot
 ```
 :::
 

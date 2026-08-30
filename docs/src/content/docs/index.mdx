@@ -58,6 +58,9 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 	<Card title="Servers, logins and paths, apart" icon="puzzle">
 		A machine, the credential that logs into it and the directory files land in are three named entities. Define the deploy account once and point every stand at it; the same web root serves staging and production without being retyped.
 	</Card>
+	<Card title="Named deploy targets" icon="link">
+		An app, a server, a credential and a path join into one named target - `myapp-prod` - that `deploy`, `backup` and `restore` all address directly, from any directory, without a project folder or a binding in the way.
+	</Card>
 	<Card title="Secrets in the OS keyring" icon="seti:lock">
 		Windows Credential Manager, macOS Keychain or Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand it reaches. Copy a password to the clipboard with one command; nothing lives in plain files.
 	</Card>

@@ -47,10 +47,14 @@ _turnout_dynamic() {
     case "${COMP_WORDS[1]}" in
         use)
             # `use TARGET SERVER`: first word is an app or a group, second a server.
-            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="targets"; else kind="servers"; fi
+            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="bindable"; else kind="servers"; fi
             ;;
-        dev|build|test|lint|deploy|deploy-setup|backup|restore)
+        dev|build|test|lint|deploy-setup)
             [[ ${COMP_CWORD} -eq 2 ]] && kind="apps"
+            ;;
+        deploy|backup|restore)
+            # A named deploy target, or an app to use its target on the bound server.
+            [[ ${COMP_CWORD} -eq 2 ]] && kind="targets"
             ;;
         run)
             # `run COMMAND [APP]`
@@ -70,6 +74,9 @@ _turnout_dynamic() {
             ;;
         path)
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(show|edit|remove)$ ]] && kind="paths"
+            ;;
+        target)
+            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(show|edit|rename|remove)$ ]] && kind="targets"
             ;;
         pass)
             # `pass` works on credentials since the v0.9.0 split; `list` takes no name.

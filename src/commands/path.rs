@@ -118,19 +118,9 @@ fn show(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Which `server/app` pairs deploy into this path.
+/// Which deploy targets land in this path.
 fn used_by(name: &str) -> Result<Vec<String>> {
-    let servers = store::load_servers()?;
-    Ok(servers
-        .iter()
-        .flat_map(|server| {
-            server
-                .deploy
-                .iter()
-                .filter(|(_, path)| path.as_str() == name)
-                .map(|(app, _)| format!("{}/{app}", server.name))
-        })
-        .collect())
+    Ok(store::load_targets()?.into_iter().filter(|t| t.path == name).map(|t| t.name).collect())
 }
 
 fn edit(name: &str, dir: Option<String>, restart: Option<String>) -> Result<()> {
@@ -175,7 +165,7 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     }
     let used_by = used_by(name)?;
     if !used_by.is_empty() {
-        println!("Used by: {}. They will be left without a deploy path.", used_by.join(", "));
+        println!("Used by targets: {}. They will be removed with it.", used_by.join(", "));
     }
     let confirmed = pick::confirm_destructive(format!("Remove path '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
@@ -185,15 +175,14 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     paths.retain(|p| p.name != name);
     store::save_paths(&paths)?;
 
-    let mut servers = store::load_servers()?;
-    let mut touched = false;
-    for server in servers.iter_mut() {
-        let before = server.deploy.len();
-        server.deploy.retain(|_, path| path.as_str() != name);
-        touched |= server.deploy.len() != before;
-    }
-    if touched {
-        store::save_servers(&servers)?;
+    // The targets that used it are removed with it: a target naming a path that
+    // no longer exists cannot deploy, and leaving it behind would only surface
+    // as a dangling-name error at the worst moment.
+    let mut targets = store::load_targets()?;
+    let before = targets.len();
+    targets.retain(|t| t.path != name);
+    if targets.len() != before {
+        store::save_targets(&targets)?;
     }
     crate::journal::record("path.remove", None, None, Some(name));
     // The directory on the server is the user's, and turnout has no business

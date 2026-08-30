@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout deploy [APP] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c]
+turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c]
 ```
 
 Builds the app, uploads the artifacts to the target directory over SFTP and optionally restarts the service - one command, using the same apps, servers, credentials and paths as everything else.
@@ -15,9 +15,9 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 
 | Flag | Meaning |
 | --- | --- |
-| `-s, --server <SERVER>` | Target server; defaults to the app's current binding |
-| `-C, --credential <NAME>` | Credential to log in with; defaults to the server's |
-| `-p, --path <NAME>` | Named path to deploy into; defaults to the server's for this app |
+| `-s, --server <SERVER>` | Server for this run only, overriding the target's |
+| `-C, --credential <NAME>` | Credential for this run only, overriding the target's |
+| `-p, --path <NAME>` | Named path for this run only, overriding the target's |
 | `-n, --no-build` | Skip the build step and upload what is already built |
 | `-b, --backup` | Archive the remote directory before touching it |
 | `-c, --clear` | Empty the remote directory before uploading |
@@ -25,14 +25,18 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 
 ## What happens
 
-1. **Resolve.** The app comes from the argument or the current directory; the target server from `--server` or the app's current [binding](/turnout/reference/use/); the [credential](/turnout/reference/credential/) and [path](/turnout/reference/path/) from the server's own settings, unless `--credential` or `--path` name others for this run.
+1. **Resolve.** `TARGET` is a [target](/turnout/reference/target/) name (`myapp-prod`) or an app name (`myapp`, using that app's target on its current [binding](/turnout/reference/use/)). With no argument, the app comes from the current directory and the server from its binding; if that pair has a target, it is used. If it does not, turnout asks which path to deploy into on a terminal, then offers to save the answer as a target so it is asked once rather than every time. `--server`, `--credential` or `--path` override the resolved target's fields for this run only.
 2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy. The build tool's own output streams through unchanged.
 3. **Plan.** The artifact directory is walked to count files and bytes, so the upload can report a percentage and an ETA. An empty artifact directory aborts the deploy before anything is sent.
 4. **Connect.** SSH to the server's host and port as the credential's user, with the credential's key file or the password stored in the keyring under its name.
 5. **Backup** *(only with `--backup`)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/).
 6. **Clear** *(only with `--clear`)*: the target directory is emptied.
 7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
-8. **Restart.** If the path has a post-write command, it runs on the server and its output is shown.
+8. **Restart.** If the path has a post-write command, it runs on the server **in the deploy directory** and its output is shown - a command does not need its own `cd` to reach the files it just received.
+
+:::note[Interrupted after the upload]
+A deploy that fails between the upload and the restart says so explicitly: the files are already on the server, but the service is still running what it had. Run `turnout deploy` again, or restart by hand if the new files are already good enough.
+:::
 
 ## How the upload travels
 
@@ -104,7 +108,7 @@ turnout app edit myapp --dist dist                # what to upload
 turnout server add prod --url https://prod.example.com --host prod.example.com
 turnout credential add prod-deploy --user deploy
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
-turnout server edit prod --credential prod-deploy --deploy-path myapp=wwwroot
+turnout target add --app myapp --server prod --credential prod-deploy --path wwwroot
 echo "$PASSWORD" | turnout pass set prod-deploy   # for a password credential
 ```
 
@@ -114,9 +118,10 @@ Setting a *POSIX* remote directory from Git Bash needs care: it rewrites `/var/w
 
 ```bash
 turnout deploy                          # from the project dir, to the bound server
-turnout deploy myapp --server prod      # explicit target
-turnout deploy myapp --backup --clear   # archive, then clean, then upload
-turnout deploy myapp --no-build         # upload what is already built
-turnout deploy myapp -s prod -p staging-root   # this run only: a different path
-turnout deploy myapp -s prod -C root           # this run only: a different login
+turnout deploy myapp-prod               # by target name, from any directory
+turnout deploy myapp --server prod      # by app name, on a chosen server
+turnout deploy myapp-prod --backup --clear   # archive, then clean, then upload
+turnout deploy myapp-prod --no-build         # upload what is already built
+turnout deploy myapp-prod -p staging-root    # this run only: a different path
+turnout deploy myapp-prod -C root            # this run only: a different login
 ```

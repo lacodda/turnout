@@ -735,64 +735,133 @@ fn run_resolves_app_from_current_directory() {
 }
 
 #[test]
-fn server_edit_points_apps_at_named_paths() {
+fn a_target_names_the_whole_deploy() {
     let (dir, project) = workspace();
     add_staging(dir.path());
     add_path(dir.path());
+    add_credential(dir.path());
     turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
     turnout(dir.path())
         .args(["path", "edit", "wwwroot", "--restart", "systemctl restart myapp"])
         .assert()
         .success();
+    // The name is generated from the two the user already chose.
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
         .assert()
-        .success();
+        .success()
+        .stdout(predicate::str::contains("myapp-staging"));
+    turnout(dir.path()).args(["target", "show", "myapp-staging"]).assert().success().stdout(
+        predicate::str::contains("myapp")
+            .and(predicate::str::contains("staging"))
+            .and(predicate::str::contains("/var/www/myapp")),
+    );
+    // The server reads the relationship back the other way round now.
     turnout(dir.path())
         .args(["server", "show", "staging"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("myapp: wwwroot").and(predicate::str::contains("/var/www/myapp")));
+        .stdout(predicate::str::contains("myapp-staging"));
     turnout(dir.path())
         .args(["path", "show", "wwwroot"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("systemctl restart myapp").and(predicate::str::contains("staging/myapp")));
-    // Both halves of the pair have to exist before the link can be made.
+        .stdout(predicate::str::contains("systemctl restart myapp").and(predicate::str::contains("myapp-staging")));
+
+    // Every part has to exist before a target can name it.
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "myapp=ghost"])
+        .args([
+            "target",
+            "add",
+            "other",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "ghost",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no path named 'ghost'"));
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "ghost=wwwroot"])
+        .args([
+            "target",
+            "add",
+            "other",
+            "--app",
+            "ghost",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains("no app named 'ghost'"));
+
+    // A rename keeps the route and moves only the handle.
+    turnout(dir.path()).args(["target", "rename", "myapp-staging", "live"]).assert().success();
+    turnout(dir.path())
+        .args(["target", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("live").and(predicate::str::contains("myapp-staging").not()));
 }
 
 /// Removing a path unlinks the servers that deployed into it, and says so -
 /// but never touches the directory on the server itself.
 #[test]
-fn path_remove_unlinks_servers() {
+fn path_remove_takes_the_targets_that_used_it() {
     let (dir, project) = workspace();
     add_staging(dir.path());
     add_path(dir.path());
+    add_credential(dir.path());
     turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
         .assert()
         .success();
     turnout(dir.path())
         .args(["path", "remove", "wwwroot", "--yes"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("the directory on the server is untouched"));
+        // Named before the deletion, so the user knows what went with it - and
+        // the directory on the server is still explicitly untouched.
+        .stdout(predicate::str::contains("myapp-staging").and(predicate::str::contains("the directory on the server is untouched")));
+    // A target pointing at a path that no longer exists could not deploy, so it
+    // does not survive as a dangling name.
     turnout(dir.path())
-        .args(["server", "show", "staging"])
+        .args(["target", "list"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("wwwroot").not());
+        .stdout(predicate::str::contains("No targets yet"));
 }
 
 /// A key file is enough to mean key authentication, and `credential show` must
@@ -858,7 +927,7 @@ fn backup_and_restore_validate_preconditions() {
         .args(["restore", "myapp", "--server", "staging", "--list"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no path for 'myapp'"));
+        .stderr(predicate::str::contains("no target for 'myapp' on 'staging'"));
 }
 
 #[test]
@@ -870,7 +939,7 @@ fn deploy_validates_its_preconditions() {
         .args(["deploy", "myapp", "--no-build"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("pass --server or bind"));
+        .stderr(predicate::str::contains("name a target").and(predicate::str::contains("--server")));
     turnout(dir.path())
         .args(["deploy", "myapp", "--server", "staging", "--no-build"])
         .assert()
@@ -881,14 +950,31 @@ fn deploy_validates_its_preconditions() {
         .args(["server", "edit", "staging", "--credential", "deploy"])
         .assert()
         .success();
+    // No target for the pair yet, and no terminal to pick a path on: the way
+    // out has to be sayable without a prompt.
     turnout(dir.path())
         .args(["deploy", "myapp", "--server", "staging", "--no-build"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("no path for 'myapp'"));
+        .stderr(
+            predicate::str::contains("no target for 'myapp' on 'staging'")
+                .and(predicate::str::contains("turnout target add"))
+                .and(predicate::str::contains("--path")),
+        );
     add_path(dir.path());
     turnout(dir.path())
-        .args(["server", "edit", "staging", "--deploy-path", "myapp=wwwroot"])
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
         .assert()
         .success();
     turnout(dir.path())
@@ -896,6 +982,51 @@ fn deploy_validates_its_preconditions() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("no artifact directory"));
+    // And by the target's own name, from anywhere - the point of naming it.
+    turnout(dir.path())
+        .args(["deploy", "myapp-staging", "--no-build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no artifact directory"));
+}
+
+/// A target whose server or path was removed behind its back has to say which
+/// target broke, not just which name is missing.
+#[test]
+fn a_target_naming_a_missing_entity_says_which_target() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_credential(dir.path());
+    add_path(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "live",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+    // Every command that removes an entity takes the targets that named it, so
+    // a dangling target cannot be produced through the CLI at all. It can still
+    // arrive by hand - an edited catalog, a half-merged import - which is
+    // exactly when naming the broken target is worth the most.
+    let catalog = dir.path().join("targets.json");
+    let edited = std::fs::read_to_string(&catalog).unwrap().replace("\"wwwroot\"", "\"gone\"");
+    std::fs::write(&catalog, edited).unwrap();
+    turnout(dir.path()).args(["deploy", "live", "--no-build"]).assert().failure().stderr(
+        predicate::str::contains("target 'live'")
+            .and(predicate::str::contains("gone"))
+            .and(predicate::str::contains("turnout path list")),
+    );
 }
 
 /// The overrides exist so a one-off deploy does not require editing the server
@@ -1012,11 +1143,30 @@ fn complete_lists_live_entity_names() {
 
     turnout(dir.path()).args(["complete", "apps"]).assert().success().stdout("web\n");
     turnout(dir.path()).args(["complete", "servers"]).assert().success().stdout("staging\n");
+    // `use` accepts apps and groups together - its own kind since v0.11.0, when
+    // "targets" became the name of the deploy-target catalog.
     turnout(dir.path())
-        .args(["complete", "targets"])
+        .args(["complete", "bindable"])
         .assert()
         .success()
         .stdout(predicate::str::contains("web").and(predicate::str::contains("contour")));
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "web-staging",
+            "--app",
+            "web",
+            "--server",
+            "staging",
+            "--credential",
+            "deployer",
+            "--path",
+            "webroot",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["complete", "targets"]).assert().success().stdout("web-staging\n");
     // The two catalogs born in the v0.9 split complete too - their absence
     // went unnoticed until v0.10.1.
     turnout(dir.path()).args(["complete", "credentials"]).assert().success().stdout("deployer\n");

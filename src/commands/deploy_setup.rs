@@ -12,7 +12,7 @@ use std::path::Path;
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input, Password, Select};
 
-use crate::model::{App, Auth, Credential, Server, parse_host, validate_name, validate_remote_path};
+use crate::model::{App, Auth, Credential, Server, Target, parse_host, unique_target_name, validate_name, validate_remote_path};
 use crate::{pick, secrets, store};
 
 pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> {
@@ -21,6 +21,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
     let mut servers = store::load_servers()?;
     let mut credentials = store::load_credentials()?;
     let mut paths = store::load_paths()?;
+    let mut targets = store::load_targets()?;
     let state = store::load_state()?;
 
     let app_name = match app_name {
@@ -90,8 +91,11 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
     let credential_name = choose_credential(&mut credentials, servers[server_index].credential.as_deref())?;
     let credential_index = credentials.iter().position(|c| c.name == credential_name).expect("just chosen or created");
 
-    // 4. Where the files land, as a named path.
-    let path_name = choose_path(&mut paths, servers[server_index].deploy.get(&app_name).map(String::as_str))?;
+    // 4. Where the files land, as a named path. The target that already exists
+    //    for this pair, if any, pre-selects it - re-running the wizard is then a
+    //    confirmation rather than a re-entry.
+    let existing = targets.iter().find(|t| t.app == app_name && t.server == server_name).cloned();
+    let path_name = choose_path(&mut paths, existing.as_ref().map(|t| t.path.as_str()))?;
 
     // 5. The secret, only when this credential logs in by password.
     let mut secret_to_save = None;
@@ -123,22 +127,47 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
             host,
             port,
             credential: &credential_name,
-            path: &path_name,
         },
     );
     if allowed {
         println!("  Allowed '{server_name}' for '{app_name}'.");
     }
+
+    // The wizard's whole output is a deploy target, so it ends by writing one -
+    // updating the pair's existing target rather than opening a second one for
+    // the same route.
+    let target_name = match existing {
+        Some(existing) => {
+            let entry = targets.iter_mut().find(|t| t.name == existing.name).expect("just found");
+            entry.credential = credential_name.clone();
+            entry.path = path_name.clone();
+            existing.name
+        }
+        None => {
+            let name = unique_target_name(&app_name, &server_name, &targets);
+            targets.push(Target {
+                name: name.clone(),
+                app: app_name.clone(),
+                server: server_name.clone(),
+                credential: credential_name.clone(),
+                path: path_name.clone(),
+            });
+            targets.sort_by(|a, b| a.name.cmp(&b.name));
+            name
+        }
+    };
+
     store::save_apps(&apps)?;
     store::save_servers(&servers)?;
     store::save_credentials(&credentials)?;
     store::save_paths(&paths)?;
+    store::save_targets(&targets)?;
     if let Some(secret) = secret_to_save {
         secrets::set(&credential_name, &secret)?;
     }
 
     println!("Done. Deploy with:");
-    println!("  turnout deploy {app_name} --server {server_name}");
+    println!("  turnout deploy {target_name}");
     Ok(())
 }
 
@@ -236,7 +265,6 @@ struct Answers<'a> {
     host: Option<String>,
     port: u16,
     credential: &'a str,
-    path: &'a str,
 }
 
 /// Write the answers onto the app and the server. Returns whether the server
@@ -251,7 +279,6 @@ fn apply(app: &mut App, server: &mut Server, answers: Answers) -> bool {
     server.host = answers.host;
     server.port = answers.port;
     server.credential = Some(answers.credential.to_string());
-    server.deploy.insert(app.name.clone(), answers.path.to_string());
     allowed
 }
 
@@ -280,7 +307,6 @@ mod tests {
             port: 22,
             accept_invalid_certs: false,
             credential: None,
-            deploy: BTreeMap::new(),
             shell: None,
         }
     }
@@ -291,7 +317,6 @@ mod tests {
             host: Some("prod.example.com".into()),
             port: 2222,
             credential: "deploy",
-            path: "wwwroot",
         }
     }
 
@@ -300,7 +325,6 @@ mod tests {
         let (mut app, mut server) = (an_app(&[]), a_server());
         apply(&mut app, &mut server, answers());
         assert_eq!(app.dist_dir.as_deref(), Some("dist"));
-        assert_eq!(server.deploy.get("web").map(String::as_str), Some("wwwroot"));
         assert_eq!(server.credential.as_deref(), Some("deploy"));
         assert_eq!(server.host.as_deref(), Some("prod.example.com"));
         assert_eq!(server.port, 2222);

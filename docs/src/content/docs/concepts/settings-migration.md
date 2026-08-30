@@ -19,6 +19,16 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 3: targets
+
+**v0.11.0** pulled the app-to-path map out of the server and into its own entity, the [target](/turnout/reference/target/). A schema-2 directory has that map spread across every server as `server.deploy[app] = path`; migrating to schema 3 walks each one and creates a target named `{app}-{server}` for every entry, carrying over the server's own credential.
+
+A `deploy` entry on a server that has no credential set converts to nothing - there is no login to give the target - and the migration says so by name, so the route can be re-created once a credential exists.
+
+Unlike schema 1 to 2, this step runs automatically rather than refusing: schema 1 to 2 needed a `user@host` split into pieces you would have to name yourself, and turnout has no way to guess names you will recognize. A target's name, by contrast, is joined entirely from names you already chose - the app's and the server's - so `{app}-{server}` is a name you would likely have picked anyway, not an invention.
+
+[`turnout export`](/turnout/reference/export/) and [`turnout import`](/turnout/reference/import/) moved to format 3 alongside it. Importing a format-2 file converts its routes into targets the same way, at import time.
+
 ## When a change cannot be migrated
 
 Sometimes the new shape needs information the old one does not contain, and inventing it would be worse than stopping. That is what happened in **v0.9.0**: a server used to carry one `user@host` and an inline directory per app, and those became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/) - named entities. turnout has no way to pick names you will still recognize six months from now.

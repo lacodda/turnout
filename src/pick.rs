@@ -16,7 +16,7 @@ use std::io::IsTerminal;
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Select};
 
-use crate::model::{App, Credential, Group, Server, State};
+use crate::model::{App, Credential, Group, Server, State, Target};
 
 pub fn interactive() -> bool {
     std::io::stdin().is_terminal() && std::io::stderr().is_terminal()
@@ -151,6 +151,21 @@ pub fn credential(credentials: &[Credential], prompt: &str) -> Result<String> {
     let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = credentials.iter().map(|c| format!("{:width$}  {}@  {}", c.name, c.user, c.auth)).collect();
     Ok(credentials[select(prompt, &labels)?].name.clone())
+}
+
+/// Pick a deploy target by name, showing the whole tuple so two targets of one
+/// app on one server are told apart.
+pub fn target(targets: &[Target], prompt: &str) -> Result<String> {
+    if targets.is_empty() {
+        bail!("no targets yet - run `turnout target add` first");
+    }
+    ensure_interactive("target name is required")?;
+    let width = targets.iter().map(|t| t.name.len()).max().unwrap_or(0);
+    let labels: Vec<String> = targets
+        .iter()
+        .map(|t| format!("{:width$}  {} -> {}  ({})", t.name, t.app, t.server, t.path))
+        .collect();
+    Ok(targets[select(prompt, &labels)?].name.clone())
 }
 
 /// Pick a path by name, showing the directory so two roles are told apart.

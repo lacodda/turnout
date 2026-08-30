@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, Credential, Group, Server, State};
+use crate::model::{App, Credential, Group, Server, State, Target};
 use crate::paths;
 
 const META_FILE: &str = "meta.json";
@@ -13,6 +13,7 @@ const APPS_FILE: &str = "apps.json";
 const SERVERS_FILE: &str = "servers.json";
 const CREDENTIALS_FILE: &str = "credentials.json";
 const PATHS_FILE: &str = "paths.json";
+const TARGETS_FILE: &str = "targets.json";
 const GROUPS_FILE: &str = "groups.json";
 const STATE_FILE: &str = "state.json";
 use crate::migrate::CURRENT_VERSION as SCHEMA_VERSION;
@@ -165,6 +166,14 @@ pub fn load_paths() -> Result<Vec<crate::model::Path>> {
 
 pub fn save_paths(paths: &[crate::model::Path]) -> Result<()> {
     save_catalog(PATHS_FILE, paths)
+}
+
+pub fn load_targets() -> Result<Vec<Target>> {
+    load_catalog(TARGETS_FILE)
+}
+
+pub fn save_targets(targets: &[Target]) -> Result<()> {
+    save_catalog(TARGETS_FILE, targets)
 }
 
 pub fn load_groups() -> Result<Vec<Group>> {

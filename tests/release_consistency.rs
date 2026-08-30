@@ -270,4 +270,24 @@ mod tests {
             );
         }
     }
+
+    /// The `turnout status` sample in the README prints a version number, and a
+    /// version number in prose goes stale the moment the next release ships.
+    /// Checked here rather than by eye: the doc sweep at the end of a stage is
+    /// the step most likely to be rushed, and this is the one line in the README
+    /// that is wrong by default.
+    #[test]
+    fn the_readme_sample_shows_the_current_version() {
+        let readme = read("README.md");
+        let version = cargo_field("version");
+        let stale: Vec<&str> = readme
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("turnout 0.") && !line.contains(&version))
+            .collect();
+        assert!(
+            stale.is_empty(),
+            "the README shows an old version in a sample: {stale:?} (this release is {version})"
+        );
+    }
 }

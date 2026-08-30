@@ -195,11 +195,51 @@ impl Dialect {
     pub fn and_then(&self, first: &str, second: &str) -> String {
         format!("{first} && {second}")
     }
+
+    /// Run `command` with `dir` as the working directory.
+    ///
+    /// A path's post-write command is defined as "what to do after writing to
+    /// this directory", so it runs *in* that directory - up to v0.10 it ran
+    /// wherever the SSH session landed, which is the home directory, and every
+    /// path had to open with a `cd` of its own to compensate.
+    ///
+    /// `cd` on Windows does not change drive unless told to: `cd C:\\site` from
+    /// `D:` prints the path and stays put, so a compose file on another drive
+    /// would never be found. `/d` is what makes it move.
+    pub fn run_in(&self, dir: &str, command: &str) -> String {
+        let quoted = self.quote(dir);
+        match self {
+            Dialect::Posix => format!("cd {quoted} && {command}"),
+            Dialect::Windows => format!("cd /d {quoted} && {command}"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{Dialect, PROBE, read_probe};
+
+    /// A path's post-write command runs in the deploy directory, which is what
+    /// "after writing here" always meant. The Windows form needs `/d` or it
+    /// silently stays on the current drive.
+    #[test]
+    fn a_command_runs_in_the_directory_it_belongs_to() {
+        assert_eq!(
+            Dialect::Posix.run_in("/srv/app", "docker compose up -d"),
+            "cd '/srv/app' && docker compose up -d"
+        );
+        let windows = Dialect::Windows.run_in("C:\\site", "docker compose up -d");
+        assert_eq!(windows, "cd /d \"C:\\site\" && docker compose up -d");
+        assert!(windows.contains("/d"), "without /d cmd.exe does not change drive: {windows}");
+    }
+
+    /// A directory with a space in it is one argument, or the command runs
+    /// somewhere else entirely.
+    #[test]
+    fn a_directory_with_a_space_stays_one_argument() {
+        assert_eq!(Dialect::Posix.run_in("/srv/my app", "ls"), "cd '/srv/my app' && ls");
+        assert_eq!(Dialect::Windows.run_in("C:\\my site", "dir"), "cd /d \"C:\\my site\" && dir");
+    }
 
     /// The probe has to survive both shells, so it may not contain syntax that
     /// one of them would choke on: no quotes, no redirection, no operators.
