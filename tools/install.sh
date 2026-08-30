@@ -36,7 +36,7 @@ fi
 case "$TAG" in
     v[0-9]*) ;;
     *)
-        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a tag like v0.10.4" >&2
+        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a tag like v0.11.0" >&2
         exit 1
         ;;
 esac

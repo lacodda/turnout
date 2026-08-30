@@ -7,10 +7,34 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.11.0] - 2026-08-30
+
+### Breaking Changes
+
+- **Address a deploy by a named target instead of a field on the server**
+`turnout server edit --deploy-path` is gone and `Server`
+no longer has a `deploy` field. Data directories migrate automatically
+from schema 2 to 3: every `server.deploy[app] = path` becomes a target
+named `{app}-{server}`, taking the server's credential. A server with a
+deploy entry but no credential could never have deployed and yields no
+target - the migration names those so they can be re-created. Export and
+import move to format 3; a format-2 file converts its routes on import.
+
+Naming things here does not contradict the schema-1 refusal. That one had
+to invent a credential out of a `user@host` string, producing names like
+`prod-cred-1` that mean nothing months later. Both halves of
+`{app}-{server}` were typed by the user; this joins them, through the
+same generator the interactive prompt uses. ADR 0013.
+
+### Features
+- Address a deploy by a named target instead of a field on the server
 ## [0.10.4] - 2026-08-27
 
 ### Bug Fixes
 - Make the tn alias a link instead of a copy of the binary
+
+### Testing
+- Assert each platform's paths on that platform
 ## [0.10.3] - 2026-08-19
 
 ### Bug Fixes
