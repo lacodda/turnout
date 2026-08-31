@@ -1,6 +1,6 @@
 [package]
 name = "turnout"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 rust-version = "1.88"
 description = "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory"
@@ -70,6 +70,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 assert_cmd = "2"
 axum = { version = "0.8", features = ["ws"] }
+directories = "6"
 futures-util = { version = "0.3.33", default-features = false, features = ["std", "sink"] }
 predicates = "3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }

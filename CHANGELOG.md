@@ -7,6 +7,10 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.12.0] - 2026-08-31
+
+### Features
+- Set up SSH key access with one command
 ## [0.11.0] - 2026-08-30
 
 ### Breaking Changes
