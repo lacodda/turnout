@@ -4,6 +4,7 @@ mod commands;
 mod detect;
 mod gateway;
 mod journal;
+mod keysetup;
 mod migrate;
 mod model;
 mod paths;
@@ -45,6 +46,10 @@ fn main() {
         cli::Command::Path { command } => commands::path::run(command),
         cli::Command::Target { command } => commands::target::run(command),
         cli::Command::Pass { command } => commands::pass::run(command),
+        cli::Command::Key { command } => match command {
+            cli::KeyCommand::Setup { server, credential, key } => commands::key::setup(server, credential, key),
+            cli::KeyCommand::Check { server, credential } => commands::key::check(server, credential),
+        },
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),

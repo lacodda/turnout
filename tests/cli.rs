@@ -1709,3 +1709,45 @@ fn a_current_data_directory_migrates_nothing() {
         .collect();
     assert!(backups.is_empty(), "no backup folder should appear for a no-op");
 }
+
+/// A live run against a real stand found this: with no password stored,
+/// `key setup` generated a key pair, wrote it to `~/.ssh`, and only *then*
+/// failed on the missing password. The user was left with a key they never
+/// asked for - and the next attempt refused to start because that key was in
+/// the way.
+///
+/// Nothing may be created until there is a way to sign in. The test names the
+/// key file the command would use and asserts it is not there afterwards.
+#[test]
+fn key_setup_writes_no_key_when_it_cannot_sign_in() {
+    let (dir, _project) = workspace();
+    add_staging(dir.path());
+    // A password credential with nothing in the (isolated, file-backed)
+    // keyring: the exact shape the live run hit.
+    turnout(dir.path())
+        .args(["credential", "add", "keyless", "--user", "deploy", "--auth", "password"])
+        .assert()
+        .success();
+
+    let home = directories::UserDirs::new().expect("a home directory");
+    let would_write = home.home_dir().join(".ssh").join("id_ed25519_keyless");
+    assert!(!would_write.exists(), "the test's own key path must start clean: {}", would_write.display());
+
+    turnout_secrets(dir.path())
+        .args(["key", "setup", "staging", "--credential", "keyless"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no password stored"))
+        .stderr(predicate::str::contains("turnout pass set keyless"));
+
+    assert!(
+        !would_write.exists(),
+        "a key was written before the sign-in was known to be possible: {}",
+        would_write.display()
+    );
+    assert!(
+        !would_write.with_extension("pub").exists(),
+        "the public half was left behind: {}",
+        would_write.display()
+    );
+}

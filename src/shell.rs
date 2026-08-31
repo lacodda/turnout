@@ -213,6 +213,69 @@ impl Dialect {
             Dialect::Windows => format!("cd /d {quoted} && {command}"),
         }
     }
+
+    /// Print a file's contents; a missing file yields empty output, not an
+    /// error.
+    ///
+    /// Reading `authorized_keys` before writing to it is what makes key setup
+    /// repeatable: the key is appended only when it is not already there, so
+    /// running the command twice leaves one entry rather than two.
+    pub fn read_file(&self, path: &str) -> String {
+        let quoted = self.quote(path);
+        match self {
+            Dialect::Posix => format!("cat {quoted} 2>/dev/null || true"),
+            Dialect::Windows => format!("type {quoted} 2>nul & exit /b 0"),
+        }
+    }
+
+    /// Append one line to a file, creating it if it does not exist.
+    ///
+    /// The line is a public key: base64 and spaces, never a quote or a percent
+    /// sign, and [`Dialect::reject_unquotable`] is called on it anyway before
+    /// it gets here.
+    ///
+    /// `>>` means the same thing in both shells. What differs is `echo`:
+    /// `cmd.exe` would take the quotes as part of the text, so the Windows arm
+    /// writes the line bare - safe here because a public key carries no
+    /// character `cmd.exe` treats specially. It also has no trailing-space
+    /// problem to dodge, since the line ends in the comment.
+    pub fn append_line(&self, path: &str, line: &str) -> String {
+        match self {
+            Dialect::Posix => format!("echo {} >> {}", self.quote(line), self.quote(path)),
+            Dialect::Windows => format!("echo {line}>>{}", self.quote(path)),
+        }
+    }
+
+    /// The absolute home directory of the account that just logged in.
+    ///
+    /// Needed because `~` is a POSIX shell expansion that `cmd.exe` does not
+    /// have, and because the remote home is not guessable from the user name:
+    /// it can be `/home/pi`, `/root`, `C:\Users\deploy`, or anything an
+    /// administrator chose.
+    pub fn home_dir(&self) -> &'static str {
+        match self {
+            Dialect::Posix => "echo $HOME",
+            Dialect::Windows => "echo %USERPROFILE%",
+        }
+    }
+
+    /// Restrict `~/.ssh` and `authorized_keys` to their owner.
+    ///
+    /// sshd refuses a key whose file anyone else can write, and says so only in
+    /// its own log - the client just sees another password prompt. So the
+    /// permissions are set as part of installing the key rather than left for
+    /// the user to discover.
+    ///
+    /// On Windows this is *not* the same file: see
+    /// [`AuthorizedKeysFile::administrators`].
+    pub fn restrict_to_owner(&self, dir: &str, file: &str) -> String {
+        match self {
+            Dialect::Posix => format!("chmod 700 {} && chmod 600 {}", self.quote(dir), self.quote(file)),
+            // Break inheritance (/inheritance:r), then grant exactly the two
+            // principals sshd tolerates. `icacls` reports its own failures.
+            Dialect::Windows => format!("icacls {} /inheritance:r /grant \"%USERNAME%\":F /grant \"SYSTEM\":F", self.quote(file)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -239,6 +302,56 @@ mod tests {
     fn a_directory_with_a_space_stays_one_argument() {
         assert_eq!(Dialect::Posix.run_in("/srv/my app", "ls"), "cd '/srv/my app' && ls");
         assert_eq!(Dialect::Windows.run_in("C:\\my site", "dir"), "cd /d \"C:\\my site\" && dir");
+    }
+
+    /// Reading `authorized_keys` before writing to it is what keeps key setup
+    /// repeatable, so a file that is not there yet must read as empty rather
+    /// than fail the command that is about to create it.
+    #[test]
+    fn reading_a_missing_file_is_not_a_failure() {
+        assert!(Dialect::Posix.read_file("/home/pi/.ssh/authorized_keys").contains("|| true"));
+        assert!(Dialect::Windows.read_file("C:\\ProgramData\\ssh\\x").contains("exit /b 0"));
+    }
+
+    /// The appended line must arrive verbatim: `cmd.exe` would take POSIX
+    /// quotes as part of the text and write them into `authorized_keys`, where
+    /// they break the key silently.
+    #[test]
+    fn a_key_line_is_appended_verbatim() {
+        let line = "ssh-ed25519 AAAAB turnout@desktop";
+        let posix = Dialect::Posix.append_line("/home/pi/.ssh/authorized_keys", line);
+        assert_eq!(posix, "echo 'ssh-ed25519 AAAAB turnout@desktop' >> '/home/pi/.ssh/authorized_keys'");
+
+        let windows = Dialect::Windows.append_line("C:\\ProgramData\\ssh\\administrators_authorized_keys", line);
+        assert!(windows.contains(line), "the line must not be quoted for cmd.exe: {windows}");
+        assert!(!windows.contains(&format!("'{line}'")), "{windows}");
+        // Appending, never truncating: a single `>` would wipe every other key
+        // the server trusts.
+        assert!(windows.contains(">>"), "{windows}");
+        assert!(posix.contains(">>"), "{posix}");
+    }
+
+    /// The home directory is asked for, not guessed: it can be /home/pi, /root
+    /// or C:\Users\deploy, and `~` is not a thing cmd.exe expands.
+    #[test]
+    fn the_home_directory_is_asked_for_in_the_right_dialect() {
+        assert_eq!(Dialect::Posix.home_dir(), "echo $HOME");
+        assert_eq!(Dialect::Windows.home_dir(), "echo %USERPROFILE%");
+    }
+
+    /// sshd refuses a key file others can write and says so only in its own
+    /// log, so the permissions are set as part of installing the key.
+    #[test]
+    fn the_key_file_is_restricted_to_its_owner() {
+        let posix = Dialect::Posix.restrict_to_owner("/home/pi/.ssh", "/home/pi/.ssh/authorized_keys");
+        assert!(posix.contains("chmod 700 '/home/pi/.ssh'"), "{posix}");
+        assert!(posix.contains("chmod 600 '/home/pi/.ssh/authorized_keys'"), "{posix}");
+
+        let windows = Dialect::Windows.restrict_to_owner("C:\\ProgramData\\ssh", "C:\\ProgramData\\ssh\\administrators_authorized_keys");
+        // Inheritance has to be broken first, or the grants sit on top of the
+        // inherited ones and sshd still sees a too-permissive file.
+        assert!(windows.contains("/inheritance:r"), "{windows}");
+        assert!(windows.contains("SYSTEM"), "{windows}");
     }
 
     /// The probe has to survive both shells, so it may not contain syntax that

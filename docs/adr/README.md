@@ -16,3 +16,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0010](0010-entity-split.md) | Servers, credentials and paths as three entities | accepted |
 | [0011](0011-russh-transport.md) | SSH on russh, and one TLS stack (rustls) | accepted |
 | [0012](0012-alias-as-a-link.md) | The short alias is a link, not a second binary | accepted |
+| [0013](0013-named-builds.md) | A deploy target is a named entity, not a field on the server | accepted |
+| [0014](0014-key-setup-is-its-own-command.md) | Key setup is its own command, switching the credential last | accepted |

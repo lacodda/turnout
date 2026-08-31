@@ -75,6 +75,17 @@ impl Session {
         Self::open(&server.ssh_host(), server.port, &credential.user, material)
     }
 
+    /// Open a session authenticating with one named key file, and nothing else.
+    ///
+    /// [`Session::connect`] goes through the credential, which is exactly what
+    /// the key-setup check must not do: it runs *before* the credential is
+    /// switched over, so going through it would sign in with the password and
+    /// prove nothing about the key. Offering only the key is what makes a
+    /// success mean the server accepted it.
+    pub fn open_with_key(host: &str, port: u16, user: &str, key_path: &str, passphrase: Option<&str>) -> Result<Self> {
+        Self::open(host, port, user, key_material(key_path, passphrase)?)
+    }
+
     /// Open a session with already-resolved auth material.
     fn open(host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Self> {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -355,6 +366,19 @@ mod tests {
 
     impl Stand {
         fn spawn() -> Self {
+            Self::spawn_with(true)
+        }
+
+        /// A stand that refuses passwords, the way a hardened sshd does.
+        ///
+        /// This is what makes a key test prove anything: if the server would
+        /// take the password too, a "the key signs in" result could have come
+        /// from either method.
+        fn spawn_key_only() -> Self {
+            Self::spawn_with(false)
+        }
+
+        fn spawn_with(passwords_accepted: bool) -> Self {
             let root = tempfile::tempdir().expect("a scratch directory for the SFTP root");
             let subsystem_opens = Arc::new(AtomicUsize::new(0));
             let served_root = root.path().to_path_buf();
@@ -379,6 +403,7 @@ mod tests {
                     let mut factory = Factory {
                         root: served_root,
                         subsystem_opens: served_opens,
+                        passwords_accepted,
                     };
                     let _ = server::Server::run_on_socket(&mut factory, config, &socket).await;
                 });
@@ -395,6 +420,7 @@ mod tests {
     struct Factory {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
+        passwords_accepted: bool,
     }
 
     impl server::Server for Factory {
@@ -405,6 +431,7 @@ mod tests {
                 root: self.root.clone(),
                 subsystem_opens: self.subsystem_opens.clone(),
                 channels: HashMap::new(),
+                passwords_accepted: self.passwords_accepted,
             }
         }
     }
@@ -413,6 +440,7 @@ mod tests {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
         channels: HashMap<ChannelId, ServerChannel<ServerMsg>>,
+        passwords_accepted: bool,
     }
 
     fn rejected() -> AuthAnswer {
@@ -426,7 +454,7 @@ mod tests {
         type Error = anyhow::Error;
 
         async fn auth_password(&mut self, user: &str, password: &str) -> Result<AuthAnswer, Self::Error> {
-            Ok(if user == USER && password == PASSWORD {
+            Ok(if self.passwords_accepted && user == USER && password == PASSWORD {
                 AuthAnswer::Accept
             } else {
                 rejected()
@@ -615,6 +643,40 @@ mod tests {
 
         let material = key_material(&key_path.display().to_string(), None).expect("load the key file");
         Session::open("127.0.0.1", stand.port, USER, material).expect("key sign-in on loopback");
+    }
+
+    /// The check that ends `turnout key setup` has to prove the *key* works,
+    /// which it can only do on a connection the password could not have opened.
+    /// So the stand here refuses passwords outright, the way a hardened sshd
+    /// does: a pass means the key was accepted and nothing else was.
+    #[test]
+    fn a_named_key_file_signs_in_where_the_password_cannot() {
+        let stand = Stand::spawn_key_only();
+        let scratch = tempfile::tempdir().expect("a scratch directory for the key");
+        let key_path = scratch.path().join("id_ed25519");
+        let openssh = ed25519_key(11, "key-only client")
+            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .expect("serialize the key");
+        std::fs::write(&key_path, openssh.as_bytes()).expect("write the key file");
+
+        // The password is the right one, and still gets nowhere: that is what
+        // makes the next assertion mean something.
+        let refused = Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Password(PASSWORD.into()));
+        assert!(refused.is_err(), "this stand must not accept passwords");
+
+        Session::open_with_key("127.0.0.1", stand.port, USER, &key_path.display().to_string(), None).expect("the key signs in");
+    }
+
+    /// A key that does not exist must fail as a missing file, not as a network
+    /// problem: `key setup` resolves the key before it dials anywhere.
+    #[test]
+    fn a_named_key_that_is_not_there_fails_before_dialing() {
+        let error = match Session::open_with_key("127.0.0.1", 1, USER, "definitely/not/a/key", None) {
+            Ok(_) => panic!("there is no such key"),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("cannot read the key file"), "{error}");
+        assert!(!error.contains("cannot reach"), "the key is resolved before the connection: {error}");
     }
 
     #[test]

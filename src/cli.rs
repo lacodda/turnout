@@ -52,6 +52,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PassCommand,
     },
+    /// Set up SSH key access to a server, so the password is needed once
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     /// Bind an app (or a whole group) to a server - the daily switch command
     Use {
         /// App or group name; picked interactively when omitted
@@ -284,6 +289,30 @@ pub enum PassCommand {
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommand {
+    /// Generate or reuse a key, authorize it on the server, and switch the
+    /// credential to it
+    Setup {
+        /// Server name; picked interactively when omitted
+        server: Option<String>,
+        /// Credential to give key access (defaults to the server's)
+        #[arg(short, long)]
+        credential: Option<String>,
+        /// Existing private key file to authorize instead of generating one
+        #[arg(short = 'K', long, value_name = "PATH")]
+        key: Option<String>,
+    },
+    /// Check that a credential's key signs in to a server
+    Check {
+        /// Server name; picked interactively when omitted
+        server: Option<String>,
+        /// Credential to check (defaults to the server's)
+        #[arg(short, long)]
+        credential: Option<String>,
     },
 }
 

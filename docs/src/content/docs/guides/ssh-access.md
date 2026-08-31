@@ -1,0 +1,147 @@
+---
+title: SSH Access with Keys
+description: Prepare a Linux or Windows server for key-based SSH, then hand the rest to turnout.
+sidebar:
+  order: 2
+---
+
+Deploying needs SSH access, and passwords are the wrong way to have it: they get typed, pasted, stored in three places and reused. This guide gets you from "I have a password for this server" to "turnout signs in with a key", on both kinds of server turnout deploys to.
+
+Most of it is one command. The rest is what the server needs to be true *before* that command can work.
+
+## The short version
+
+If SSH already works with a password:
+
+```bash
+turnout pass set prod-deploy    # store the password once
+turnout key setup prod          # generate a key, authorize it, switch over
+```
+
+That is the whole thing. [`turnout key setup`](/turnout/reference/key/) generates an ed25519 key, signs in with the password one last time, writes the public half to the right file, checks that the key really signs in, and only then switches the credential to it.
+
+If it fails, it says which file it wrote to and why the server is likely refusing - and it leaves the credential on its password, so nothing is lost.
+
+The rest of this guide is for when the server is not ready yet.
+
+## Preparing a Linux server
+
+### 1. sshd must accept keys
+
+```bash
+sudo grep -E '^\s*(PubkeyAuthentication|AuthorizedKeysFile)' /etc/ssh/sshd_config
+```
+
+`PubkeyAuthentication yes` is the default and usually absent from the file entirely, which is fine. If it is there set to `no`, change it and restart:
+
+```bash
+sudo systemctl restart ssh
+```
+
+### 2. The home directory must not be group-writable
+
+This is the single most common reason a correctly installed key is ignored. sshd refuses to read `authorized_keys` if the path to it can be written by anyone but the owner - and it says so only in its own log:
+
+```bash
+chmod go-w ~
+chmod 700 ~/.ssh
+```
+
+turnout sets the permissions on `~/.ssh` and `authorized_keys` itself; the home directory above them is yours to fix.
+
+### 3. Password sign-in has to work once
+
+The first connection carries the key, so it needs the password:
+
+```bash
+turnout credential add prod-deploy --user deploy
+turnout pass set prod-deploy
+turnout key setup prod
+```
+
+If the server has already disabled password auth, generate the key elsewhere and install it by hand, then point turnout at it:
+
+```bash
+turnout key setup prod --key ~/.ssh/id_ed25519
+```
+
+With the key already authorized, `setup` finds it in place, skips the append, and just checks and switches over.
+
+## Preparing a Windows server
+
+Windows OpenSSH is not Linux OpenSSH with different paths. Two things differ enough to matter.
+
+### Administrators use a different file
+
+If the account is in the administrators group, sshd reads **only**:
+
+```
+C:\ProgramData\ssh\administrators_authorized_keys
+```
+
+A key in that account's own `C:\Users\<name>\.ssh\authorized_keys` is ignored silently - the sign-in simply keeps asking for the password, which looks exactly like a wrong key. This is set up by the `Match Group administrators` block at the end of the default `sshd_config`, and the deploy account on a Windows stand usually *is* an administrator.
+
+`turnout key setup` asks the server which case it is in and writes to the file that will be read.
+
+### The ACL is enforced
+
+That shared file must grant nothing beyond its owner and SYSTEM. turnout sets it:
+
+```
+icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "%USERNAME%":F /grant "SYSTEM":F
+```
+
+Breaking inheritance first is the part that is easy to miss by hand - grants added on top of inherited ones still leave the file too permissive, and sshd still refuses it.
+
+### Check the service
+
+```powershell
+Get-Service sshd
+Get-Content C:\ProgramData\ssh\sshd_config | Select-String 'PubkeyAuthentication|administrators'
+```
+
+After changing `sshd_config`:
+
+```powershell
+Restart-Service sshd
+```
+
+See [Windows servers](/turnout/concepts/windows-servers/) for what else changes when a stand answers with `cmd.exe`.
+
+## Verifying and re-checking
+
+```bash
+turnout key check prod
+```
+
+This signs in with the credential's key and nothing else, so a pass means the key works - not that *something* worked. Run it after changing anything on the server; it is faster than finding out during a deploy.
+
+## Using one key on several servers
+
+A credential is not bound to a server, and neither is its key. Authorize the same key on the next stand:
+
+```bash
+turnout key setup staging --credential prod-deploy
+```
+
+The existing key is reused rather than replaced - a second key for the same account would be one more thing to rotate.
+
+## Protecting the key with a passphrase
+
+turnout reads the passphrase from the OS keyring under the credential's name:
+
+```bash
+turnout pass set prod-deploy    # for an auth = key credential, this is the passphrase
+```
+
+A key generated by `turnout key setup` has no passphrase; add one with `ssh-keygen -p -f ~/.ssh/id_ed25519_prod-deploy` and store it as above.
+
+## After the switch
+
+The password stays in the keyring, unused but valid - it is the way back in if the key is ever lost. When you are sure:
+
+```bash
+turnout pass remove prod-deploy
+```
+
+The credential itself stays; only the stored secret goes.
