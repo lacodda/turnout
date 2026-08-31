@@ -18,8 +18,15 @@
 //!
 //! The one seam is [`self_update`](crate::commands::self_update): replacing the
 //! binary renames the old file aside and moves a new one in, which breaks the
-//! link - the alias would keep pointing at the outgoing file. So an update
+//! link - the other name would keep pointing at the outgoing file. So an update
 //! re-links afterwards, which is what [`refresh`] is for.
+//!
+//! Which name needs repairing depends on which one was typed. `self-update`
+//! replaces the file it is *running from*, so an update launched as `tn`
+//! replaces `tn` and leaves `turnout` behind, exactly mirroring the usual case.
+//! Both are handled by asking for the [`counterpart`] rather than for "the
+//! alias" - see the field report in that function's documentation for what
+//! asking the wrong question cost.
 
 use std::path::{Path, PathBuf};
 
@@ -28,13 +35,51 @@ use anyhow::{Context, Result};
 /// The alias name, without any platform extension.
 pub const ALIAS: &str = "tn";
 
+/// The primary name, without any platform extension.
+pub const PRIMARY: &str = "turnout";
+
 /// Where the alias sits for a binary at `exe`: same directory, same extension.
+///
+/// This is the rule the installers follow when they create `tn`, kept here so
+/// the tests state it in one place. The update path does not use it - it asks
+/// for the [`counterpart`] instead, because "the alias" is the wrong thing to
+/// look for when the alias is the name being replaced.
+#[cfg(test)]
 pub fn path_beside(exe: &Path) -> PathBuf {
-    let mut alias = exe.with_file_name(ALIAS);
+    sibling_named(exe, ALIAS)
+}
+
+/// The *other* name of this install: the alias when running as `turnout`, and
+/// `turnout` when running as the alias.
+///
+/// An update replaces the file it is running from, whatever that file is
+/// called. Asking for "the alias" is therefore the wrong question when the
+/// update was launched as `tn`: the alias is then the running name, already
+/// replaced, and the name left holding the outgoing release is `turnout`.
+/// Worse, linking a name to itself deletes it - [`link`] removes the
+/// destination before creating it, and there is nothing left to link from.
+///
+/// This asks the question that is right either way: which name did the swap
+/// *not* touch?
+pub fn counterpart(exe: &Path) -> Option<PathBuf> {
+    let stem = exe.file_stem()?.to_str()?;
+    let other = match stem {
+        ALIAS => PRIMARY,
+        PRIMARY => ALIAS,
+        // Renamed by the user, or invoked through some other name entirely:
+        // there is no second name we can claim to know about.
+        _ => return None,
+    };
+    Some(sibling_named(exe, other))
+}
+
+/// A path beside `exe` carrying `name` and the same extension.
+fn sibling_named(exe: &Path, name: &str) -> PathBuf {
+    let mut sibling = exe.with_file_name(name);
     if let Some(extension) = exe.extension() {
-        alias.set_extension(extension);
+        sibling.set_extension(extension);
     }
-    alias
+    sibling
 }
 
 /// Point `alias` at `exe`, replacing whatever is already there.
@@ -42,6 +87,14 @@ pub fn path_beside(exe: &Path) -> PathBuf {
 /// Both paths must be on the same volume on Windows, which they are whenever
 /// the alias is created beside the binary.
 pub fn link(exe: &Path, alias: &Path) -> Result<()> {
+    // Linking a name to itself would destroy it: the removal below takes the
+    // only copy, and there is then nothing left to link from. No caller should
+    // ask for this - `counterpart` exists so none does - but the consequence
+    // is a binary that vanishes, which is too expensive to leave to callers.
+    if alias == exe {
+        anyhow::bail!("refusing to link {} to itself", alias.display());
+    }
+
     // A link cannot be created over an existing name, and on Windows the file
     // being replaced may be the previous alias - which is not running, so
     // removing it is allowed.
@@ -61,51 +114,64 @@ pub fn link(exe: &Path, alias: &Path) -> Result<()> {
     result.with_context(|| format!("cannot link {} to {}", alias.display(), exe.display()))
 }
 
-/// Re-point the alias at the binary after an update replaced it.
+/// Re-point this install's *other* name at the binary an update just replaced.
 ///
-/// Best-effort by design: the alias is a convenience, and an install that
+/// `exe` is the file the update replaced - which is whichever name the user
+/// typed, `turnout` or `tn`. The name to repair is therefore the counterpart,
+/// not "the alias": an update launched as `tn` already replaced `tn`, and it is
+/// `turnout` that is left pointing at the outgoing release.
+///
+/// Best-effort by design: the second name is a convenience, and an install that
 /// never had one must not grow one behind the user's back - `TURNOUT_NO_ALIAS`
-/// is their choice to keep. So this only acts when an alias is already there,
-/// and reports what it did for the caller to print.
+/// is their choice to keep. So this only acts when the counterpart is already
+/// there, and reports what it did for the caller to print.
 ///
-/// An existing alias is relinked unconditionally rather than only when it has
+/// An existing link is refreshed unconditionally rather than only when it has
 /// gone stale. Telling the two apart means asking whether two paths are the
 /// same file on disk, which Windows has no stable std API for; relinking is a
 /// directory operation either way, so the check would cost more code than it
 /// saves work - and code that can be wrong about whether a fix is needed.
 pub fn refresh(exe: &Path) -> Outcome {
-    let alias = path_beside(exe);
-    if !alias.exists() {
+    // No counterpart at all means the binary is running under a name we do not
+    // manage; inventing a `tn` beside it would be presumptuous.
+    let Some(other) = counterpart(exe) else {
+        return Outcome::Absent;
+    };
+    if !other.exists() {
         return Outcome::Absent;
     }
-    match link(exe, &alias) {
-        Ok(()) => Outcome::Relinked(alias),
-        Err(err) => Outcome::Failed(alias, err.to_string()),
+    match link(exe, &other) {
+        Ok(()) => Outcome::Relinked(other),
+        Err(err) => Outcome::Failed(other, err.to_string()),
     }
 }
 
 /// What [`refresh`] found and did.
 #[derive(Debug, PartialEq)]
 pub enum Outcome {
-    /// No alias is installed - nothing to refresh.
+    /// This install has only the one name - nothing to refresh.
     Absent,
-    /// The alias was re-pointed at the new binary.
+    /// The second name was re-pointed at the new binary.
     Relinked(PathBuf),
-    /// The alias is installed but could not be re-pointed; it is stale and the
-    /// user has to be told, since it still answers under its own name.
+    /// The second name is installed but could not be re-pointed; it is stale
+    /// and the user has to be told, since it still answers under its own name.
     Failed(PathBuf, String),
 }
 
 impl Outcome {
     /// The line to print after an update, if any.
+    ///
+    /// Phrased around the path rather than the word "alias": an update run as
+    /// `tn` repairs `turnout`, and calling that the alias would name the wrong
+    /// file for the user reading the line.
     pub fn message(&self) -> Option<String> {
         match self {
             Self::Absent => None,
-            Self::Relinked(alias) => Some(format!("Alias {} updated too.", alias.display())),
-            Self::Failed(alias, err) => Some(format!(
+            Self::Relinked(other) => Some(format!("{} updated too.", other.display())),
+            Self::Failed(other, err) => Some(format!(
                 "Warning: {} still points at the previous version and could not be relinked ({err}).\n\
                  Re-run the installer to fix it.",
-                alias.display()
+                other.display()
             )),
         }
     }
@@ -166,6 +232,58 @@ mod tests {
             b"version two",
             "the alias must be the same file as the binary, not a copy of it"
         );
+    }
+
+    /// The question an update has to ask is "which name did I *not* replace",
+    /// and the answer depends on how it was launched.
+    #[test]
+    fn the_counterpart_is_whichever_name_is_not_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join(if cfg!(windows) { "turnout.exe" } else { "turnout" });
+        let alias = path_beside(&primary);
+
+        assert_eq!(counterpart(&primary).unwrap(), alias);
+        assert_eq!(counterpart(&alias).unwrap(), primary);
+    }
+
+    /// A binary the user renamed is not one of ours to pair up: inventing a
+    /// `tn` beside `my-turnout` would create a name nobody asked for.
+    #[test]
+    fn a_renamed_binary_has_no_counterpart() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(counterpart(&dir.path().join("my-turnout")), None);
+    }
+
+    /// The field report of 31.08, at its root: an update launched as `tn`
+    /// asked to link `tn` to itself, and `link` removes the destination before
+    /// creating it - so the file was deleted and there was nothing left to
+    /// link from. `tn` was simply gone.
+    #[test]
+    fn linking_a_name_to_itself_is_refused_rather_than_destroying_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("tn");
+        std::fs::write(&exe, b"the only copy").unwrap();
+
+        assert!(link(&exe, &exe).is_err());
+        assert!(exe.exists(), "the binary must survive a self-link attempt");
+        assert_eq!(std::fs::read(&exe).unwrap(), b"the only copy");
+    }
+
+    /// An update run under the alias repairs the primary name, which is the
+    /// one the swap left on the outgoing release.
+    #[test]
+    fn refreshing_from_the_alias_repairs_the_primary_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = dir.path().join("turnout");
+        let alias = dir.path().join("tn");
+        // After the swap: the alias is the new binary, the primary is stale.
+        std::fs::write(&alias, b"new version").unwrap();
+        std::fs::write(&primary, b"old version").unwrap();
+
+        assert!(matches!(refresh(&alias), Outcome::Relinked(_)));
+
+        assert!(alias.exists(), "the running name must not be removed");
+        assert_eq!(std::fs::read(&primary).unwrap(), b"new version");
     }
 
     /// An install without an alias must not grow one: `TURNOUT_NO_ALIAS` is a

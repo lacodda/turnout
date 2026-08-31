@@ -294,15 +294,18 @@ pub fn sweep_backup() {
 
 /// The leftovers to remove for a binary at `exe`.
 ///
-/// Two of them, not one: an update run under the alias name left a
-/// `tn.exe.old` of its own, and back when the alias was a copy that could
-/// happen. Each is the size of a whole binary, and nothing will ever come back
-/// for either.
+/// Two of them, not one: an update runs under whichever name the user typed
+/// and leaves a `.old` beside *that* name, so a machine where both names have
+/// been used to update carries two. Each is the size of a whole binary, and
+/// nothing will ever come back for either.
+///
+/// The second one is the counterpart rather than "the alias": asking for the
+/// alias while running as the alias names the file itself, and `turnout.old`
+/// would then never be collected.
 fn sweep_backups_beside(exe: &Path) {
     let _ = std::fs::remove_file(backup_path(exe));
-    let alias = crate::alias::path_beside(exe);
-    if alias != exe {
-        let _ = std::fs::remove_file(backup_path(&alias));
+    if let Some(other) = crate::alias::counterpart(exe) {
+        let _ = std::fs::remove_file(backup_path(&other));
     }
 }
 
@@ -474,6 +477,39 @@ mod tests {
         assert!(!exe_backup.exists());
         assert!(!alias_backup.exists(), "tn.exe.old survives the sweep and never gets collected");
         assert!(exe.exists(), "the sweep must not touch the binary itself");
+    }
+
+    /// The field report of 31.08: on the owner's second Windows machine
+    /// `turnout self-update` succeeded and `tn` was gone afterwards -
+    /// "command not found", not a stale version.
+    ///
+    /// The update was run under the *alias* name. `current_exe()` is then
+    /// `tn.exe`, so the swap renames `tn.exe` aside and installs the new
+    /// binary as `tn.exe` - and `path_beside` of `tn.exe` is `tn.exe` itself,
+    /// so the refresh has no second name to point anywhere. `turnout.exe` is
+    /// left as the outgoing release, unlinked. Whichever of the two the shell
+    /// resolved first then decided what the user saw.
+    #[test]
+    fn an_update_run_under_the_alias_keeps_both_names_working() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("turnout");
+        let alias = crate::alias::path_beside(&exe);
+        std::fs::write(&exe, b"old version").unwrap();
+        crate::alias::link(&exe, &alias).unwrap();
+        let replacement = dir.path().join("staged-turnout");
+        std::fs::write(&replacement, b"new version").unwrap();
+
+        // Run the update the way `tn self-update` does: current_exe is the alias.
+        install_binary(&alias, &replacement).unwrap();
+
+        assert!(alias.exists(), "the alias must survive an update run under its own name");
+        assert!(exe.exists(), "the primary name must survive an update run under the alias");
+        assert_eq!(std::fs::read(&alias).unwrap(), b"new version");
+        assert_eq!(
+            std::fs::read(&exe).unwrap(),
+            b"new version",
+            "the primary name was left on the release the update replaced"
+        );
     }
 
     /// An install that never had an alias must not grow one from an update.

@@ -10,11 +10,11 @@ turnout self-update
 ```
 
 ```text
-turnout 0.10.4 is available (you have 0.10.3).
+turnout 0.12.1 is available (you have 0.12.0).
 It will replace /home/dev/.local/bin/turnout
 Update now? yes
-Updated to turnout 0.10.4
-Alias /home/dev/.local/bin/tn updated too.
+Updated to turnout 0.12.1
+/home/dev/.local/bin/tn updated too.
 ```
 
 | Flag | Short | Effect |
@@ -52,7 +52,9 @@ If installing the new binary fails partway, the old one is moved back: the comma
 
 The [short alias](/turnout/getting-started/#the-tn-alias) is a link to the binary rather than a copy of it, so both names always answer with the same code - there is nothing to keep in sync, and an install costs one binary instead of two.
 
-The swap above breaks that link, though: it renames the file the alias points at. So the alias is pointed back at the new binary as the last step of an update, and the command says so when it does.
+The swap above breaks that link, though: it renames the file being replaced. So the *other* name is pointed back at the new binary as the last step of an update, and the command says so when it does.
+
+Which name that is depends on how you started the update. `self-update` replaces the file it is running from, so `tn self-update` replaces `tn` and repairs `turnout`, exactly mirroring the usual direction. Either way both names end up on the new release.
 
 An install without an alias does not grow one - `TURNOUT_NO_ALIAS=1` is a choice the update has no business overruling. And if the relink fails, the command says that too, because a stale alias keeps answering under its own name:
 
