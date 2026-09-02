@@ -64,6 +64,9 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 	<Card title="Key access, set up for you" icon="approve-check">
 		`turnout key setup prod` generates a key, authorizes it on the server, proves it signs in and only then switches the credential over - so a misconfigured server never costs you the password that still works. Windows administrators keep their keys in a different file, and turnout writes to that one.
 	</Card>
+	<Card title="The SSH agent signs for you" icon="seti:shell">
+		A credential can authenticate with a key your agent already holds, so a passphrase is typed once per session rather than once per command. `SSH_AUTH_SOCK` on Linux and macOS; Pageant or the OpenSSH agent service on Windows - whichever is running.
+	</Card>
 	<Card title="Secrets in the OS keyring" icon="seti:lock">
 		Windows Credential Manager, macOS Keychain or Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand it reaches. Copy a password to the clipboard with one command; nothing lives in plain files.
 	</Card>

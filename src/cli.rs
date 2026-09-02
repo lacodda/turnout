@@ -31,7 +31,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ServerCommand,
     },
-    /// Manage credentials - who logs in, and with a key or a password
+    /// Manage credentials - who logs in, and with a password, a key or the SSH agent
     #[command(alias = "cred")]
     Credential {
         #[command(subcommand)]

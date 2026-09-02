@@ -74,7 +74,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.12.1
+turnout 0.13.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
@@ -97,6 +97,7 @@ Recent:
 - **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
 - **Named deploy targets.** The four of them under one name: `turnout deploy web-prod-eu` from any directory, no flags to re-type. A first deploy that has no target yet offers to save the one it just used.
 - **Key access set up, not just used.** `turnout key setup prod` generates an ed25519 key, authorizes it on the server, proves it signs in and only then switches the credential over - so a server-side misconfiguration never costs you the password that still works. Windows servers included: an administrator account keeps its keys in a different file that sshd reads instead, and turnout writes to the right one.
+- **The SSH agent signs for you.** A credential can authenticate with a key the agent already holds unlocked, so a passphrase is typed once per login session instead of once per command - turnout never reads the key file at all. `SSH_AUTH_SOCK` on Linux and macOS; on Windows, Pageant or the OpenSSH agent service, whichever is running. An agent holding several keys is the normal case: they are offered in turn and the first the server accepts wins.
 - **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand that credential reaches. Copy it to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
 - **Commands from any directory.** `dev`, `build`, `test`, `lint` and any custom command run in the right project folder. Commands are taken from your actual `package.json` scripts, so a project whose dev script is `serve` still answers to `turnout dev`.
 - **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong. Artifacts travel as a single archive instead of thousands of round trips, falling back to file-by-file when the server cannot unpack one. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.

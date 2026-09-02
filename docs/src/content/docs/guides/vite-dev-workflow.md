@@ -100,7 +100,7 @@ And when you come back with `turnout use myshop main`, you are **still logged in
 
 ```text
 $ turnout status
-turnout 0.10.4
+turnout 0.13.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    1 (myshop)
 Servers: 2 (main, second)
