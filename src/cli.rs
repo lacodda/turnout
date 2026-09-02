@@ -325,7 +325,7 @@ pub enum CredentialCommand {
         /// Remote user this logs in as
         #[arg(short, long)]
         user: Option<String>,
-        /// How it authenticates: password or key
+        /// How it authenticates: password, key or agent
         #[arg(short, long)]
         auth: Option<String>,
         /// Private key file (implies --auth key)
@@ -345,6 +345,7 @@ pub enum CredentialCommand {
         name: Option<String>,
         #[arg(short, long)]
         user: Option<String>,
+        /// How it authenticates: password, key or agent
         #[arg(short, long)]
         auth: Option<String>,
         /// Private key file (empty value removes it)

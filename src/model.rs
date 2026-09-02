@@ -95,6 +95,11 @@ pub enum Auth {
     Password,
     /// A private key file on this machine.
     Key,
+    /// A key held by a running SSH agent, which signs on its behalf.
+    ///
+    /// No key file and no stored secret: the passphrase was given to the agent
+    /// once, and turnout never sees the key at all.
+    Agent,
 }
 
 impl Auth {
@@ -102,6 +107,7 @@ impl Auth {
         match self {
             Auth::Password => "password",
             Auth::Key => "key",
+            Auth::Agent => "agent",
         }
     }
 }
@@ -119,7 +125,8 @@ impl std::str::FromStr for Auth {
         match text {
             "password" => Ok(Auth::Password),
             "key" => Ok(Auth::Key),
-            other => bail!("unknown auth kind '{other}': expected 'password' or 'key'"),
+            "agent" => Ok(Auth::Agent),
+            other => bail!("unknown auth kind '{other}': expected 'password', 'key' or 'agent'"),
         }
     }
 }
@@ -434,8 +441,15 @@ mod tests {
     fn auth_kinds_round_trip() {
         assert_eq!("password".parse::<Auth>().unwrap(), Auth::Password);
         assert_eq!("key".parse::<Auth>().unwrap(), Auth::Key);
+        assert_eq!("agent".parse::<Auth>().unwrap(), Auth::Agent);
         assert_eq!(Auth::Key.to_string(), "key");
-        assert!("agent".parse::<Auth>().is_err());
+        assert_eq!(Auth::Agent.to_string(), "agent");
+        // The round trip is what the catalog on disk relies on: `as_str` is
+        // what gets written, `from_str` is what reads it back.
+        for auth in [Auth::Password, Auth::Key, Auth::Agent] {
+            assert_eq!(auth.as_str().parse::<Auth>().unwrap(), auth);
+        }
+        assert!("smartcard".parse::<Auth>().is_err());
     }
 
     #[test]

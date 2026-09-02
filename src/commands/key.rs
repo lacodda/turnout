@@ -193,6 +193,16 @@ fn hostname() -> Option<String> {
 /// because that key was now in the way. The user had to go and delete a file
 /// they never asked for.
 fn check_first_sign_in(credential: &Credential) -> Result<()> {
+    // An agent credential already signs in by key - through the agent - so
+    // there is nothing for this command to set up, and running it would trade
+    // a working login for a key file on disk. That is a downgrade, not a
+    // setup, so it is refused rather than done quietly.
+    if credential.auth == Auth::Agent {
+        bail!(
+            "credential '{0}' already signs in with a key from the SSH agent - to authorize that key on this server, add it with `ssh-copy-id`, or point '{0}' at a key file first",
+            credential.name
+        );
+    }
     if credential.auth == Auth::Password && secrets::get(&credential.name).is_err() {
         bail!(
             "no password stored for '{0}', and the first sign-in needs one - save it with `turnout pass set {0}`",
@@ -300,6 +310,29 @@ pub fn check(server_name: Option<String>, credential_name: Option<String>) -> Re
         .find(|c| c.name == credential_name)
         .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
 
+    // Named by account and machine rather than by the two entity names: a
+    // credential and a server often share a name, and "'pi-host' signs in to
+    // 'pi-host'" reads like a bug in the sentence rather than a result.
+    let who = format!("{}@{}", credential.user, server.ssh_host());
+
+    // An agent credential has no key file to name, and checking it means
+    // asking the agent to sign - the same route the daily commands take. It
+    // goes through the credential rather than around it, which for `agent` is
+    // exactly what proves the thing under test.
+    if credential.auth == Auth::Agent {
+        let step = Step::start(format!("Signing in as {who} with a key from the SSH agent"));
+        return match remote::connect(&server, &credential) {
+            Ok(_) => {
+                step.done(format!("{who} signs in with an agent key ({})", credential.name));
+                Ok(())
+            }
+            Err(err) => {
+                step.clear();
+                Err(err).with_context(|| format!("{who} cannot sign in through the SSH agent (credential '{}')", credential.name))
+            }
+        };
+    }
+
     let Some(path) = credential.key.clone() else {
         bail!(
             "credential '{0}' has no key file - set one up with `turnout key setup {1} --credential {0}`",
@@ -308,11 +341,6 @@ pub fn check(server_name: Option<String>, credential_name: Option<String>) -> Re
         );
     };
     let passphrase = secrets::get(&credential.name).ok();
-
-    // Named by account and machine rather than by the two entity names: a
-    // credential and a server often share a name, and "'pi-host' signs in to
-    // 'pi-host'" reads like a bug in the sentence rather than a result.
-    let who = format!("{}@{}", credential.user, server.ssh_host());
     let step = Step::start(format!("Signing in as {who} with {path}"));
     match Session::open_with_key(&server.ssh_host(), server.port, &credential.user, &path, passphrase.as_deref()) {
         Ok(_) => {

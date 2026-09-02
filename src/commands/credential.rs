@@ -11,6 +11,14 @@ use crate::cli::CredentialCommand;
 use crate::model::{Auth, Credential, validate_name};
 use crate::{pick, secrets, store};
 
+/// The auth kinds the wizards offer, and the labels for them.
+///
+/// One list, used by `add` and `edit` alike and index-matched by position, so
+/// the two wizards cannot drift into offering different choices - or, worse,
+/// into mapping the same position to different kinds.
+pub const AUTH_KINDS: [Auth; 3] = [Auth::Password, Auth::Key, Auth::Agent];
+pub const AUTH_LABELS: [&str; 3] = ["a password", "a private key file", "a key from the SSH agent"];
+
 pub fn run(command: CredentialCommand) -> Result<()> {
     match command {
         CredentialCommand::Add { name, user, auth, key } => add(name, user, auth, key),
@@ -72,20 +80,18 @@ fn add(name: Option<String>, user: Option<String>, auth: Option<String>, key: Op
 
     let auth = match parse_auth(auth, &key)? {
         Some(auth) => auth,
-        None if wizard => {
-            let choice = Select::new()
-                .with_prompt("Authenticates with")
-                .items(["a password", "a private key file"])
-                .default(0)
-                .interact()?;
-            if choice == 0 { Auth::Password } else { Auth::Key }
-        }
+        None if wizard => AUTH_KINDS[Select::new().with_prompt("Authenticates with").items(AUTH_LABELS).default(0).interact()?],
         None => Auth::Password,
     };
 
     let key = match key {
+        // Only key auth reads a key file. Keeping the path on a password or
+        // agent credential would store something nothing uses, and
+        // `credential show` would print a `Key:` line for a login that never
+        // opens it - a live run caught exactly that with `--auth agent --key`.
+        _ if auth != Auth::Key => None,
         Some(key) if !key.trim().is_empty() => Some(key.trim().to_string()),
-        _ if auth == Auth::Key && wizard => {
+        _ if wizard => {
             let answer: String = Input::new().with_prompt("Private key file").interact_text()?;
             Some(answer.trim().to_string())
         }
@@ -105,8 +111,10 @@ fn add(name: Option<String>, user: Option<String>, auth: Option<String>, key: Op
     store::save_credentials(&credentials)?;
     crate::journal::record("credential.add", None, None, Some(&name));
     println!("Credential '{name}' added.");
-    if auth == Auth::Password {
-        println!("Store its secret with `turnout pass set {name}`.");
+    match auth {
+        Auth::Password => println!("Store its secret with `turnout pass set {name}`."),
+        Auth::Agent => println!("It signs in with a key from the running SSH agent - add one with `ssh-add PATH`."),
+        Auth::Key => {}
     }
     Ok(())
 }
@@ -137,12 +145,14 @@ fn show(name: &str) -> Result<()> {
     let stored = secrets::get(name).is_ok();
     println!(
         "  Secret:   {}",
-        if stored {
-            "stored in the OS keyring"
-        } else if credential.auth == Auth::Key {
-            "none (the key file is unprotected)"
-        } else {
-            "none - save one with `turnout pass set`"
+        match credential.auth {
+            _ if stored => "stored in the OS keyring",
+            Auth::Key => "none (the key file is unprotected)",
+            // An agent credential has no secret here by design: the passphrase
+            // was given to the agent, not to turnout. Telling the user to run
+            // `pass set` would be advice for a problem they do not have.
+            Auth::Agent => "none (the SSH agent holds the key)",
+            Auth::Password => "none - save one with `turnout pass set`",
         }
     );
     let servers = store::load_servers()?;
@@ -170,12 +180,11 @@ fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<Stri
             .with_prompt("Logs in as (remote user)")
             .default(credential.user.clone())
             .interact_text()?;
-        let choice = Select::new()
+        credential.auth = AUTH_KINDS[Select::new()
             .with_prompt("Authenticates with")
-            .items(["a password", "a private key file"])
-            .default(usize::from(credential.auth == Auth::Key))
-            .interact()?;
-        credential.auth = if choice == 0 { Auth::Password } else { Auth::Key };
+            .items(AUTH_LABELS)
+            .default(AUTH_KINDS.iter().position(|&a| a == credential.auth).unwrap_or(0))
+            .interact()?];
         if credential.auth == Auth::Key {
             let answer: String = Input::new()
                 .with_prompt("Private key file")
@@ -183,6 +192,7 @@ fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<Stri
                 .interact_text()?;
             credential.key = Some(answer.trim().to_string());
         } else {
+            // Password and agent alike: no file is read, so none is kept.
             credential.key = None;
         }
     } else {
@@ -198,6 +208,11 @@ fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<Stri
         }
         if let Some(key) = key {
             credential.key = if key.trim().is_empty() { None } else { Some(key.trim().to_string()) };
+        }
+        // Switching away from key auth drops the file with it, for the same
+        // reason `add` never stores one: nothing would read it afterwards.
+        if credential.auth != Auth::Key {
+            credential.key = None;
         }
     }
 
@@ -276,6 +291,36 @@ fn unknown(name: &str) -> anyhow::Error {
 mod tests {
     use super::*;
 
+    /// A live run caught this: `--auth agent --key PATH` stored the path and
+    /// `credential show` then printed a `Key:` line for a login that never
+    /// opens a key file. The flag combination is a contradiction, and the auth
+    /// kind is what settles it - the file is dropped, not kept as dead data.
+    ///
+    /// Asserted through `parse_auth` plus the rule it feeds, because the rule
+    /// is the part that was wrong: the kind decides whether a key is kept.
+    #[test]
+    fn only_key_authentication_keeps_a_key_file() {
+        let path = Some("~/.ssh/id_ed25519".to_string());
+        // The kind that reads a file keeps it.
+        assert_eq!(parse_auth(Some("key".into()), &path).unwrap(), Some(Auth::Key));
+        // The kinds that do not read one must not be given one to store.
+        for kind in ["password", "agent"] {
+            let auth = parse_auth(Some(kind.into()), &path).unwrap().expect("an explicit kind");
+            assert_ne!(auth, Auth::Key, "{kind} does not authenticate with a key file");
+        }
+    }
+
+    /// The two wizard lists are index-matched: `AUTH_KINDS[i]` is what picking
+    /// `AUTH_LABELS[i]` stores. Nothing in the type system holds them together,
+    /// and a mismatch would silently save the wrong kind of login.
+    #[test]
+    fn every_offered_label_maps_to_the_kind_it_describes() {
+        assert_eq!(AUTH_KINDS.len(), AUTH_LABELS.len());
+        assert!(AUTH_LABELS[AUTH_KINDS.iter().position(|&a| a == Auth::Password).expect("password is offered")].contains("password"));
+        assert!(AUTH_LABELS[AUTH_KINDS.iter().position(|&a| a == Auth::Key).expect("a key file is offered")].contains("key file"));
+        assert!(AUTH_LABELS[AUTH_KINDS.iter().position(|&a| a == Auth::Agent).expect("the agent is offered")].contains("agent"));
+    }
+
     /// Passing a key file is enough to mean key auth: making the user also type
     /// `--auth key` would be a second way to say the same thing, and forgetting
     /// it would store a key that never gets used.
@@ -286,6 +331,12 @@ mod tests {
         assert_eq!(parse_auth(None, &None).unwrap(), None);
         // An explicit flag always wins over the inference.
         assert_eq!(parse_auth(Some("password".into()), &Some("k".into())).unwrap(), Some(Auth::Password));
-        assert!(parse_auth(Some("agent".into()), &None).is_err());
+        // Since v0.13.0 the agent is a real kind, and naming it explicitly is
+        // the only way to reach it: there is no key file to infer it from.
+        assert_eq!(parse_auth(Some("agent".into()), &None).unwrap(), Some(Auth::Agent));
+        // A key file next to --auth agent is a contradiction the flag wins:
+        // the inference must not quietly turn an agent login into a file one.
+        assert_eq!(parse_auth(Some("agent".into()), &Some("k".into())).unwrap(), Some(Auth::Agent));
+        assert!(parse_auth(Some("smartcard".into()), &None).is_err());
     }
 }

@@ -25,6 +25,7 @@ use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tokio::runtime::Runtime;
 
+use crate::agent;
 use crate::model::{Auth, Credential, Server};
 use crate::secrets;
 
@@ -161,6 +162,9 @@ impl Session {
 enum AuthMaterial {
     Key(PrivateKeyWithHashAlg),
     Password(String),
+    /// Nothing to carry: the keys stay in the agent, which is asked for them
+    /// at the moment of authentication.
+    Agent,
 }
 
 /// Deliberately manual: a derived impl would print the password.
@@ -169,6 +173,7 @@ impl std::fmt::Debug for AuthMaterial {
         f.write_str(match self {
             AuthMaterial::Key(_) => "AuthMaterial::Key",
             AuthMaterial::Password(_) => "AuthMaterial::Password(<redacted>)",
+            AuthMaterial::Agent => "AuthMaterial::Agent",
         })
     }
 }
@@ -195,6 +200,9 @@ fn auth_material(credential: &Credential) -> Result<AuthMaterial> {
                 secrets::get(&credential.name).map_err(|_| anyhow::anyhow!("no password stored - save one with `turnout pass set {}`", credential.name))?;
             Ok(AuthMaterial::Password(password))
         }
+        // Nothing to resolve here: the agent is reached inside
+        // `authenticate`, on the runtime, because connecting to it is async.
+        Auth::Agent => Ok(AuthMaterial::Agent),
     }
 }
 
@@ -216,12 +224,51 @@ async fn authenticate(host: &str, port: u16, user: &str, material: AuthMaterial)
     let ok = match material {
         AuthMaterial::Key(key) => handle.authenticate_publickey(user, key).await.context("key authentication failed")?,
         AuthMaterial::Password(password) => handle.authenticate_password(user, password).await.context("password authentication failed")?,
+        AuthMaterial::Agent => return authenticate_with_agent(handle, user).await,
     };
 
     if !ok.success() {
         bail!("SSH authentication failed for '{user}' - the server rejected the credential");
     }
     Ok(handle)
+}
+
+/// Authenticate by asking the agent to sign, offering its keys in turn.
+///
+/// The agent may hold many keys and the server accepts at most one of them, so
+/// a refusal of the first is not a failure - only running out of keys is. This
+/// is what `ssh` itself does, and why the loop exists rather than a single
+/// attempt on the first identity.
+async fn authenticate_with_agent(mut handle: Handle<AcceptAnyHostKey>, user: &str) -> Result<Handle<AcceptAnyHostKey>> {
+    let mut agent = agent::connect().await?;
+    let identities = agent::identities(&mut agent).await?;
+    if identities.is_empty() {
+        return Err(agent::no_identities());
+    }
+
+    let mut offered = Vec::new();
+    for identity in &identities {
+        let public = identity.public_key().into_owned();
+        offered.push(agent::describe(identity));
+        // Errors here are the agent failing to sign - a locked agent, a key
+        // pulled out mid-run - not the server saying no. Either way the next
+        // key is worth trying; what matters is whether any of them got in.
+        if let Ok(result) = handle.authenticate_publickey_with(user, public, None, &mut agent).await
+            && result.success()
+        {
+            return Ok(handle);
+        }
+    }
+
+    // Naming the keys that were offered is the difference between "fix your
+    // server" and "add the right key here": the agent is running and holds
+    // keys, they are simply not the ones this server authorizes.
+    bail!(
+        "SSH authentication failed for '{user}' - the agent offered {} key{}, none accepted by the server: {}",
+        offered.len(),
+        if offered.len() == 1 { "" } else { "s" },
+        offered.join(", ")
+    );
 }
 
 /// Run a command over a fresh channel and collect stdout, stderr and the exit
@@ -378,7 +425,25 @@ mod tests {
             Self::spawn_with(false)
         }
 
+        /// A key-only stand that authorizes exactly one public key.
+        ///
+        /// The plain key-only stand takes any key the right user signs with,
+        /// which is enough to prove "a key got in" but not "*this* key did".
+        /// Agent auth offers several keys in turn, so proving the loop picks
+        /// the accepted one needs a server that refuses the others.
+        ///
+        /// Unix-only alongside the agent tests that call it: without the cfg
+        /// it is dead code on Windows, which `clippy -D warnings` refuses.
+        #[cfg(unix)]
+        fn spawn_authorizing(authorized: russh::keys::PublicKey) -> Self {
+            Self::spawn_full(false, Some(authorized))
+        }
+
         fn spawn_with(passwords_accepted: bool) -> Self {
+            Self::spawn_full(passwords_accepted, None)
+        }
+
+        fn spawn_full(passwords_accepted: bool, authorized: Option<russh::keys::PublicKey>) -> Self {
             let root = tempfile::tempdir().expect("a scratch directory for the SFTP root");
             let subsystem_opens = Arc::new(AtomicUsize::new(0));
             let served_root = root.path().to_path_buf();
@@ -404,6 +469,7 @@ mod tests {
                         root: served_root,
                         subsystem_opens: served_opens,
                         passwords_accepted,
+                        authorized,
                     };
                     let _ = server::Server::run_on_socket(&mut factory, config, &socket).await;
                 });
@@ -421,6 +487,8 @@ mod tests {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
         passwords_accepted: bool,
+        /// When set, the only public key this stand accepts.
+        authorized: Option<russh::keys::PublicKey>,
     }
 
     impl server::Server for Factory {
@@ -432,6 +500,7 @@ mod tests {
                 subsystem_opens: self.subsystem_opens.clone(),
                 channels: HashMap::new(),
                 passwords_accepted: self.passwords_accepted,
+                authorized: self.authorized.clone(),
             }
         }
     }
@@ -441,6 +510,7 @@ mod tests {
         subsystem_opens: Arc<AtomicUsize>,
         channels: HashMap<ChannelId, ServerChannel<ServerMsg>>,
         passwords_accepted: bool,
+        authorized: Option<russh::keys::PublicKey>,
     }
 
     fn rejected() -> AuthAnswer {
@@ -461,10 +531,14 @@ mod tests {
             })
         }
 
-        async fn auth_publickey(&mut self, user: &str, _key: &russh::keys::PublicKey) -> Result<AuthAnswer, Self::Error> {
+        async fn auth_publickey(&mut self, user: &str, key: &russh::keys::PublicKey) -> Result<AuthAnswer, Self::Error> {
             // russh verifies the signature; the handler only says whether the
-            // user may sign in with a key at all.
-            Ok(if user == USER { AuthAnswer::Accept } else { rejected() })
+            // user may sign in with this key at all.
+            let key_allowed = match &self.authorized {
+                Some(authorized) => authorized == key,
+                None => true,
+            };
+            Ok(if user == USER && key_allowed { AuthAnswer::Accept } else { rejected() })
         }
 
         async fn channel_open_session(
@@ -649,6 +723,190 @@ mod tests {
     /// which it can only do on a connection the password could not have opened.
     /// So the stand here refuses passwords outright, the way a hardened sshd
     /// does: a pass means the key was accepted and nothing else was.
+    /// A real SSH agent, in-process on a loopback socket.
+    ///
+    /// russh ships an agent server as well as a client, so the agent side of
+    /// these tests speaks the actual protocol over an actual socket - the same
+    /// standard Pageant and `ssh-agent` speak. Nothing about signing is
+    /// simulated: the agent holds the private key and produces the signature
+    /// the SSH server then verifies.
+    ///
+    /// Unix only, and deliberately so. The client reaches a real agent through
+    /// `SSH_AUTH_SOCK`, or on Windows through Pageant and a named pipe - none
+    /// of which a test can point at a temporary stand. What is covered here is
+    /// the part that is identical on every platform: offering identities in
+    /// turn, signing, and the failures. The Windows doors are covered by the
+    /// live run on the owner machine.
+    #[cfg(unix)]
+    struct AgentStand {
+        socket: PathBuf,
+        _dir: tempfile::TempDir,
+    }
+
+    #[cfg(unix)]
+    impl AgentStand {
+        /// Start an agent and load `keys` into it, in order.
+        fn spawn(keys: Vec<russh::keys::PrivateKey>) -> Self {
+            use tokio_stream::wrappers::UnixListenerStream;
+
+            let dir = tempfile::tempdir().expect("a scratch directory for the agent socket");
+            let socket = dir.path().join("agent.sock");
+            let served = socket.clone();
+            let (ready, wait) = mpsc::channel();
+            std::thread::spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("the agent runtime");
+                runtime.block_on(async move {
+                    let listener = tokio::net::UnixListener::bind(&served).expect("bind the agent socket");
+                    ready.send(()).expect("report that the agent is listening");
+                    let _ = russh::keys::agent::server::serve(UnixListenerStream::new(listener), ()).await;
+                });
+            });
+            wait.recv().expect("the agent starts listening");
+
+            let stand = Self { socket, _dir: dir };
+            // The keystore starts empty: an agent holds what was added to it,
+            // exactly the way `ssh-add` fills a real one.
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
+            runtime.block_on(async {
+                let mut client = russh::keys::agent::client::AgentClient::connect_uds(&stand.socket)
+                    .await
+                    .expect("connect to the test agent");
+                for key in &keys {
+                    client.add_identity(key, &[]).await.expect("add the key to the agent");
+                }
+            });
+            stand
+        }
+
+        /// Point `SSH_AUTH_SOCK` at this agent for the duration of `body`.
+        ///
+        /// The variable is process-wide, so these tests must not run beside
+        /// each other; `serial_env` is the lock that keeps them apart.
+        fn with_env<T>(&self, body: impl FnOnce() -> T) -> T {
+            let _guard = serial_env();
+            let previous = std::env::var("SSH_AUTH_SOCK").ok();
+            // SAFETY: the guard above serialises every test that touches this
+            // variable, so no other thread reads it while it is being set.
+            unsafe { std::env::set_var("SSH_AUTH_SOCK", &self.socket) };
+            let outcome = body();
+            match previous {
+                Some(value) => unsafe { std::env::set_var("SSH_AUTH_SOCK", value) },
+                None => unsafe { std::env::remove_var("SSH_AUTH_SOCK") },
+            }
+            outcome
+        }
+    }
+
+    /// The lock serialising every test that edits the process environment.
+    #[cfg(unix)]
+    fn serial_env() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The point of the whole stage: a key the agent holds signs in to a
+    /// server that refuses passwords, and turnout never reads a key file.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_key_signs_in_where_the_password_cannot() {
+        let key = ed25519_key(21, "agent key");
+        let stand = Stand::spawn_authorizing(key.public_key().clone());
+        let agent = AgentStand::spawn(vec![key]);
+
+        // The password is refused by this stand, so a pass below cannot have
+        // come from anywhere except the agent.
+        let refused = Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Password(PASSWORD.into()));
+        assert!(refused.is_err(), "this stand must not accept passwords");
+
+        agent.with_env(|| {
+            Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent).expect("the agent key signs in");
+        });
+    }
+
+    /// An agent commonly holds several keys and a server authorizes one of
+    /// them. Stopping at the first refusal would make agent auth work only for
+    /// people whose accepted key happens to be offered first.
+    #[cfg(unix)]
+    #[test]
+    fn the_accepted_key_is_found_behind_keys_the_server_refuses() {
+        let accepted = ed25519_key(23, "the one that works");
+        let stand = Stand::spawn_authorizing(accepted.public_key().clone());
+        // Two refused keys ahead of it, so a first-only attempt fails here.
+        let agent = AgentStand::spawn(vec![ed25519_key(24, "wrong one"), ed25519_key(25, "also wrong"), accepted]);
+
+        agent.with_env(|| {
+            Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent).expect("the accepted key is reached");
+        });
+    }
+
+    /// When nothing the agent holds is accepted, the message has to say that
+    /// the agent was reached and what it offered - otherwise the user goes
+    /// hunting for a network or server fault that is not there.
+    #[cfg(unix)]
+    #[test]
+    fn keys_the_server_refuses_are_named_in_the_failure() {
+        // Authorizes a key the agent does not hold, so every offer is refused.
+        let stand = Stand::spawn_authorizing(ed25519_key(26, "never offered").public_key().clone());
+        let agent = AgentStand::spawn(vec![ed25519_key(27, "mine@laptop")]);
+
+        let error = agent.with_env(|| match Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent) {
+            Ok(_) => panic!("the server authorizes no key this agent holds"),
+            Err(error) => format!("{error:#}"),
+        });
+        assert!(error.contains("the agent offered 1 key"), "{error}");
+        assert!(error.contains("mine@laptop"), "the offered key is named: {error}");
+    }
+
+    /// A running agent with an empty keystore is its own situation: the fix is
+    /// `ssh-add` on this machine, not anything about the server.
+    #[cfg(unix)]
+    #[test]
+    fn an_agent_holding_nothing_says_so() {
+        let stand = Stand::spawn_key_only();
+        let agent = AgentStand::spawn(Vec::new());
+
+        let error = agent.with_env(|| match Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent) {
+            Ok(_) => panic!("an empty agent cannot sign in"),
+            Err(error) => format!("{error:#}"),
+        });
+        assert!(error.contains("holds no keys"), "{error}");
+        assert!(error.contains("ssh-add"), "{error}");
+    }
+
+    /// With no agent at all, the failure names the variable to set rather than
+    /// blaming the server.
+    #[cfg(unix)]
+    #[test]
+    fn no_agent_at_all_names_how_to_start_one() {
+        let _guard = serial_env();
+        let previous = std::env::var("SSH_AUTH_SOCK").ok();
+        // SAFETY: serialised by the guard above.
+        unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
+        let error = match Session::open("127.0.0.1", 1, USER, AuthMaterial::Agent) {
+            Ok(_) => panic!("there is no agent"),
+            Err(error) => format!("{error:#}"),
+        };
+        if let Some(value) = previous {
+            unsafe { std::env::set_var("SSH_AUTH_SOCK", value) };
+        }
+        assert!(error.contains("SSH_AUTH_SOCK"), "{error}");
+        assert!(error.contains("ssh-agent"), "{error}");
+    }
+
+    /// The agent credential resolves without touching the keyring or a file:
+    /// there is nothing to resolve until the connection is being made.
+    #[test]
+    fn an_agent_credential_needs_neither_key_file_nor_secret() {
+        let credential = Credential {
+            name: "by-agent".into(),
+            user: USER.into(),
+            auth: Auth::Agent,
+            key: None,
+        };
+        let material = auth_material(&credential).expect("an agent credential resolves with nothing stored");
+        assert!(matches!(material, AuthMaterial::Agent), "{material:?}");
+    }
+
     #[test]
     fn a_named_key_file_signs_in_where_the_password_cannot() {
         let stand = Stand::spawn_key_only();

@@ -75,5 +75,6 @@ futures-util = { version = "0.3.33", default-features = false, features = ["std"
 predicates = "3"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 tempfile = "3"
+tokio-stream = { version = "0.1", features = ["net"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }

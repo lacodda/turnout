@@ -1,3 +1,4 @@
+mod agent;
 mod alias;
 mod cli;
 mod commands;

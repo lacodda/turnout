@@ -196,17 +196,13 @@ fn choose_credential(credentials: &mut Vec<Credential>, current: Option<&str>) -
     if user.trim().is_empty() {
         bail!("the remote user cannot be empty");
     }
-    let auth = if Select::new()
+    // Same three kinds the `credential` wizard offers - a login created here
+    // must be able to say everything a login created there can.
+    let auth = crate::commands::credential::AUTH_KINDS[Select::new()
         .with_prompt("Authenticates with")
-        .items(["a password", "a private key file"])
+        .items(crate::commands::credential::AUTH_LABELS)
         .default(0)
-        .interact()?
-        == 0
-    {
-        Auth::Password
-    } else {
-        Auth::Key
-    };
+        .interact()?];
     let key = if auth == Auth::Key {
         let answer: String = Input::new().with_prompt("Private key file").interact_text()?;
         Some(answer.trim().to_string())

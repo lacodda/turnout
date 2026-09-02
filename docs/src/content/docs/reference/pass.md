@@ -9,7 +9,7 @@ sidebar:
 turnout pass <set|copy|list|remove> [...]
 ```
 
-A secret belongs to a [credential](/turnout/reference/credential/). The credential holds the metadata - who logs in, and whether by key or password - while the value itself lives only in the OS keyring: Windows Credential Manager, macOS Keychain or Linux Secret Service. Secrets are never written to config files and never printed unless you explicitly ask.
+A secret belongs to a [credential](/turnout/reference/credential/). The credential holds the metadata - who logs in, and how it proves itself - while the value itself lives only in the OS keyring: Windows Credential Manager, macOS Keychain or Linux Secret Service. Secrets are never written to config files and never printed unless you explicitly ask.
 
 Every subcommand takes a credential name, or offers a [picker](/turnout/concepts/pickers/) when you omit it.
 
@@ -20,6 +20,8 @@ turnout pass set [CREDENTIAL]
 ```
 
 Interactively: type the secret twice (hidden input). For an `auth = key` credential the prompt asks for the key's passphrase instead, which is what the secret means there.
+
+An `auth = agent` credential has no secret to store and `set` refuses it: the passphrase was given to the [SSH agent](/turnout/concepts/ssh-agent/), which is the whole point of using one. Add the key there with `ssh-add` instead.
 
 In scripts, pipe the secret via stdin so it never lands in shell history:
 

@@ -59,6 +59,8 @@ C:\ProgramData\ssh\administrators_authorized_keys
 
 A key written to that account's own `~/.ssh/authorized_keys` is ignored without a word - the sign-in just keeps asking for the password. `turnout key setup` checks whether the account is an administrator and writes to the file sshd will actually read, then fixes the file's ACL, which Windows sshd is equally strict about. See [Windows servers](/turnout/concepts/windows-servers/) for the rest of what changes on that side.
 
+An `auth = agent` credential is refused: it already signs in by key, and switching it to a generated key file would trade a working login for a lesser one. To authorize an agent key on one more server, use `ssh-copy-id`, or point the credential at a key file first.
+
 ## check
 
 ```bash
@@ -70,6 +72,8 @@ Signs in with the credential's key and reports whether it worked. Useful after c
 ```bash
 turnout key check prod
 ```
+
+For an `auth = agent` credential this checks the [SSH agent](/turnout/concepts/ssh-agent/) route instead: the agent is asked to sign, exactly as the daily commands do.
 
 ## When the key is refused
 
@@ -86,4 +90,5 @@ The credential stays on its password in every one of those cases, so you can fix
 
 - [credential](/turnout/reference/credential/) - the entity this writes to
 - [pass](/turnout/reference/pass/) - the password used for the first sign-in, and the passphrase of a protected key
+- [SSH agent](/turnout/concepts/ssh-agent/) - signing in with a key the agent already holds unlocked
 - [server](/turnout/reference/server/) - the entity this reads

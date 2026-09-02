@@ -39,6 +39,15 @@ fn set(name: Option<String>) -> Result<()> {
     let credential = resolve(name, "Set the secret of")?;
     let interactive = pick::interactive();
 
+    // An agent credential keeps nothing here: the agent already holds the key
+    // and its passphrase. Storing a secret under its name would sit unused and
+    // read, on `credential show`, as though the login needed it.
+    if credential.auth == Auth::Agent {
+        bail!(
+            "credential '{0}' signs in through the SSH agent and has no secret to store - add the key to the agent with `ssh-add PATH`",
+            credential.name
+        );
+    }
     let prompt = if credential.auth == Auth::Key {
         format!("Passphrase for the key of '{}'", credential.name)
     } else {
