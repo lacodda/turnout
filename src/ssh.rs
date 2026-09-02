@@ -850,6 +850,14 @@ mod tests {
     /// When nothing the agent holds is accepted, the message has to say that
     /// the agent was reached and what it offered - otherwise the user goes
     /// hunting for a network or server fault that is not there.
+    ///
+    /// What it can say about each key is the algorithm, not the comment: a key
+    /// is added to an agent over `ADD_IDENTITY`, whose comment field this
+    /// client encodes empty, so the comment does not survive the trip. CI
+    /// caught the first version of this test asserting on a name the protocol
+    /// had already dropped. `describe` falls back to the algorithm for exactly
+    /// this case, and a real `ssh-agent` populated by `ssh-add` does carry the
+    /// comment, which is when the fuller form shows up.
     #[cfg(unix)]
     #[test]
     fn keys_the_server_refuses_are_named_in_the_failure() {
@@ -862,7 +870,11 @@ mod tests {
             Err(error) => format!("{error:#}"),
         });
         assert!(error.contains("the agent offered 1 key"), "{error}");
-        assert!(error.contains("mine@laptop"), "the offered key is named: {error}");
+        assert!(error.contains("none accepted by the server"), "{error}");
+        // The agent was reached, so the message must not read as a network or
+        // server fault - that is the whole point of naming what was offered.
+        assert!(error.contains("ssh-ed25519"), "the offered key is described: {error}");
+        assert!(!error.contains("cannot reach"), "the agent was reached: {error}");
     }
 
     /// A running agent with an empty keystore is its own situation: the fix is
