@@ -534,8 +534,16 @@ mod tests {
         async fn auth_publickey(&mut self, user: &str, key: &russh::keys::PublicKey) -> Result<AuthAnswer, Self::Error> {
             // russh verifies the signature; the handler only says whether the
             // user may sign in with this key at all.
+            //
+            // Compared by key *data*, not by the whole `PublicKey`: that type
+            // carries a comment as well, and `PartialEq` includes it. An agent
+            // returns its identities with an empty comment (the ADD_IDENTITY
+            // frame encodes one), so comparing the structs would reject the
+            // very key the agent had just been handed. sshd matches on the key
+            // material for the same reason - a comment is a label, not part of
+            // the identity.
             let key_allowed = match &self.authorized {
-                Some(authorized) => authorized == key,
+                Some(authorized) => authorized.key_data() == key.key_data(),
                 None => true,
             };
             Ok(if user == USER && key_allowed { AuthAnswer::Accept } else { rejected() })
@@ -875,6 +883,13 @@ mod tests {
 
     /// With no agent at all, the failure names the variable to set rather than
     /// blaming the server.
+    ///
+    /// Asserted against `agent::connect` rather than through `Session::open`,
+    /// because the session dials the server *before* it authenticates: with an
+    /// unreachable port the connection error wins and the agent is never
+    /// reached, so going through the session would test the wrong failure.
+    /// CI caught exactly that - the first version of this test passed a dead
+    /// port and asserted on a message that path cannot produce.
     #[cfg(unix)]
     #[test]
     fn no_agent_at_all_names_how_to_start_one() {
@@ -882,13 +897,15 @@ mod tests {
         let previous = std::env::var("SSH_AUTH_SOCK").ok();
         // SAFETY: serialised by the guard above.
         unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
-        let error = match Session::open("127.0.0.1", 1, USER, AuthMaterial::Agent) {
-            Ok(_) => panic!("there is no agent"),
-            Err(error) => format!("{error:#}"),
-        };
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("a runtime");
+        let outcome = runtime.block_on(async { super::agent::connect().await.map(|_| ()) });
         if let Some(value) = previous {
             unsafe { std::env::set_var("SSH_AUTH_SOCK", value) };
         }
+        let error = match outcome {
+            Ok(()) => panic!("there is no agent to connect to"),
+            Err(error) => format!("{error:#}"),
+        };
         assert!(error.contains("SSH_AUTH_SOCK"), "{error}");
         assert!(error.contains("ssh-agent"), "{error}");
     }
