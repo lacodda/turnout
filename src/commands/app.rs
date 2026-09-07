@@ -109,6 +109,10 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
         port
     };
 
+    if let Some(port) = port {
+        ensure_port_is_free(&apps, port, &name)?;
+    }
+
     let servers = if wizard && servers.is_empty() && !known.is_empty() {
         pick_servers(&known, &[])?
     } else {
@@ -206,20 +210,25 @@ fn edit(
         } else {
             Some(port.trim().parse().context("port must be a number")?)
         };
+        if let Some(port) = app.gateway_port {
+            ensure_port_is_free(&apps, port, name)?;
+        }
+        let app = &mut apps[index];
         if !known.is_empty() {
             let current = app.servers.clone();
             app.servers = pick_servers(&known, &current)?;
         }
         println!("Commands are edited with flags: `turnout app edit {name} --command NAME=CMD` (NAME= removes).");
     } else {
-        let app = &mut apps[index];
         if let Some(path) = path {
             let path = crate::utils::project_dir(&path)?;
-            app.path = path.display().to_string();
+            apps[index].path = path.display().to_string();
         }
-        if port.is_some() {
-            app.gateway_port = port;
+        if let Some(port) = port {
+            ensure_port_is_free(&apps, port, name)?;
+            apps[index].gateway_port = Some(port);
         }
+        let app = &mut apps[index];
         if dist.is_some() {
             app.dist_dir = dist;
         }
@@ -329,4 +338,19 @@ fn pick_servers(known: &[Server], current: &[String]) -> Result<Vec<String>> {
         .defaults(&defaults)
         .interact()?;
     Ok(picked.into_iter().map(|i| known[i].name.clone()).collect())
+}
+
+/// A gateway port belongs to exactly one app.
+///
+/// Two apps on one port used to be accepted here and only surface as the
+/// gateway dying on its second `bind` - after `start` had reported success.
+/// `this` is the app being added or edited, so keeping its own port is fine.
+fn ensure_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()> {
+    if let Some(other) = apps.iter().find(|a| a.name != this && a.gateway_port == Some(port)) {
+        bail!(
+            "port {port} is already used by app '{0}' - pick another, or move '{0}' first with `turnout app edit {0} --port PORT`",
+            other.name
+        );
+    }
+    Ok(())
 }

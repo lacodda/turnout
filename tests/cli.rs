@@ -234,6 +234,146 @@ fn app_add_canonicalizes_the_drive_letter() {
 }
 
 #[test]
+fn app_add_refuses_a_port_another_app_holds() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7001"])
+        .assert()
+        .success();
+    // Two apps on one port used to be accepted and only surface as the
+    // gateway dying on its second bind, after `start` had reported success.
+    turnout(dir.path())
+        .args(["app", "add", "admin", "--path"])
+        .arg(&project)
+        .args(["--port", "7001"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("port 7001 is already used by app 'web'"));
+    turnout(dir.path())
+        .args(["app", "add", "admin", "--path"])
+        .arg(&project)
+        .args(["--port", "7002"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "edit", "admin", "--port", "7001"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already used by app 'web'"));
+    // Keeping its own port is not a clash.
+    turnout(dir.path()).args(["app", "edit", "web", "--port", "7001"]).assert().success();
+}
+
+#[test]
+fn gateway_refuses_a_port_two_apps_share() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7001"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "admin", "--path"])
+        .arg(&project)
+        .args(["--port", "7002"])
+        .assert()
+        .success();
+    // The CLI no longer lets this happen; a hand-edited catalog still can.
+    let apps = dir.path().join("apps.json");
+    let edited = std::fs::read_to_string(&apps).unwrap().replace("7002", "7001");
+    std::fs::write(&apps, edited).unwrap();
+    for command in [["gateway", "run"], ["gateway", "start"]] {
+        turnout(dir.path())
+            .args(command)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("'admin' and 'web' share gateway port 7001"));
+    }
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
+    assert!(!state.contains("\"gateway\""), "a gateway that never started was recorded: {state}");
+}
+
+#[test]
+fn gateway_start_refuses_a_port_another_process_holds() {
+    let (dir, project) = workspace();
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = busy.local_addr().unwrap().port();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &port.to_string()])
+        .assert()
+        .success();
+    // The spawn would succeed and the child would fail its bind and exit;
+    // `start` used to take the spawn for the start and record a pid that was
+    // already gone. Now the taken port is named before anything is spawned.
+    turnout(dir.path())
+        .args(["gateway", "start"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("port {port} is already in use by another process")).and(predicate::str::contains("app edit myapp --port")));
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
+    assert!(!state.contains("\"gateway\""), "a dead gateway was recorded: {state}");
+}
+
+#[test]
+fn gateway_start_and_stop_roundtrip() {
+    let (dir, project) = workspace();
+    let (port, reservation) = reserved_port();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &port.to_string()])
+        .assert()
+        .success();
+    drop(reservation);
+    turnout(dir.path())
+        .args(["gateway", "start"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gateway started").and(predicate::str::contains(format!("http://localhost:{port}"))));
+    // `start` returned only once the port answered, so this holds at once.
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    assert!(std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok());
+    turnout(dir.path())
+        .args(["gateway", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Gateway stopped"));
+    turnout(dir.path())
+        .args(["gateway", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
+fn gateway_stop_forgets_a_record_whose_process_is_gone() {
+    let (dir, _project) = workspace();
+    let (port, reservation) = reserved_port();
+    drop(reservation);
+    // A gateway killed from outside (or one that died) leaves its record
+    // behind; `stop` used to fail on the kill and leave it to fail again.
+    let state = format!("{{\"bindings\":{{}},\"gateway\":{{\"pid\":4294967295,\"ports\":{{\"{port}\":\"myapp\"}}}}}}");
+    std::fs::write(dir.path().join("state.json"), state).unwrap();
+    turnout(dir.path())
+        .args(["gateway", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("was no longer running"));
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
+    assert!(!state.contains("\"gateway\""), "the stale record survived: {state}");
+    turnout(dir.path())
+        .args(["gateway", "stop"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("not running"));
+}
+
+#[test]
 fn gateway_run_on_a_busy_port_suggests_stopping() {
     let (dir, project) = workspace();
     // Hold the listener that chose the port rather than rebinding its number:

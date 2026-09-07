@@ -1,5 +1,5 @@
-use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
@@ -23,19 +23,27 @@ pub fn run(command: GatewayCommand) -> Result<()> {
     }
 }
 
+/// How long a freshly spawned gateway gets to answer on its first port.
+/// A local bind takes milliseconds; the margin is for a cold start on a
+/// busy machine, not for a gateway that is actually stuck.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn start() -> Result<()> {
-    let ports: BTreeMap<u16, String> = store::load_apps()?
-        .into_iter()
-        .filter_map(|app| app.gateway_port.map(|port| (port, app.name)))
-        .collect();
-    if ports.is_empty() {
-        bail!("no apps with a gateway port - set one with `turnout app edit NAME --port PORT`");
-    }
+    let ports = gateway::listening_ports(&store::load_apps()?)?;
     let mut state = store::load_state()?;
     if let Some(running) = &state.gateway
         && probe(running)
     {
         bail!("the gateway is already running (pid {})", running.pid);
+    }
+
+    // Ports answering now belong to something else: the record above says no
+    // gateway of ours is alive. Refusing here names the port and the app; the
+    // child would only fail its bind and exit with nothing to show for it.
+    for (port, app) in &ports {
+        if port_answers(*port) {
+            bail!("port {port} is already in use by another process - free it, or give '{app}' another port with `turnout app edit {app} --port PORT`");
+        }
     }
 
     let exe = std::env::current_exe().context("cannot locate the turnout binary")?;
@@ -52,12 +60,37 @@ fn start() -> Result<()> {
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
         command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
     }
-    let child = command.spawn().context("cannot start the gateway process")?;
+    crate::utils::stop_inheriting_stdio();
+    let mut child = command.spawn().context("cannot start the gateway process")?;
 
-    state.gateway = Some(Gateway {
+    // Do not take the spawn for the start. The child binds its ports after
+    // this returns; when one is taken it exits at once, and recording its pid
+    // would leave `status` calling a dead process alive and `stop` failing
+    // on it. Wait for the first port to answer, or for the child to give up.
+    let gateway = Gateway {
         pid: child.id(),
         ports: ports.clone(),
-    });
+    };
+    let started = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait().context("cannot check on the gateway process")? {
+            bail!("the gateway exited right after starting ({status}) - run `turnout gateway run` in the foreground to see why");
+        }
+        if probe(&gateway) {
+            break;
+        }
+        if started.elapsed() > START_TIMEOUT {
+            let _ = kill(child.id());
+            bail!(
+                "the gateway did not answer on port {} within {}s - run `turnout gateway run` in the foreground to see why",
+                gateway.ports.keys().next().copied().unwrap_or_default(),
+                START_TIMEOUT.as_secs()
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    state.gateway = Some(gateway);
     store::save_state(&state)?;
     crate::journal::record("gateway.start", None, None, Some(&format!("{} apps", ports.len())));
     println!("Gateway started (pid {}).", child.id());
@@ -73,7 +106,17 @@ fn stop() -> Result<()> {
         println!("The gateway is not running.");
         return Ok(());
     };
-    kill(running.pid)?;
+    // A record whose process is gone (killed from outside, or died on its
+    // own) is stale, not an error: forget it rather than fail on the kill and
+    // leave the record to fail the same way next time.
+    if let Err(error) = kill(running.pid) {
+        if probe(&running) {
+            return Err(error);
+        }
+        store::save_state(&state)?;
+        println!("The gateway (pid {}) was no longer running - cleared the stale record.", running.pid);
+        return Ok(());
+    }
     store::save_state(&state)?;
     crate::journal::record("gateway.stop", None, None, None);
     println!("Gateway stopped (pid {}).", running.pid);
@@ -82,10 +125,12 @@ fn stop() -> Result<()> {
 
 /// Quick liveness check: can we open one of the recorded ports?
 pub fn probe(gateway: &Gateway) -> bool {
-    gateway.ports.keys().next().is_some_and(|port| {
-        let address = std::net::SocketAddr::from(([127, 0, 0, 1], *port));
-        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).is_ok()
-    })
+    gateway.ports.keys().next().is_some_and(|port| port_answers(*port))
+}
+
+fn port_answers(port: u16) -> bool {
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
 }
 
 #[cfg(windows)]

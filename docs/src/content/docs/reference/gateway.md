@@ -18,7 +18,9 @@ turnout gateway start   # background process; ports are printed
 turnout gateway stop    # stop it
 ```
 
-`start` launches the gateway detached and records its pid; `status` shows whether it is alive. Bindings changed with `turnout use` are picked up automatically - the gateway re-reads them on every request.
+`start` launches the gateway detached and returns once its first port answers; only then is the pid recorded, so `status` never reports a gateway that died on the way up. Two things are refused before anything is spawned, each naming the port and the app: a port already taken by another process, and a port two apps share (`app add` and `app edit` no longer let that happen, a hand-edited catalog still can). Bindings changed with `turnout use` are picked up automatically - the gateway re-reads them on every request.
+
+`stop` kills the recorded process. If that process is already gone - killed from outside, or died on its own - the stale record is cleared and the command succeeds, rather than failing on a pid that no longer exists.
 
 ## run
 

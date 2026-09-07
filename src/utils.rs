@@ -90,6 +90,37 @@ pub fn check_reachable(server: &Server) -> Result<reqwest::StatusCode> {
     })
 }
 
+/// Keep our own standard handles out of a child we are about to detach.
+///
+/// On Windows a child inherits every inheritable handle of its parent, and
+/// the pipes a shell, an IDE task or a test harness gave us for stdout and
+/// stderr are inheritable - that is how they reached us. A detached gateway
+/// that inherits them keeps the pipe open for as long as it lives, and
+/// whoever is reading `turnout gateway start | ...` never sees the end of
+/// output: the command has returned, the reader is still waiting. Setting the
+/// child's own stdio to null does not help - that only decides what the child
+/// calls stdout, not which handles it carries.
+///
+/// Unix closes every descriptor Rust opens on exec (CLOEXEC), so there is
+/// nothing to do there.
+pub fn stop_inheriting_stdio() {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, SetHandleInformation};
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+        for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+            // SAFETY: both calls take a handle we do not own memory behind and
+            // touch only its kernel-side flags; a missing handle is skipped.
+            unsafe {
+                let handle = GetStdHandle(which);
+                if handle != INVALID_HANDLE_VALUE && !handle.is_null() {
+                    SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::civil_from_days;

@@ -28,6 +28,8 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--dist DIR]
 
 With `NAME` or `--path` missing, an interactive wizard walks you through: it detects the project type (pnpm / yarn / npm / cargo) from lock and manifest files, proposes commands, suggests a free gateway port and lets you pick allowed servers from the catalog.
 
+A gateway port belongs to exactly one app: `add` and `edit` refuse a port another app already holds and name that app. Two apps on one port would leave the gateway unable to bind the second listener.
+
 With both given, `add` is fully non-interactive (useful for scripts): commands come from detection, adjustable via `--command`.
 
 ### Where the commands come from

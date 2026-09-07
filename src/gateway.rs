@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -12,7 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as StandMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
-use crate::model::Server;
+use crate::model::{App, Server};
 use crate::store;
 
 /// Upper bound for a buffered request body (dev API calls and uploads).
@@ -31,15 +31,33 @@ struct Ctx {
     clients: Clients,
 }
 
-/// Run listeners for every app with a gateway port, in the foreground.
-pub fn run() -> Result<()> {
-    let apps: Vec<(String, u16)> = store::load_apps()?
-        .into_iter()
-        .filter_map(|app| app.gateway_port.map(|port| (app.name, port)))
-        .collect();
-    if apps.is_empty() {
+/// The port each app is served on, or why the gateway cannot start.
+///
+/// Shared by `gateway run` and `gateway start` so both refuse the same
+/// catalogs with the same words. A port held by two apps used to collapse
+/// silently into one map entry here; the second `bind` then failed inside
+/// the detached child, after `start` had already reported success, and the
+/// first sign was `stop` failing on a pid that was long gone.
+pub fn listening_ports(apps: &[App]) -> Result<BTreeMap<u16, String>> {
+    let mut ports = BTreeMap::new();
+    for app in apps {
+        let Some(port) = app.gateway_port else { continue };
+        if let Some(other) = ports.insert(port, app.name.clone()) {
+            bail!(
+                "apps '{other}' and '{}' share gateway port {port} - give one of them another port with `turnout app edit NAME --port PORT`",
+                app.name
+            );
+        }
+    }
+    if ports.is_empty() {
         bail!("no apps with a gateway port - set one with `turnout app edit NAME --port PORT`");
     }
+    Ok(ports)
+}
+
+/// Run listeners for every app with a gateway port, in the foreground.
+pub fn run() -> Result<()> {
+    let apps: Vec<(String, u16)> = listening_ports(&store::load_apps()?)?.into_iter().map(|(port, app)| (app, port)).collect();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let jars: Jars = Arc::default();
@@ -382,4 +400,41 @@ fn strip_hop_headers(headers: &mut HeaderMap) {
     headers.remove("proxy-authorization");
     headers.remove("te");
     headers.remove("trailer");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(name: &str, port: Option<u16>) -> App {
+        App {
+            name: name.to_string(),
+            path: String::new(),
+            commands: BTreeMap::new(),
+            dist_dir: None,
+            gateway_port: port,
+            servers: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn listening_ports_maps_each_port_to_its_app() {
+        let ports = listening_ports(&[app("web", Some(7001)), app("api", None), app("admin", Some(7002))]).unwrap();
+        assert_eq!(ports.get(&7001).map(String::as_str), Some("web"));
+        assert_eq!(ports.get(&7002).map(String::as_str), Some("admin"));
+        assert_eq!(ports.len(), 2, "an app without a port got a listener");
+    }
+
+    #[test]
+    fn listening_ports_refuses_a_port_two_apps_share() {
+        let error = listening_ports(&[app("web", Some(7001)), app("admin", Some(7001))]).unwrap_err().to_string();
+        assert!(error.contains("'web' and 'admin' share gateway port 7001"), "{error}");
+        assert!(error.contains("turnout app edit NAME --port PORT"), "{error}");
+    }
+
+    #[test]
+    fn listening_ports_needs_at_least_one_port() {
+        let error = listening_ports(&[app("web", None)]).unwrap_err().to_string();
+        assert!(error.contains("no apps with a gateway port"), "{error}");
+    }
 }

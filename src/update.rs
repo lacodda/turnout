@@ -148,6 +148,7 @@ fn spawn_background_check() {
         const DETACHED_PROCESS: u32 = 0x0000_0008;
         command.creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS);
     }
+    crate::utils::stop_inheriting_stdio();
     let _ = command.spawn();
 }
 
