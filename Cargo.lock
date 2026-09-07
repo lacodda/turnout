@@ -4028,7 +4028,7 @@ dependencies = [
 
 [[package]]
 name = "turnout"
-version = "0.13.0"
+version = "0.13.1"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4047,6 +4047,7 @@ dependencies = [
  "indicatif",
  "keyring",
  "libc",
+ "png",
  "predicates",
  "rand 0.10.2",
  "reqwest",

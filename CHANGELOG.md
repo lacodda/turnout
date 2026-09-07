@@ -7,7 +7,17 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.13.1] - 2026-09-07
+
+### Bug Fixes
+- Keep one port per app and report a gateway that never came up
+- Build the icon from the level that reads at each size
+- Keep the user PATH type on Windows
 ## [0.13.0] - 2026-09-02
+
+### Bug Fixes
+- Match agent keys by key data, not by comment
+- Assert what the agent protocol actually returns
 
 ### Features
 - Sign in with a key held by the SSH agent
