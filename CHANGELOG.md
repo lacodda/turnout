@@ -13,6 +13,7 @@ and nothing is missing - the number is simply unused.
 - Keep one port per app and report a gateway that never came up
 - Build the icon from the level that reads at each size
 - Keep the user PATH type on Windows
+- Refuse to signal a pid that cannot be a process
 ## [0.13.0] - 2026-09-02
 
 ### Bug Fixes
