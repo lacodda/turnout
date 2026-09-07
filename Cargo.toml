@@ -78,3 +78,8 @@ tempfile = "3"
 tokio-stream = { version = "0.1", features = ["net"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread"] }
 tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "handshake"] }
+
+# Line-table debug info keeps backtraces readable while cutting the .pdb weight
+# that dominates target/debug. Full debug info is a one-line revert when needed.
+[profile.dev]
+debug = 1
