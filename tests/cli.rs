@@ -357,7 +357,11 @@ fn gateway_stop_forgets_a_record_whose_process_is_gone() {
     drop(reservation);
     // A gateway killed from outside (or one that died) leaves its record
     // behind; `stop` used to fail on the kill and leave it to fail again.
-    let state = format!("{{\"bindings\":{{}},\"gateway\":{{\"pid\":4294967295,\"ports\":{{\"{port}\":\"myapp\"}}}}}}");
+    // The pid is the largest one that still fits a C `int`: no process has
+    // it, and it stays a positive number in every tool that reads it. The
+    // first version of this test used u32::MAX, which `kill` reads as -1 -
+    // "signal everything I own" - and the CI runner shut itself down.
+    let state = format!("{{\"bindings\":{{}},\"gateway\":{{\"pid\":2147483647,\"ports\":{{\"{port}\":\"myapp\"}}}}}}");
     std::fs::write(dir.path().join("state.json"), state).unwrap();
     turnout(dir.path())
         .args(["gateway", "stop"])

@@ -133,8 +133,22 @@ fn port_answers(port: u16) -> bool {
     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
 }
 
-#[cfg(windows)]
+/// Signal the recorded gateway process.
+///
+/// The pid comes from `state.json`, which a hand edit or a corrupt write can
+/// turn into anything. Numbers that cannot name a process are refused before
+/// they reach a tool that would read them differently: `kill` parses the pid
+/// into a C `int`, so 4294967295 arrives as -1, and `kill -1` signals every
+/// process the user owns. That is how the whole CI runner died once.
 fn kill(pid: u32) -> Result<()> {
+    if pid <= 1 || pid > i32::MAX as u32 {
+        bail!("refusing to signal pid {pid}: not a process id");
+    }
+    kill_process(pid)
+}
+
+#[cfg(windows)]
+fn kill_process(pid: u32) -> Result<()> {
     let output = Command::new("taskkill")
         .args(["/PID", &pid.to_string(), "/T", "/F"])
         .output()
@@ -146,10 +160,25 @@ fn kill(pid: u32) -> Result<()> {
 }
 
 #[cfg(not(windows))]
-fn kill(pid: u32) -> Result<()> {
+fn kill_process(pid: u32) -> Result<()> {
     let output = Command::new("kill").arg(pid.to_string()).output().context("cannot run kill")?;
     if !output.status.success() {
         bail!("kill failed: {}", String::from_utf8_lossy(&output.stderr).trim());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Numbers that cannot name a process never reach the OS tool; the
+    /// message says so rather than reporting whatever the tool made of them.
+    #[test]
+    fn kill_refuses_a_number_that_is_not_a_pid() {
+        for pid in [0, 1, u32::MAX, i32::MAX as u32 + 1] {
+            let error = kill(pid).unwrap_err().to_string();
+            assert!(error.contains("not a process id"), "pid {pid}: {error}");
+        }
+    }
 }
