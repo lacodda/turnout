@@ -7,12 +7,28 @@ import path from "node:path";
 
 const ASSETS = "C:/Projects/turnout/assets";
 
-// The S tile (filled hex, bold code) is what reads at icon sizes.
+// Which level of the mark goes into which size is decided by `levelFor`
+// below, never by habit. This script used to take the S tile for every size,
+// and a 256px icon of a filled hexagon is a coloured blob in the taskbar,
+// not the mark - the owner saw it on nitid first, the whole line had it.
 const S = path.join(ASSETS, "logo-s.svg");
+const M = path.join(ASSETS, "logo-m.svg");
 const L = path.join(ASSETS, "logo.svg");
 const BANNER = path.join(ASSETS, "banner.svg");
 
-const ICO_SIZES = [16, 24, 32, 48, 64, 128, 256];
+// The level rule of the line: S at 27px and below (only the filled tile
+// survives there), M from 28 to 63, L from 64 up. Applied per image inside
+// the .ico, not per file. Held by a test in tests/release_consistency.rs.
+function levelFor(size) {
+  if (size <= 27) return S;
+  if (size <= 63) return M;
+  return L;
+}
+
+// Largest first. Windows picks by closest size and ignores order, but
+// readers that take the first entry verbatim exist - kilna's titlebar was
+// stretched from a 16px entry for exactly this reason.
+const ICO_SIZES = [256, 128, 64, 48, 32, 24, 16];
 
 async function png(src, size, out) {
   await sharp(src, { density: 384 }).resize(size, size).png().toFile(out);
@@ -47,15 +63,17 @@ function buildIco(pngBuffers, sizes) {
 
 const icoParts = [];
 for (const size of ICO_SIZES) {
-  icoParts.push(await sharp(S, { density: 384 }).resize(size, size).png().toBuffer());
+  icoParts.push(await sharp(levelFor(size), { density: 384 }).resize(size, size).png().toBuffer());
 }
 fs.writeFileSync(path.join(ASSETS, "icon.ico"), buildIco(icoParts, ICO_SIZES));
 console.log("wrote icon.ico");
 
-// Favicon + docs logo.
+// Favicon + docs logo. The favicon is the one documented exception to
+// `levelFor`: a browser draws it into 16px of tab whatever size the file is,
+// and the outline does not survive that - the canon names it explicitly.
 await png(S, 32, path.join(ASSETS, "favicon-32.png"));
-await png(S, 180, path.join(ASSETS, "apple-touch-icon.png"));
-await png(L, 512, path.join(ASSETS, "logo-512.png"));
+await png(levelFor(180), 180, path.join(ASSETS, "apple-touch-icon.png"));
+await png(levelFor(512), 512, path.join(ASSETS, "logo-512.png"));
 console.log("wrote pngs");
 
 // GitHub social preview: 1280x640. Two adjustments to the banner: its plate
