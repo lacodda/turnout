@@ -22,7 +22,7 @@ if (-not $tag) {
     }
 }
 if (-not $tag -or $tag -notmatch '^v\d') {
-    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.12.1"
+    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.13.1"
 }
 
 $name = "turnout-$tag-x86_64-pc-windows-msvc"
@@ -41,10 +41,38 @@ try {
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
-if (($userPath -split ";") -notcontains $dir) {
-    [Environment]::SetEnvironmentVariable("Path", "$userPath;$dir", "User")
-    Write-Host "Added $dir to your user PATH - restart the terminal to pick it up."
+# The user PATH is edited in the registry, not through the .NET environment
+# API: that call rewrites the value as REG_SZ, and a PATH stored as REG_SZ no
+# longer expands entries such as
+# %JAVA_HOME%\bin - they turn into literal text and silently stop working.
+# Reading the raw value keeps those entries as typed; writing it back as
+# ExpandString keeps the type. A PATH that cannot be edited is not a failed
+# install: the binary is in place, the user is told where.
+try {
+    $key = Get-Item "HKCU:\Environment"
+    $raw = [string]$key.GetValue("Path", "", "DoNotExpandEnvironmentNames")
+    $entries = @($raw -split ";" | Where-Object { $_ })
+    $wanted = $dir.TrimEnd("\")
+    $present = $entries | Where-Object { $_.TrimEnd("\") -ieq $wanted }
+    if (-not $present) {
+        $value = if ($entries.Count -gt 0) { ($entries + $wanted) -join ";" } else { $wanted }
+        Set-ItemProperty -Path "HKCU:\Environment" -Name Path -Value $value -Type ExpandString
+        # Tell running shells and Explorer that the environment changed, the
+        # way the System Properties dialog does; without it only new logins see
+        # the entry.
+        if (-not ("TurnoutInstall.Env" -as [type])) {
+            Add-Type -Namespace TurnoutInstall -Name Env -MemberDefinition @'
+[System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true, CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);
+'@
+        }
+        $result = [System.UIntPtr]::Zero
+        # HWND_BROADCAST = 0xffff, WM_SETTINGCHANGE = 0x1A, SMTO_ABORTIFHUNG = 0x2
+        [TurnoutInstall.Env]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, "Environment", 0x2, 5000, [ref]$result) | Out-Null
+        Write-Host "Added $dir to your user PATH - open a new terminal to pick it up."
+    }
+} catch {
+    Write-Host "Note: could not update the user PATH ($($_.Exception.Message)); add $dir to it yourself."
 }
 Write-Host "Installed turnout $tag to $dir\turnout.exe"
 

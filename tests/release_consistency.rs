@@ -187,6 +187,114 @@ mod tests {
     /// self-update only replaces the file it is running from - so the same
     /// name kept answering with old code, which reads as an unexplained
     /// downgrade. A copy also doubles the install for no new code.
+    /// The Windows installer edits the user PATH in the registry and keeps its
+    /// type. `[Environment]::SetEnvironmentVariable` rewrites the value as
+    /// REG_SZ, after which entries like `%JAVA_HOME%\bin` stop expanding and
+    /// silently break - on a machine that has none, "works for me" proves
+    /// nothing. Found by installing rigger, whose installer had the same line.
+    #[test]
+    fn the_windows_installer_keeps_the_path_type() {
+        let windows = read("tools/install.ps1");
+        assert!(
+            !windows.contains("SetEnvironmentVariable"),
+            "install.ps1 must not call [Environment]::SetEnvironmentVariable - it stores the user PATH as REG_SZ and breaks %VAR% entries"
+        );
+        assert!(
+            windows.contains("DoNotExpandEnvironmentNames") && windows.contains("-Type ExpandString"),
+            "install.ps1 must read the raw PATH and write it back as ExpandString"
+        );
+        assert!(
+            windows.contains("0x1A"),
+            "install.ps1 must broadcast WM_SETTINGCHANGE so open shells see the new PATH"
+        );
+    }
+
+    /// One image inside an `.ico`: its declared size and the PNG payload.
+    fn ico_images(ico: &[u8]) -> Vec<(u32, &[u8])> {
+        // Header: reserved (2), type (2), count (2); then 16 bytes per entry.
+        let count = u16::from_le_bytes([ico[4], ico[5]]) as usize;
+        (0..count)
+            .map(|index| {
+                let at = 6 + index * 16;
+                let entry = &ico[at..at + 16];
+                // A zero width means 256: the field is one byte.
+                let size = if entry[0] == 0 { 256 } else { entry[0] as u32 };
+                let length = u32::from_le_bytes([entry[8], entry[9], entry[10], entry[11]]) as usize;
+                let offset = u32::from_le_bytes([entry[12], entry[13], entry[14], entry[15]]) as usize;
+                (size, &ico[offset..offset + length])
+            })
+            .collect()
+    }
+
+    /// Whether a PNG shows the filled S tile rather than the plated mark.
+    ///
+    /// A quarter of the way across, vertically centred: inside the hexagon,
+    /// clear of the code. The S tile is the brand colour there (bright), the
+    /// M/L plate is near-black - the same glance the eye makes in a taskbar.
+    fn is_filled_tile(png: &[u8]) -> (bool, u32) {
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().expect("an icon image is not a PNG");
+        let mut buf = vec![0; reader.output_buffer_size().expect("png buffer size")];
+        let info = reader.next_frame(&mut buf).expect("cannot decode an icon image");
+        let channels = info.color_type.samples();
+        assert_eq!(info.bit_depth, png::BitDepth::Eight, "icon images are exported as 8-bit RGBA");
+        let (x, y) = (info.width as usize / 4, info.height as usize / 2);
+        let at = (y * info.width as usize + x) * channels;
+        let pixel = &buf[at..at + channels];
+        if channels == 4 {
+            assert!(pixel[3] > 40, "the {}px image is transparent where the tile should be", info.width);
+        }
+        let brightness = u32::from(pixel[0]) + u32::from(pixel[1]) + u32::from(pixel[2]);
+        (brightness > 180, info.width)
+    }
+
+    /// The level rule of the line, held against the actual pixels.
+    ///
+    /// The exporter used to take the S tile - a hexagon filled with the brand
+    /// colour - for every size, so the taskbar (48px) and the desktop (48-96px)
+    /// showed a coloured lozenge instead of the mark. S reads at 27px and
+    /// below; from 28px up the plated mark (M, then L) must be there.
+    #[test]
+    fn every_icon_size_carries_the_level_that_reads_at_it() {
+        let ico = std::fs::read(repo_root().join("assets/icon.ico")).expect("assets/icon.ico is missing");
+        let images = ico_images(&ico);
+        assert!(!images.is_empty(), "the .ico has no images");
+        for (size, png) in images {
+            let (filled, width) = is_filled_tile(png);
+            assert_eq!(width, size, "the {size}px entry holds a {width}px image");
+            if size <= 27 {
+                assert!(
+                    filled,
+                    "the {size}px image is not the filled S tile; below 28px the outline collapses into noise"
+                );
+            } else {
+                assert!(
+                    !filled,
+                    "the {size}px image is the filled S tile, not the plated mark - the level rule puts S at 27px and below"
+                );
+            }
+        }
+        // The touch icon is drawn at 180px: L territory, and the docs site
+        // shows the same file.
+        let touch = std::fs::read(repo_root().join("assets/apple-touch-icon.png")).expect("apple-touch-icon.png is missing");
+        let (filled, width) = is_filled_tile(&touch);
+        assert_eq!(width, 180);
+        assert!(!filled, "apple-touch-icon.png is the filled S tile at 180px");
+        let docs_copy = std::fs::read(repo_root().join("docs/public/apple-touch-icon.png")).expect("docs copy is missing");
+        assert_eq!(touch, docs_copy, "docs/public/apple-touch-icon.png drifted from assets/");
+    }
+
+    /// Largest first: Windows picks by closest size and ignores order, but
+    /// readers that take the first entry verbatim exist.
+    #[test]
+    fn the_largest_icon_image_comes_first() {
+        let ico = std::fs::read(repo_root().join("assets/icon.ico")).expect("assets/icon.ico is missing");
+        let sizes: Vec<u32> = ico_images(&ico).into_iter().map(|(size, _)| size).collect();
+        let mut sorted = sizes.clone();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        assert_eq!(sizes, sorted, "the images are not ordered largest first");
+    }
+
     #[test]
     fn the_alias_is_a_link_rather_than_a_second_binary() {
         let unix = read("tools/install.sh");
