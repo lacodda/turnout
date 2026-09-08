@@ -111,6 +111,13 @@ Recent:
 - **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs. The short alias `tn` is installed alongside.
 - **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
 
+## Examples
+
+Three small apps under `examples/` exist to see turnout at work rather than read about it:
+
+- [`vue-demo`](https://github.com/lacodda/turnout/tree/main/examples/vue-demo) and [`react-demo`](https://github.com/lacodda/turnout/tree/main/examples/react-demo) - the gateway end to end: the app's own address through the front door, the gateway URL handed over by `turnout dev`, requests reaching the stand, and the cookie jar keeping what the browser never sees. Each README is the setup, three commands long.
+- [`deploy-demo`](https://github.com/lacodda/turnout/tree/main/examples/deploy-demo) - a page that shows when its bundle was built, so a deploy is verifiable at a glance.
+
 ## Install
 
 **One-line installers.** Windows (PowerShell):

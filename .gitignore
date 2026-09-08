@@ -11,6 +11,8 @@ npm/turnout.exe
 npm/archive.*
 npm/node_modules/
 
-# Demo app used to exercise deploy
-examples/deploy-demo/node_modules/
-examples/deploy-demo/dist/
+# Demo apps: deploy-demo exercises deploy, vue-demo and react-demo the gateway
+examples/*/node_modules/
+examples/*/dist/
+# Written by `turnout app add` / `gateway start` for the demos
+examples/*/.env.development.local
