@@ -8,8 +8,25 @@ use crate::store;
 /// Run a named command of an app in its project directory, streaming output.
 /// Exits with the child's exit code, so turnout is transparent in scripts.
 pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
-    let apps = store::load_apps()?;
-    let app = resolve(&apps, app_name)?;
+    let mut apps = store::load_apps()?;
+    let index = {
+        let app = resolve(&apps, app_name)?;
+        apps.iter().position(|a| a.name == app.name).expect("resolved from the same list")
+    };
+    // `dev` is where the app gets its port: fixed once, saved, and from then
+    // on the front door knows where `{name}.localhost` goes.
+    if command_name == "dev" && apps[index].dev_port.is_none() {
+        let Some(port) = crate::front::dev_port_for(&apps, &apps[index].name) else {
+            bail!(
+                "no free dev port left in {:?} - pin one with `turnout app edit {} --dev-port PORT`",
+                crate::front::DEV_PORTS,
+                apps[index].name
+            );
+        };
+        apps[index].dev_port = Some(port);
+        store::save_apps(&apps)?;
+    }
+    let app = &apps[index];
     let Some(command_line) = app.commands.get(command_name) else {
         bail!(
             "app '{0}' has no '{1}' command - add it with `turnout app edit {0} --command {1}=CMD`",
@@ -31,6 +48,25 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
     }
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     eprintln!("[{}] {command_line}", app.name);
+    if command_name == "dev"
+        && let Some(port) = app.dev_port
+    {
+        env.push(("PORT", port.to_string()));
+        let door = store::load_state()?.gateway.and_then(|gateway| gateway.front_port);
+        match door {
+            Some(front) => eprintln!("[{}] {} -> dev server port {port}", app.name, crate::front::address(&app.name, front)),
+            None => eprintln!(
+                "[{}] dev server port {port} (PORT, {{port}}) - start the gateway for http://{}.localhost",
+                app.name, app.name
+            ),
+        }
+        if !command_line.contains(&port.to_string()) && !app.commands["dev"].contains("{port}") {
+            eprintln!(
+                "[{}] note: the dev command does not mention {{port}} - a server that ignores PORT stays on its own port",
+                app.name
+            );
+        }
+    }
     let status = crate::utils::run_in_dir_with(&command_line, &dir, &env)?;
     // 130 is the conventional "interrupted" exit; the raw Windows status for
     // Ctrl+C is a negative NTSTATUS nobody's scripts check for.

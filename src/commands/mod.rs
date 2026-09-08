@@ -9,6 +9,7 @@ pub mod exec;
 pub mod gateway;
 pub mod group;
 pub mod key;
+pub mod open;
 pub mod pass;
 pub mod path;
 pub mod self_update;

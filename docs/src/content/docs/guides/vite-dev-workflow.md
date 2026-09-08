@@ -36,7 +36,7 @@ cd ~/dev/myshop
 turnout app add
 ```
 
-The wizard detects the package manager from the lock file, proposes the standard commands (`pnpm dev`, `pnpm build`, ...), suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project) and lets you pick the allowed servers. The same, scripted:
+The wizard detects the package manager from the lock file, proposes the standard commands (`pnpm dev --port {port}`, `pnpm build`, ... - a Vite dev script takes its port from turnout), suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project) and lets you pick the allowed servers. The same, scripted:
 
 ```bash
 turnout app add myshop --path . --port 7100 --env-var VITE_API_URL --server main --server second
@@ -76,12 +76,15 @@ turnout use myshop main     # which stand to work against
 
 turnout gateway start       # once per workday
 #   myshop: http://localhost:7100
+# Front door: http://localhost
+#   myshop: http://myshop.localhost
 
 turnout dev                 # from anywhere inside the project
-# [myshop] pnpm dev  ->  Vite on http://localhost:5173
+# [myshop] pnpm dev --port 5100
+# [myshop] http://myshop.localhost -> dev server port 5100
 ```
 
-Open `localhost:5173`: the UI is local, every API call travels through `localhost:7100` to the stand. Log in to the stand - its session cookie never reaches your browser; it lands in the gateway's jar for the `myshop`+`main` pair.
+Open `myshop.localhost` (`turnout open myshop` does it): the UI is local, on the port turnout gave the dev server - the same one tomorrow - and every API call travels through `localhost:7100` to the stand. Log in to the stand - its session cookie never reaches your browser; it lands in the gateway's jar for the `myshop`+`main` pair.
 
 ### Switch stands
 
@@ -106,6 +109,7 @@ Paths:   none yet
 Bindings:
   myshop -> second
 Gateway: running (pid 18324; myshop:7100 -> VITE_API_URL)
+Front:   http://localhost - http://NAME.localhost
 ```
 
 ## What the gateway handles for you

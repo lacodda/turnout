@@ -17,6 +17,7 @@ A local product you work on.
 - commands: `dev`, `build`, `test`, `lint`, plus custom ones;
 - what counts as the build artifact (e.g. a `dist` folder);
 - the local gateway port the app talks to, and the variable and dotenv file that hand the app the gateway's address;
+- the dev server's port, behind the app's own address `http://NAME.localhost`;
 - which servers the app is allowed to use, and which one is currently selected for development.
 
 ## Server

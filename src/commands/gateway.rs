@@ -10,14 +10,14 @@ use crate::{gateway, store};
 pub fn run(command: GatewayCommand) -> Result<()> {
     match command {
         GatewayCommand::Start => start(),
-        GatewayCommand::Run => {
+        GatewayCommand::Run { front_port } => {
             // Same guard as `start`: a raw bind error (os error 10048) is cryptic.
             if let Some(running) = &store::load_state()?.gateway
                 && probe(running)
             {
                 bail!("the gateway is already running (pid {}) - stop it with `turnout gateway stop`", running.pid);
             }
-            gateway::run()
+            gateway::run(front_port)
         }
         GatewayCommand::Stop => stop(),
     }
@@ -47,13 +47,16 @@ fn start() -> Result<()> {
         }
     }
 
+    // The door's port is decided here and handed to the child, so the record
+    // below can name it without waiting for the child to say.
+    let front_port = crate::front::pick_port();
     let exe = std::env::current_exe().context("cannot locate the turnout binary")?;
     let mut command = Command::new(exe);
-    command
-        .args(["gateway", "run"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    command.args(["gateway", "run"]);
+    if let Some(port) = front_port {
+        command.args(["--front-port", &port.to_string()]);
+    }
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -71,6 +74,7 @@ fn start() -> Result<()> {
     let gateway = Gateway {
         pid: child.id(),
         ports: ports.clone(),
+        front_port,
     };
     let started = Instant::now();
     loop {
@@ -97,6 +101,20 @@ fn start() -> Result<()> {
     println!("Gateway started (pid {}).", child.id());
     for (port, app) in ports {
         println!("  {app}: http://localhost:{port}");
+    }
+    match front_port {
+        Some(front) => {
+            println!("Front door: http://localhost:{front}");
+            for app in &apps {
+                println!("  {}: {}", app.name, crate::front::address(&app.name, front));
+            }
+        }
+        None => println!(
+            "Front door: closed - ports {} and {} are taken; set {} to open it elsewhere",
+            crate::front::PORT,
+            crate::front::FALLBACK_PORT,
+            crate::front::ENV_PORT
+        ),
     }
     // The dotenv files are the road for apps started past turnout; a port
     // changed since the last `app edit` is caught up here.

@@ -60,10 +60,31 @@ const ROLES: &[(&str, &[&str])] = &[
 /// Commands for a project: real `package.json` scripts when they are there,
 /// otherwise the manager's conventional defaults.
 pub fn commands_for(path: &Path, kind: ProjectKind) -> BTreeMap<String, String> {
-    match read_scripts(path) {
+    let mut commands = match read_scripts(path) {
         Some(scripts) if !scripts.is_empty() => from_scripts(&scripts, kind),
         _ => default_commands(kind),
+    };
+    if uses_vite(path) {
+        with_vite_port(&mut commands, kind);
     }
+    commands
+}
+
+/// Vite does not read `PORT`; it takes `--port`. A Vite project's dev command
+/// gets turnout's `{port}` placeholder appended so the server lands where the
+/// front door expects it. npm needs `--` before arguments meant for the
+/// script; pnpm and yarn pass them through.
+fn with_vite_port(commands: &mut BTreeMap<String, String>, kind: ProjectKind) {
+    let Some(dev) = commands.get_mut("dev") else { return };
+    if dev.contains("{port}") {
+        return;
+    }
+    let separator = if kind == ProjectKind::Npm { " -- --port {port}" } else { " --port {port}" };
+    dev.push_str(separator);
+}
+
+fn uses_vite(path: &Path) -> bool {
+    std::fs::read_to_string(path.join("package.json")).is_ok_and(|text| text.contains("\"vite\""))
 }
 
 /// Script names declared in `package.json`, in file order.
@@ -122,6 +143,24 @@ fn default_commands(kind: ProjectKind) -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Vite takes `--port`, not `PORT`: its dev command gets turnout's
+    /// placeholder, with npm's `--` where npm needs it.
+    #[test]
+    fn a_vite_dev_script_takes_its_port_from_turnout() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("package.json"),
+            r#"{"scripts":{"dev":"vite","build":"vite build"},"devDependencies":{"vite":"^7"}}"#,
+        )
+        .unwrap();
+        assert_eq!(commands_for(dir.path(), ProjectKind::Pnpm)["dev"], "pnpm dev --port {port}");
+        assert_eq!(commands_for(dir.path(), ProjectKind::Npm)["dev"], "npm run dev -- --port {port}");
+        assert_eq!(commands_for(dir.path(), ProjectKind::Pnpm)["build"], "pnpm build");
+        // A project without Vite keeps its command as it is.
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"dev":"next dev"}}"#).unwrap();
+        assert_eq!(commands_for(dir.path(), ProjectKind::Pnpm)["dev"], "pnpm dev");
+    }
 
     #[test]
     fn scripts_fill_turnout_roles() {

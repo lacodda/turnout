@@ -14,7 +14,7 @@ An **app** is a local project: its path, its commands (`dev`, `build`, ...), its
 ## add
 
 ```bash
-turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file FILE] [--dist DIR]
+turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file FILE] [--dev-port PORT] [--dist DIR]
                 [--command NAME=CMD]... [--server SERVER]...
 ```
 
@@ -24,6 +24,7 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file F
 | `--port` | `-P` | Local gateway port for this app |
 | `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `TURNOUT_GATEWAY_URL`) |
 | `--env-file` | | Dotenv file turnout keeps in step with the port, relative to the project (default `.env.development.local`) |
+| `--dev-port` | | Port the dev server listens on; assigned from `5100-5199` on the first `dev` when unset, `0` hands it back |
 | `--dist` | `-d` | Build artifact directory, relative to the project path |
 | `--command` | `-c` | Set a command as `NAME=CMD` (repeatable); overrides detected defaults |
 | `--server` | `-s` | Allow a server for this app (repeatable) |
@@ -39,7 +40,15 @@ The port is set once, here. The app is handed the *address* (`http://localhost:P
 - **A variable on every command turnout runs.** `turnout dev`, and any custom command run through `turnout run`, get `VARIABLE=http://localhost:PORT` in their environment. `build`, `test` and `lint` do not: a variable in the process environment overrides every dotenv file whatever the mode, and a production bundle must not bake in localhost. The variable's name is per app (`--env-var`), because the framework decides what the app can see - Vite exposes only `VITE_*` to the client, Create React App only `REACT_APP_*`. The wizard suggests `VITE_API_URL` for a Vite project and `TURNOUT_GATEWAY_URL` otherwise.
 - **A dotenv file turnout keeps in step.** For the times the app is started past turnout - from an IDE, or with `pnpm dev` by hand - `app add`, `app edit` and `gateway start` write the same assignment into `.env.development.local` (or the file named with `--env-file`). Vite and CRA read `.env.*.local` on top of `.env` in development only, so the project's `.env` stays untouched and committable. Only one block of the file is turnout's: a header line and the assignment under it; everything else in the file survives every rewrite, and unsetting the port takes the block out again. The file name is appended to `.gitignore` when the project is a git repository.
 
-Commands can also name the address inline: `{gateway}` in a command line is replaced with the URL and `{gateway_port}` with the number before the command runs - `vite --port 5173 --api {gateway}` works on every platform without `$VAR` or `%VAR%` syntax. A command that uses a placeholder on an app without a port is refused with the way to set one.
+Commands can also name the address inline: `{gateway}` in a command line is replaced with the URL and `{gateway_port}` with the number before the command runs - `vite --api {gateway}` works on every platform without `$VAR` or `%VAR%` syntax. A command that uses a placeholder on an app without a port is refused with the way to set one.
+
+## The app's address
+
+Every app answers at `http://NAME.localhost` through the gateway's [front door](/turnout/reference/gateway/#the-front-door), whatever port its dev server took. The port behind the name is the app's **dev port**: assigned from `5100-5199` on the first `turnout dev` and kept from then on, or pinned with `--dev-port` (a project that insists on 3000, say). `--dev-port 0` hands an assigned port back; the next `dev` picks a fresh one. Like a gateway port, a dev port belongs to one app.
+
+`dev` hands the port to the server as the `PORT` variable and as `{port}` in the command line. Vite does not read `PORT`, so a Vite project's detected dev command already ends in `--port {port}` (`pnpm dev --port {port}`, `npm run dev -- --port {port}`); a project registered before that gets the same with `turnout app edit myapp --command "dev=pnpm dev --port {port}"`.
+
+`app list` shows the address next to apps that have a dev port; `app show` prints it with the port; `turnout open myapp` opens it.
 
 ```bash
 turnout app add myshop --path ~/dev/myshop --port 7001 --env-var VITE_API_URL
@@ -77,7 +86,7 @@ turnout app add api -p ~/dev/api -c "dev=make run" -s staging   # same, short fo
 ## list / show
 
 ```bash
-turnout app list          # one line per app: name, path, gateway port
+turnout app list          # one line per app: name, path, gateway port, address
 turnout app show myapp    # full card: commands, dist, allowed servers
 ```
 
@@ -100,6 +109,7 @@ turnout app edit myapp --add-server prod --rm-server staging
 | `--port` | `-P` | Local gateway port for this app |
 | `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `TURNOUT_GATEWAY_URL`) |
 | `--env-file` | | Dotenv file turnout keeps in step with the port, relative to the project (default `.env.development.local`) |
+| `--dev-port` | | Port the dev server listens on; assigned from `5100-5199` on the first `dev` when unset, `0` hands it back |
 | `--dist` | `-d` | Build artifact directory, relative to the project path |
 | `--command` | `-c` | Set a command as `NAME=CMD`, or `NAME=` to remove it (repeatable) |
 | `--add-server` | `-a` | Allow a server (repeatable) |

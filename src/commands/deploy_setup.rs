@@ -292,6 +292,7 @@ mod tests {
             gateway_port: None,
             gateway_env: None,
             env_file: None,
+            dev_port: None,
             servers: servers.iter().map(|s| s.to_string()).collect(),
         }
     }

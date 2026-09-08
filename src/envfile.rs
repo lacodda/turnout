@@ -221,23 +221,33 @@ fn ignores(pattern: &str, file_name: &str) -> bool {
 
 /// The command line with turnout's placeholders filled in.
 ///
-/// `{gateway}` is the URL, `{gateway_port}` the number. Both need a port;
-/// a command that asks for one on an app without it is a configuration
-/// error and says so, rather than running with the braces left in.
+/// `{gateway}` is the gateway URL, `{gateway_port}` its number, `{port}`
+/// the app's own dev-server port. Each needs its port to exist; a command
+/// that asks for one the app does not have is a configuration error and
+/// says so, rather than running with the braces left in.
 pub fn substitute(command_line: &str, app: &App) -> Result<String> {
-    const PLACEHOLDERS: [&str; 2] = ["{gateway}", "{gateway_port}"];
-    if !PLACEHOLDERS.iter().any(|p| command_line.contains(p)) {
-        return Ok(command_line.to_string());
+    let mut out = command_line.to_string();
+    if out.contains("{gateway}") || out.contains("{gateway_port}") {
+        let Some(port) = app.gateway_port else {
+            bail!(
+                "the command uses {{gateway}} but app '{0}' has no gateway port - set one with `turnout app edit {0} --port PORT`",
+                app.name
+            );
+        };
+        out = out
+            .replace("{gateway}", &format!("http://localhost:{port}"))
+            .replace("{gateway_port}", &port.to_string());
     }
-    let Some(port) = app.gateway_port else {
-        bail!(
-            "the command uses {{gateway}} but app '{0}' has no gateway port - set one with `turnout app edit {0} --port PORT`",
-            app.name
-        );
-    };
-    Ok(command_line
-        .replace("{gateway}", &format!("http://localhost:{port}"))
-        .replace("{gateway_port}", &port.to_string()))
+    if out.contains("{port}") {
+        let Some(port) = app.dev_port else {
+            bail!(
+                "the command uses {{port}} but app '{0}' has no dev port yet - it is assigned by `turnout dev {0}`, or pinned with `turnout app edit {0} --dev-port PORT`",
+                app.name
+            );
+        };
+        out = out.replace("{port}", &port.to_string());
+    }
+    Ok(out)
 }
 
 /// Where the app's dotenv file lives, for messages.
@@ -259,6 +269,7 @@ mod tests {
             gateway_port: port,
             gateway_env: None,
             env_file: None,
+            dev_port: None,
             servers: Vec::new(),
         }
     }
@@ -330,6 +341,15 @@ mod tests {
         assert_eq!(substitute("pnpm dev", &app(None)).unwrap(), "pnpm dev");
         let error = substitute("x {gateway}", &app(None)).unwrap_err().to_string();
         assert!(error.contains("has no gateway port"), "{error}");
+        // The dev port is its own placeholder with its own complaint.
+        let error = substitute("vite --port {port}", &app(Some(7001))).unwrap_err().to_string();
+        assert!(error.contains("has no dev port yet"), "{error}");
+        let mut with_dev = app(Some(7001));
+        with_dev.dev_port = Some(5100);
+        assert_eq!(
+            substitute("vite --port {port} --api {gateway}", &with_dev).unwrap(),
+            "vite --port 5100 --api http://localhost:7001"
+        );
     }
 
     #[test]

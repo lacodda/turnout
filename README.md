@@ -86,6 +86,7 @@ Bindings:
   api -> staging
   web -> prod-eu
 Gateway: running (pid 24180; web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL)
+Front:   http://localhost - http://NAME.localhost
 Recent:
   2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
   2026-08-09T01:12:44Z  use            web -> prod-eu
@@ -94,6 +95,7 @@ Recent:
 ## What you get
 
 - **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
+- **One address per app.** `http://myapp.localhost` reaches the dev server turnout started for `myapp`, whichever port it took - the gateway's front door routes by name, and `*.localhost` needs no hosts file. The port is assigned once and handed to the server as `PORT` and `{port}`; `turnout open myapp` opens the address.
 - **The port is written once.** An app's gateway port lives in turnout only; the app is handed the address - `turnout dev` sets it as an environment variable the framework can see (`VITE_API_URL`, `REACT_APP_API_URL`, your pick), and a `.env.development.local` that turnout keeps in step covers a dev server started from an IDE. `build` never gets it, so a production bundle cannot bake in localhost.
 - **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
 - **Named deploy targets.** The four of them under one name: `turnout deploy web-prod-eu` from any directory, no flags to re-type. A first deploy that has no target yet offers to save the one it just used.

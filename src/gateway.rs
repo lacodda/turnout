@@ -16,7 +16,7 @@ use crate::model::{App, Server};
 use crate::store;
 
 /// Upper bound for a buffered request body (dev API calls and uploads).
-const MAX_REQUEST_BODY: usize = 256 * 1024 * 1024;
+pub(crate) const MAX_REQUEST_BODY: usize = 256 * 1024 * 1024;
 
 /// Cookies issued by stands, keyed by (app, server) - the browser never sees them.
 /// In-memory by design: restarting the gateway means logging in again (ADR 0002).
@@ -55,9 +55,11 @@ pub fn listening_ports(apps: &[App]) -> Result<BTreeMap<u16, String>> {
     Ok(ports)
 }
 
-/// Run listeners for every app with a gateway port, in the foreground.
-pub fn run() -> Result<()> {
+/// Run listeners for every app with a gateway port, in the foreground, plus
+/// the front door on `front_port` (picked when `None`).
+pub fn run(front_port: Option<u16>) -> Result<()> {
     let apps: Vec<(String, u16)> = listening_ports(&store::load_apps()?)?.into_iter().map(|(port, app)| (app, port)).collect();
+    let front_port = front_port.or_else(crate::front::pick_port);
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let jars: Jars = Arc::default();
@@ -75,6 +77,24 @@ pub fn run() -> Result<()> {
             };
             let router = axum::Router::new().fallback(proxy).with_state(ctx);
             tokio::spawn(async move { axum::serve(listener, router).await });
+        }
+        // The door is the second thing to open and the one thing allowed to
+        // fail: the stand proxies above are the daily flow, the door is on
+        // top of it.
+        match front_port {
+            Some(port) => match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+                Ok(listener) => {
+                    println!("front door: http://localhost:{port} - apps answer at {}", crate::front::address("NAME", port));
+                    tokio::spawn(crate::front::serve(listener, port));
+                }
+                Err(err) => eprintln!("front door: cannot listen on 127.0.0.1:{port} ({err}) - apps are reachable by port only"),
+            },
+            None => eprintln!(
+                "front door: ports {} and {} are both taken - apps are reachable by port only; set {} to open the door elsewhere",
+                crate::front::PORT,
+                crate::front::FALLBACK_PORT,
+                crate::front::ENV_PORT
+            ),
         }
         tokio::signal::ctrl_c().await?;
         println!("Gateway stopped.");
@@ -154,7 +174,7 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
     Ok(response.body(Body::from_stream(upstream.bytes_stream()))?)
 }
 
-fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+pub(crate) fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
     headers
         .get(UPGRADE)
         .and_then(|value| value.to_str().ok())
@@ -268,7 +288,7 @@ impl rustls::client::danger::ServerCertVerifier for AcceptAnyServerCert {
     }
 }
 
-async fn pump<S>(client: WebSocket, upstream: tokio_tungstenite::WebSocketStream<S>)
+pub(crate) async fn pump<S>(client: WebSocket, upstream: tokio_tungstenite::WebSocketStream<S>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
@@ -391,7 +411,7 @@ fn rewrite_location(headers: &mut HeaderMap, server_url: &str, port: u16) -> Res
 /// (the request into bytes, the response into a stream), so the original
 /// length may no longer hold - reqwest and axum recompute it for the body they
 /// actually send.
-fn strip_hop_headers(headers: &mut HeaderMap) {
+pub(crate) fn strip_hop_headers(headers: &mut HeaderMap) {
     for name in [CONNECTION, TRANSFER_ENCODING, UPGRADE, CONTENT_LENGTH] {
         headers.remove(&name);
     }
@@ -415,6 +435,7 @@ mod tests {
             gateway_port: port,
             gateway_env: None,
             env_file: None,
+            dev_port: None,
             servers: Vec::new(),
         }
     }

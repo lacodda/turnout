@@ -18,6 +18,7 @@ Runs the app's named command in its project directory - no `cd` required. `dev`,
 
 - **App resolution.** Pass the app name, or omit it and let turnout find the app whose directory contains your current one - `turnout dev` from anywhere inside the project just works. Outside any known project a terminal gets a [picker](/turnout/concepts/pickers/) instead of an error.
 - **The gateway address rides along.** `dev` and every custom command get the app's gateway URL as an environment variable (the name is per app - see [`turnout app`](/turnout/reference/app/#how-the-app-learns-the-gateway-address)); `build`, `test` and `lint` deliberately do not, so a production bundle never bakes in localhost. `{gateway}` and `{gateway_port}` in a command line are replaced before it runs.
+- **`dev` owns the dev server's port.** The first `dev` assigns the app a port from `5100-5199` and keeps it; every `dev` after that hands it over as `PORT` and as `{port}` in the command line, and prints the app's address - `http://myapp.localhost` through the gateway's [front door](/turnout/reference/gateway/#the-front-door). A dev command that mentions neither is noted: a server that ignores `PORT` stays on its own port, out of the door's reach.
 - **Transparent output.** The command's stdout/stderr stream through untouched; turnout's own one-line status goes to stderr.
 - **Exit codes pass through.** `turnout build` exits with the build's own code, so it drops into scripts and CI without surprises.
 - **Ctrl+C is clean.** The interrupt goes to the tool itself; turnout waits for it to die, then puts the terminal back the way it was - echo, line input, cursor - so the prompt you get back works even when a dev server left the console raw. A second Ctrl+C force-kills the tool's whole process tree (some dev servers ignore the first). The exit code is the conventional `130`. Whatever survives the interrupt dies with turnout: on Windows every spawned command runs in a kill-on-close job object, so no stray helper processes linger.
@@ -28,4 +29,8 @@ turnout dev                 # runs myapp's dev command in ~/dev/myapp
 
 turnout build myapp         # from anywhere
 turnout run deploy myapp    # custom command from the app config
+
+turnout dev myapp
+# [myapp] pnpm dev --port 5100
+# [myapp] http://myapp.localhost -> dev server port 5100
 ```

@@ -27,6 +27,10 @@ pub struct App {
     /// gateway port; `None` means `DEFAULT_ENV_FILE`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub env_file: Option<String>,
+    /// Port the app's dev server listens on; the front door routes
+    /// `{name}.localhost` here. Fixed on the first `dev`, or pinned by hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev_port: Option<u16>,
     /// Names of servers this app is allowed to use.
     #[serde(default)]
     pub servers: Vec<String>,
@@ -266,6 +270,9 @@ pub struct Gateway {
     pub pid: u32,
     /// Listening port per app at the moment the gateway started.
     pub ports: BTreeMap<u16, String>,
+    /// Where the front door opened, when it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub front_port: Option<u16>,
 }
 
 /// Entity names are stable identifiers: lowercase letters, digits and inner dashes.

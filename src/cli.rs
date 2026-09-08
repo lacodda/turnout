@@ -79,6 +79,8 @@ pub enum Command {
     },
     /// Run the app's `dev` command (app resolved from the current directory if omitted)
     Dev { app: Option<String> },
+    /// Open the app in the browser at http://NAME.localhost (through the gateway's front door)
+    Open { app: Option<String> },
     /// Run the app's `build` command
     Build { app: Option<String> },
     /// Run the app's `test` command
@@ -257,7 +259,11 @@ pub enum GatewayCommand {
     /// Start the gateway in the background
     Start,
     /// Run the gateway in the foreground (what `start` spawns)
-    Run,
+    Run {
+        /// Port for the front door; picked (80, then 7000) when omitted
+        #[arg(long, hide = true)]
+        front_port: Option<u16>,
+    },
     /// Stop the background gateway
     Stop,
 }
@@ -474,6 +480,9 @@ pub enum AppCommand {
         /// Dotenv file turnout keeps in step with the port, relative to the project (default: .env.development.local)
         #[arg(long = "env-file", value_name = "FILE")]
         env_file: Option<String>,
+        /// Port the dev server listens on (default: assigned from 5100-5199 on the first `dev`)
+        #[arg(long = "dev-port", value_name = "PORT")]
+        dev_port: Option<u16>,
         /// Build artifact directory, relative to the project path
         #[arg(short, long)]
         dist: Option<String>,
@@ -505,6 +514,9 @@ pub enum AppCommand {
         /// Dotenv file turnout keeps in step with the port, relative to the project
         #[arg(long = "env-file", value_name = "FILE")]
         env_file: Option<String>,
+        /// Port the dev server listens on; 0 lets the next `dev` assign one
+        #[arg(long = "dev-port", value_name = "PORT")]
+        dev_port: Option<u16>,
         #[arg(short, long)]
         dist: Option<String>,
         /// Set a command as NAME=CMD, or NAME= to remove it (repeatable)

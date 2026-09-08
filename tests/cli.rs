@@ -323,6 +323,7 @@ fn gateway_start_refuses_a_port_another_process_holds() {
 fn gateway_start_and_stop_roundtrip() {
     let (dir, project) = workspace();
     let (port, reservation) = reserved_port();
+    let (front, front_reservation) = reserved_port();
     turnout(dir.path())
         .args(["app", "add", "myapp", "--path"])
         .arg(&project)
@@ -330,11 +331,25 @@ fn gateway_start_and_stop_roundtrip() {
         .assert()
         .success();
     drop(reservation);
+    drop(front_reservation);
     turnout(dir.path())
+        .env("TURNOUT_FRONT_PORT", front.to_string())
         .args(["gateway", "start"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("Gateway started").and(predicate::str::contains(format!("http://localhost:{port}"))));
+        .stdout(
+            predicate::str::contains("Gateway started")
+                .and(predicate::str::contains(format!("http://localhost:{port}")))
+                .and(predicate::str::contains(format!("Front door: http://localhost:{front}")))
+                .and(predicate::str::contains(format!("myapp: http://myapp.localhost:{front}"))),
+        );
+    // The door answers, and `status` names it.
+    wait_for_port(front);
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("Front:   http://localhost:{front}")));
     // `start` returned only once the port answered, so this holds at once.
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     assert!(std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok());
@@ -531,6 +546,149 @@ fn run_hands_the_gateway_url_to_dev_but_not_to_build() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("has no gateway port"));
+}
+
+#[test]
+fn dev_gets_a_port_once_and_hands_it_over() {
+    let (dir, project) = workspace();
+    let show = if cfg!(windows) { "echo [%PORT%] [{port}]" } else { "echo [$PORT] [{port}]" };
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("dev={show}"), "--command", &format!("other={show}")])
+        .assert()
+        .success();
+    // Before the first `dev` there is no port, and a command asking for one says so.
+    turnout(dir.path())
+        .args(["run", "other", "myapp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no dev port yet"));
+    let first = turnout(dir.path()).args(["dev", "myapp"]).assert().success();
+    let out = String::from_utf8(first.get_output().stdout.clone()).unwrap();
+    let port: u16 = out.trim().trim_start_matches('[').split(']').next().unwrap().parse().expect(&out);
+    assert!((5100..=5199).contains(&port), "{out}");
+    assert_eq!(out.trim(), format!("[{port}] [{port}]"), "PORT and {{port}} disagree");
+    // The port is fixed: the next `dev` and every other command see the same one.
+    turnout(dir.path())
+        .args(["dev", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("[{port}] [{port}]")));
+    turnout(dir.path())
+        .args(["app", "show", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("Address:  http://myapp.localhost (dev server port {port})")));
+    // A second app cannot pin the same port; handing it back with 0 frees it.
+    turnout(dir.path())
+        .args(["app", "add", "other", "--path"])
+        .arg(&project)
+        .args(["--dev-port", &port.to_string()])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("dev port {port} is already used by app 'myapp'")));
+    turnout(dir.path()).args(["app", "edit", "myapp", "--dev-port", "0"]).assert().success();
+    turnout(dir.path())
+        .args(["app", "show", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("assigned on the first `turnout dev`"));
+}
+
+#[test]
+fn open_needs_a_running_gateway() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["open", "myapp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the gateway is not running").and(predicate::str::contains("turnout open myapp")));
+}
+
+#[test]
+fn the_front_door_routes_by_name_and_says_who_is_not_running() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    let (front, front_reservation) = reserved_port();
+    let (silent, silent_reservation) = reserved_port();
+    spawn_stand(stand_listener);
+
+    // `web` has a dev server (the stand stands in for it), `gone` has a port
+    // nobody listens on, `idle` was never started through turnout.
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string(), "--dev-port", &stand_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "gone", "--path"])
+        .arg(&project)
+        .args(["--dev-port", &silent.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "idle", "--path"]).arg(&project).assert().success();
+
+    drop(gateway_reservation);
+    drop(front_reservation);
+    drop(silent_reservation);
+    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
+        .env("TURNOUT_DATA_DIR", dir.path())
+        .args(["gateway", "run", "--front-port", &front.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let _guard = ChildGuard(child);
+    wait_for_port(front);
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async move {
+        let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let base = format!("http://127.0.0.1:{front}");
+        let get = |path: &str, host: String| client.get(format!("{base}{path}")).header("host", host).send();
+
+        // By name to the dev server, with or without the port in the Host.
+        let response = get("/hello", "web.localhost".into()).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.text().await.unwrap(), "hello from the stand");
+        let response = get("/hello", format!("web.localhost:{front}")).await.unwrap();
+        assert_eq!(response.status(), 200);
+
+        // A redirect to the dev server's own port comes back by name.
+        let response = get("/login", format!("web.localhost:{front}")).await.unwrap();
+        assert_eq!(response.status(), 302);
+        assert_eq!(response.headers()["location"], format!("http://web.localhost:{front}/after"));
+
+        // Who is not running is said in words, with the command to run.
+        for name in ["gone", "idle"] {
+            let response = get("/", format!("{name}.localhost")).await.unwrap();
+            assert_eq!(response.status(), 503, "{name}");
+            let text = response.text().await.unwrap();
+            assert!(text.contains(&format!("turnout dev {name}")), "{text}");
+        }
+        let response = get("/", "nosuch.localhost".into()).await.unwrap();
+        assert_eq!(response.status(), 404);
+        assert!(response.text().await.unwrap().contains("no app named 'nosuch'"));
+        let response = get("/", "localhost".into()).await.unwrap();
+        assert_eq!(response.status(), 404);
+        assert!(response.text().await.unwrap().contains("names no app"));
+
+        // HMR travels the same door: a websocket by name reaches the dev server.
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://127.0.0.1:{front}/ws").into_client_request().unwrap();
+        request.headers_mut().insert("host", "web.localhost".parse().unwrap());
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await.unwrap();
+        use futures_util::{SinkExt, StreamExt};
+        socket.send(tokio_tungstenite::tungstenite::Message::Text("ping".into())).await.unwrap();
+        match socket.next().await.unwrap().unwrap() {
+            tokio_tungstenite::tungstenite::Message::Text(text) => assert_eq!(text.as_str(), "echo: ping"),
+            other => panic!("expected the echo through the door, got {other:?}"),
+        }
+    });
 }
 
 #[test]
@@ -938,6 +1096,9 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
     drop(gateway_reservation);
     let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
         .env("TURNOUT_DATA_DIR", dir.path())
+        // This test is about the stand proxy; the front door stays shut so
+        // parallel tests never compete for one port.
+        .env("TURNOUT_FRONT_PORT", "0")
         .args(["gateway", "run"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

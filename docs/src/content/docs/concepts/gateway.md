@@ -21,6 +21,12 @@ The port is written once, in the app's turnout config. The app receives the addr
 
 The file is read by Vite and CRA in development only, so a production build never sees `localhost`, and the project's own `.env` is never touched.
 
+## Two doors
+
+The gateway has one door per app for the stand - `localhost:7100` forwards to whatever `myapp` is bound to - and one **front door** for the apps themselves. Dev servers take their port in the order they start, so which app is on 5173 today is anybody's guess; the front door listens on one well-known port (80, or 7000 where 80 is not to be had) and routes by name: `http://myapp.localhost` reaches the dev server turnout started for `myapp`, whichever port it took. The port is turnout's business: assigned once on the first `turnout dev`, handed to the server as `PORT` and `{port}`, and remembered.
+
+Every name under `.localhost` resolves to loopback without a hosts file, so `turnout open myapp` is the whole address book. Details on the [`turnout gateway`](/turnout/reference/gateway/#the-front-door) page.
+
 ## Cookie jar per app+server
 
 The browser talks only to the gateway and holds only the gateway's own session. Cookies issued by stands are kept inside the gateway, in a separate jar for every app+server pair.
@@ -47,6 +53,8 @@ Response bodies are not rewritten: apps are expected to use relative URLs for AP
 ```bash
 turnout gateway start       # once per workday
 turnout use myapp staging   # bind the app to a stand
+turnout dev myapp           # the dev server, on the port turnout gave it
+turnout open myapp          # http://myapp.localhost
 turnout use myapp prod-eu   # switch - no restarts, no env edits
 ```
 

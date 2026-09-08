@@ -17,10 +17,11 @@ pub fn run(command: AppCommand) -> Result<()> {
             port,
             env_var,
             env_file,
+            dev_port,
             dist,
             commands,
             servers,
-        } => add(name, path, port, env_var, env_file, dist, commands, servers),
+        } => add(name, path, port, env_var, env_file, dev_port, dist, commands, servers),
         AppCommand::List => list(),
         AppCommand::Show { name } => show(&resolve(name, "Show app")?),
         AppCommand::Edit {
@@ -29,13 +30,14 @@ pub fn run(command: AppCommand) -> Result<()> {
             port,
             env_var,
             env_file,
+            dev_port,
             dist,
             commands,
             add_servers,
             rm_servers,
         } => {
             let name = resolve(name, "Edit app")?;
-            edit(&name, path, port, env_var, env_file, dist, commands, add_servers, rm_servers)
+            edit(&name, path, port, env_var, env_file, dev_port, dist, commands, add_servers, rm_servers)
         }
         AppCommand::Remove { name, assume_yes } => {
             let name = resolve(name, "Remove app")?;
@@ -59,6 +61,7 @@ fn add(
     port: Option<u16>,
     env_var: Option<String>,
     env_file: Option<String>,
+    dev_port: Option<u16>,
     dist: Option<String>,
     overrides: Vec<String>,
     servers: Vec<String>,
@@ -127,6 +130,10 @@ fn add(
         ensure_port_is_free(&apps, port, &name)?;
     }
     let env_file = env_file.map(validate_env_file).transpose()?;
+    let dev_port = dev_port.filter(|port| *port != 0);
+    if let Some(port) = dev_port {
+        crate::front::ensure_dev_port_is_free(&apps, port, &name)?;
+    }
     let env_var = match env_var {
         Some(name) => Some(validate_env_name(name)?),
         None if wizard && port.is_some() => {
@@ -154,6 +161,7 @@ fn add(
         gateway_port: port,
         gateway_env: env_var,
         env_file,
+        dev_port,
         servers,
     };
     apps.push(app.clone());
@@ -174,7 +182,8 @@ fn list() -> Result<()> {
     let width = apps.iter().map(|a| a.name.len()).max().unwrap_or(0);
     for app in apps {
         let port = app.gateway_port.map(|p| format!(":{p}")).unwrap_or_default();
-        println!("{:width$}  {}{}", app.name, app.path, port);
+        let address = app.dev_port.map(|p| format!("  http://{}.localhost -> :{p}", app.name)).unwrap_or_default();
+        println!("{:width$}  {}{}{}", app.name, app.path, port, address);
     }
     Ok(())
 }
@@ -192,6 +201,17 @@ fn show(name: &str) -> Result<()> {
         None => println!("  Gateway:  port not set"),
     }
     println!("  Env:      {} -> {}", app.gateway_env_name(), app.env_file_name());
+    let door = store::load_state()?
+        .gateway
+        .and_then(|gateway| gateway.front_port)
+        .unwrap_or(crate::front::PORT);
+    match app.dev_port {
+        Some(port) => println!("  Address:  {} (dev server port {port})", crate::front::address(&app.name, door)),
+        None => println!(
+            "  Address:  {} (dev server port assigned on the first `turnout dev`)",
+            crate::front::address(&app.name, door)
+        ),
+    }
     if let Some(dist) = &app.dist_dir {
         println!("  Dist:     {dist}");
     }
@@ -216,6 +236,7 @@ fn edit(
     port: Option<u16>,
     env_var: Option<String>,
     env_file: Option<String>,
+    dev_port: Option<u16>,
     dist: Option<String>,
     overrides: Vec<String>,
     add_servers: Vec<String>,
@@ -228,6 +249,7 @@ fn edit(
         && port.is_none()
         && env_var.is_none()
         && env_file.is_none()
+        && dev_port.is_none()
         && dist.is_none()
         && overrides.is_empty()
         && add_servers.is_empty()
@@ -274,13 +296,21 @@ fn edit(
             ensure_port_is_free(&apps, port, name)?;
             apps[index].gateway_port = Some(port);
         }
-        let app = &mut apps[index];
         if let Some(env_var) = env_var {
-            app.gateway_env = Some(validate_env_name(env_var)?);
+            apps[index].gateway_env = Some(validate_env_name(env_var)?);
         }
         if let Some(env_file) = env_file {
-            app.env_file = Some(validate_env_file(env_file)?);
+            apps[index].env_file = Some(validate_env_file(env_file)?);
         }
+        if let Some(dev_port) = dev_port {
+            // 0 hands the port back: the next `dev` assigns a fresh one.
+            let wanted = (dev_port != 0).then_some(dev_port);
+            if let Some(port) = wanted {
+                crate::front::ensure_dev_port_is_free(&apps, port, name)?;
+            }
+            apps[index].dev_port = wanted;
+        }
+        let app = &mut apps[index];
         if dist.is_some() {
             app.dist_dir = dist;
         }

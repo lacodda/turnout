@@ -4,6 +4,7 @@ mod cli;
 mod commands;
 mod detect;
 mod envfile;
+mod front;
 mod gateway;
 mod journal;
 mod keysetup;
@@ -56,6 +57,7 @@ fn main() {
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
         cli::Command::Dev { app } => commands::exec::run("dev", app),
+        cli::Command::Open { app } => commands::open::run(app),
         cli::Command::Build { app } => commands::exec::run("build", app),
         cli::Command::Test { app } => commands::exec::run("test", app),
         cli::Command::Lint { app } => commands::exec::run("lint", app),
