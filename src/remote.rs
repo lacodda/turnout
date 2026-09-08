@@ -32,6 +32,73 @@ impl Resolved {
     }
 }
 
+/// A machine to reach and the account to reach it as - what `ssh` and
+/// `exec` need, with the deploy directory when the name carried one.
+pub struct Host {
+    pub server: Server,
+    pub credential: Credential,
+    /// The target's deploy directory, when the name was a target (or an app
+    /// with one); a plain server has none and the login lands in its home.
+    pub dir: Option<String>,
+}
+
+impl Host {
+    pub fn label(&self) -> String {
+        format!("{}@{}:{}", self.credential.user, self.server.ssh_host(), self.server.port)
+    }
+}
+
+/// Resolve what `turnout ssh NAME` and `turnout exec NAME` reach.
+///
+/// The name is tried as a target, then as a server, then as an app (whose
+/// target on the bound server is taken, exactly as `deploy` does); with no
+/// name, the app of the current directory. Targets before servers for the
+/// same reason as in [`resolve`]: a target names the whole route, and a
+/// server that shares the name is still reachable by its own route.
+///
+/// A plain server logs in with its own credential; `credential` overrides
+/// it for this run, and is the only way in when the server names none.
+pub fn resolve_host(name: Option<String>, credential: Option<String>) -> Result<Host> {
+    if let Some(name) = &name {
+        if store::load_targets()?.iter().any(|t| &t.name == name) {
+            let resolved = resolve(
+                Some(name.clone()),
+                Overrides {
+                    credential,
+                    ..Default::default()
+                },
+            )?;
+            return Ok(Host {
+                server: resolved.server,
+                credential: resolved.credential,
+                dir: Some(resolved.path.dir),
+            });
+        }
+        if let Some(server) = store::load_servers()?.into_iter().find(|s| &s.name == name) {
+            let credential_name = credential.or_else(|| server.credential.clone()).ok_or_else(|| {
+                anyhow::anyhow!("server '{name}' has no credential - pass --credential NAME, or set one with `turnout server edit {name} --credential NAME`")
+            })?;
+            let credential = store::load_credentials()?
+                .into_iter()
+                .find(|c| c.name == credential_name)
+                .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
+            return Ok(Host { server, credential, dir: None });
+        }
+    }
+    let resolved = resolve(
+        name,
+        Overrides {
+            credential,
+            ..Default::default()
+        },
+    )?;
+    Ok(Host {
+        server: resolved.server,
+        credential: resolved.credential,
+        dir: Some(resolved.path.dir),
+    })
+}
+
 /// What a caller may override for a single command.
 #[derive(Default)]
 pub struct Overrides {

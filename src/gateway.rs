@@ -84,7 +84,11 @@ pub fn run(front_port: Option<u16>) -> Result<()> {
         match front_port {
             Some(port) => match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
                 Ok(listener) => {
-                    println!("front door: http://localhost:{port} - apps answer at {}", crate::front::address("NAME", port));
+                    println!(
+                        "front door: {} - apps answer at {}",
+                        crate::front::door(port),
+                        crate::front::address("NAME", port)
+                    );
                     tokio::spawn(crate::front::serve(listener, port));
                 }
                 Err(err) => eprintln!("front door: cannot listen on 127.0.0.1:{port} ({err}) - apps are reachable by port only"),

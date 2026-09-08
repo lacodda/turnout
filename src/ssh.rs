@@ -14,6 +14,7 @@
 //! not new to the codebase.
 
 use std::cell::OnceCell;
+use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -116,6 +117,15 @@ impl Session {
     /// error carrying the remote stderr.
     pub fn exec(&self, command: &str) -> Result<String> {
         self.runtime.block_on(exec(&self.handle, command))
+    }
+
+    /// Run a remote command with its output streamed to this terminal as it
+    /// arrives, and its exit code returned rather than judged: `turnout exec`
+    /// is transparent, the way `turnout run` is for local commands.
+    pub fn run(&self, command: &str) -> Result<u32> {
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        self.runtime.block_on(run(&self.handle, command, &mut stdout, &mut stderr))
     }
 
     /// Upload one file over SFTP, reporting each chunk as it leaves.
@@ -311,6 +321,39 @@ async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<String
         bail!("remote command '{command}' exited with {code}: {}", String::from_utf8_lossy(&stderr).trim());
     }
     Ok(String::from_utf8_lossy(&stdout).into_owned())
+}
+
+/// Run a command over a fresh channel, copying stdout and stderr through as
+/// they arrive, and return the exit status.
+///
+/// A channel that closes without an exit status is a dropped connection,
+/// exactly as in [`exec`]; nothing here reads a missing status as success.
+async fn run(handle: &Handle<AcceptAnyHostKey>, command: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> Result<u32> {
+    let mut channel: Channel<Msg> = handle
+        .channel_open_session()
+        .await
+        .with_context(|| format!("cannot open a channel for '{command}'"))?;
+    channel
+        .exec(true, command)
+        .await
+        .with_context(|| format!("cannot run remote command '{command}'"))?;
+
+    let mut code = None;
+    while let Some(msg) = channel.wait().await {
+        match msg {
+            ChannelMsg::Data { data } => {
+                stdout.write_all(&data).context("cannot write the remote output")?;
+                stdout.flush().ok();
+            }
+            ChannelMsg::ExtendedData { data, ext: 1 } => {
+                stderr.write_all(&data).context("cannot write the remote output")?;
+                stderr.flush().ok();
+            }
+            ChannelMsg::ExitStatus { exit_status } => code = Some(exit_status),
+            _ => {}
+        }
+    }
+    code.ok_or_else(|| anyhow::anyhow!("remote command '{command}' ended without an exit status - the connection likely dropped"))
 }
 
 /// Open an SFTP subsystem over a fresh channel.
@@ -673,6 +716,33 @@ mod tests {
         let stand = Stand::spawn();
         let session = stand.session();
         assert_eq!(session.exec("echo ready").expect("echo succeeds"), "ready\n");
+    }
+
+    /// `run` streams and reports; it does not judge. A failing command's
+    /// stderr and code come back as they are, so `turnout exec` can be the
+    /// remote command's transparent stand-in.
+    #[test]
+    fn run_streams_both_channels_and_returns_the_code() {
+        let stand = Stand::spawn();
+        let session = Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Password(PASSWORD.into())).expect("a session");
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = session
+            .runtime
+            .block_on(run(&session.handle, "echo hi there", &mut out, &mut err))
+            .expect("echo runs");
+        assert_eq!((code, out.as_slice(), err.as_slice()), (0, &b"hi there\n"[..], &b""[..]));
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = session
+            .runtime
+            .block_on(run(&session.handle, "fail", &mut out, &mut err))
+            .expect("a failing command still returns");
+        assert_eq!((code, out.as_slice(), err.as_slice()), (3, &b""[..], &b"boom"[..]));
+        let dropped = session
+            .runtime
+            .block_on(run(&session.handle, "vanish", &mut Vec::new(), &mut Vec::new()))
+            .unwrap_err()
+            .to_string();
+        assert!(dropped.contains("without an exit status"), "{dropped}");
     }
 
     #[test]

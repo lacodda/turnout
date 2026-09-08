@@ -691,6 +691,156 @@ fn the_front_door_routes_by_name_and_says_who_is_not_running() {
     });
 }
 
+/// A stand-in for the OpenSSH client: prints the arguments it was given
+/// and exits, so a test can see what `turnout ssh` composed without opening
+/// a session. Reached through TURNOUT_SSH.
+#[cfg(windows)]
+fn fake_ssh(dir: &std::path::Path) -> std::path::PathBuf {
+    let script = dir.join("fake-ssh.cmd");
+    std::fs::write(&script, "@echo %*\r\n").unwrap();
+    script
+}
+
+#[cfg(not(windows))]
+fn fake_ssh(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake-ssh");
+    std::fs::write(&script, "#!/bin/sh\necho \"$@\"\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[test]
+fn ssh_composes_the_session_from_the_catalogs() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_path(dir.path());
+    add_credential(dir.path());
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--credential", "deploy"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+    // The shell is known from an earlier deploy: written the way the probe
+    // records it, so the session can land in the deploy directory.
+    let servers = dir.path().join("servers.json");
+    let edited = std::fs::read_to_string(&servers)
+        .unwrap()
+        .replacen("\"name\": \"staging\",", "\"name\": \"staging\",\n    \"shell\": \"posix\",", 1);
+    assert_ne!(edited, std::fs::read_to_string(&servers).unwrap(), "the server entry was not found");
+    std::fs::write(&servers, edited).unwrap();
+    let client = fake_ssh(dir.path());
+
+    // A target: user, host, port from the catalogs, and the deploy directory.
+    turnout(dir.path())
+        .env("TURNOUT_SSH", &client)
+        .args(["ssh", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-p 22 deploy@staging.example.com -t").and(predicate::str::contains("cd '/var/www/myapp' && exec $SHELL -l")));
+    // A plain server: its own credential, home directory.
+    turnout(dir.path())
+        .env("TURNOUT_SSH", &client)
+        .args(["ssh", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-p 22 deploy@staging.example.com").and(predicate::str::contains("-t").not()));
+    // A key credential travels as -i.
+    turnout(dir.path())
+        .args(["credential", "add", "keyed", "--user", "ops", "--auth", "key", "--key", "/keys/id_ed25519"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_SSH", &client)
+        .args(["ssh", "staging", "--credential", "keyed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("-p 22 -i /keys/id_ed25519 ops@staging.example.com"));
+    // A missing client is named, with the way to point at another.
+    turnout(dir.path())
+        .env("TURNOUT_SSH", dir.path().join("no-such-client"))
+        .args(["ssh", "staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot run").and(predicate::str::contains("TURNOUT_SSH")));
+}
+
+#[test]
+fn exec_resolves_the_host_before_dialing_and_needs_a_credential() {
+    let (dir, project) = workspace();
+    // A server on a port nobody answers: resolution shows in the label, the
+    // dial fails after it.
+    let (dead, reservation) = reserved_port();
+    drop(reservation);
+    turnout(dir.path())
+        .args([
+            "server",
+            "add",
+            "box",
+            "--url",
+            &format!("http://127.0.0.1:{dead}"),
+            "--host",
+            &format!("127.0.0.1:{dead}"),
+        ])
+        .assert()
+        .success();
+    // The password is stored: the dial itself is what has to fail, not the
+    // keyring lookup before it.
+    save_access(dir.path());
+    add_path(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+
+    // A server without a credential cannot be reached as anyone.
+    turnout(dir.path())
+        .args(["exec", "box", "--", "uptime"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("server 'box' has no credential").and(predicate::str::contains("--credential")));
+    turnout_secrets(dir.path())
+        .args(["exec", "box", "--credential", "deploy", "--", "uptime", "-p"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("[deploy@127.0.0.1:{dead}] uptime -p")).and(predicate::str::contains("cannot reach")));
+    // A target runs in its directory, and says so before dialing.
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "box",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+    turnout_secrets(dir.path())
+        .args(["exec", "myapp-box", "--", "ls"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("[deploy@127.0.0.1:{dead}] /var/www/myapp$ ls")));
+    // The command is required.
+    turnout(dir.path()).args(["exec", "box"]).assert().failure();
+}
+
 #[test]
 fn gateway_run_on_a_busy_port_suggests_stopping() {
     let (dir, project) = workspace();

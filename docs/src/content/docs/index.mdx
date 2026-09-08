@@ -53,7 +53,7 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 
 <CardGrid stagger>
 	<Card title="Dev gateway" icon="rocket">
-		Your apps always talk to localhost; turnout routes requests to the selected stand. Switching is one command, and sessions survive it - the gateway keeps a cookie jar per app+server pair. The port is written once: the app gets the address as a variable on `turnout dev` and from a dotenv file turnout keeps in step. And every app has one address of its own - `http://myapp.localhost` - whatever port its dev server took.
+		Your apps always talk to localhost; turnout routes requests to the selected stand. Switching is one command, and sessions survive it - the gateway keeps a cookie jar per app+server pair. The port is written once: the app gets the address as a variable on `turnout dev` and from a dotenv file turnout keeps in step. And every app has one address of its own - `http://myapp.localhost` - whatever port its dev server took. The servers are one command away too: `turnout ssh` and `turnout exec` reach them with nothing to remember.
 	</Card>
 	<Card title="Servers, logins and paths, apart" icon="puzzle">
 		A machine, the credential that logs into it and the directory files land in are three named entities. Define the deploy account once and point every stand at it; the same web root serves staging and production without being retyped.

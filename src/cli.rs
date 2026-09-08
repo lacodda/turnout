@@ -89,6 +89,28 @@ pub enum Command {
     Lint { app: Option<String> },
     /// Run any named command from the app config
     Run { command: String, app: Option<String> },
+    /// Open an SSH session on a server - host, port, user and key from the catalogs
+    Ssh {
+        /// Target, server or app name; the app of the current directory when omitted
+        name: Option<String>,
+        /// Credential to log in with (defaults to the target's or the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+    },
+    /// Run a command on a server, in the target's deploy directory
+    Exec {
+        /// Target, server or app name; the app of the current directory when omitted
+        name: Option<String>,
+        /// Credential to log in with (defaults to the target's or the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Directory to run in (defaults to the target's deploy directory)
+        #[arg(short, long)]
+        dir: Option<String>,
+        /// The command, after `--`
+        #[arg(last = true, required = true, num_args = 1..)]
+        command: Vec<String>,
+    },
     /// Set up deployment of an app to a server in one wizard
     #[command(name = "deploy-setup", alias = "setup-deploy")]
     DeploySetup {

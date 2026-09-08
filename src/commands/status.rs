@@ -67,7 +67,7 @@ pub fn run() -> Result<()> {
                 .collect();
             println!("Gateway: running (pid {}; {})", gateway.pid, ports.join(", "));
             match gateway.front_port {
-                Some(front) => println!("Front:   http://localhost:{front} - {}", crate::front::address("NAME", front)),
+                Some(front) => println!("Front:   {} - {}", crate::front::door(front), crate::front::address("NAME", front)),
                 None => println!("Front:   closed (ports {} and {} were taken)", crate::front::PORT, crate::front::FALLBACK_PORT),
             }
         }

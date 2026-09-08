@@ -104,7 +104,7 @@ fn start() -> Result<()> {
     }
     match front_port {
         Some(front) => {
-            println!("Front door: http://localhost:{front}");
+            println!("Front door: {}", crate::front::door(front));
             for app in &apps {
                 println!("  {}: {}", app.name, crate::front::address(&app.name, front));
             }

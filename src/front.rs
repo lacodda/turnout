@@ -45,6 +45,15 @@ pub fn pick_port() -> Option<u16> {
         .find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
 }
 
+/// The door itself: `http://localhost`, with the port when it is not 80.
+pub fn door(front_port: u16) -> String {
+    if front_port == PORT {
+        "http://localhost".to_string()
+    } else {
+        format!("http://localhost:{front_port}")
+    }
+}
+
 /// The app's address behind a door on `front_port`.
 pub fn address(app: &str, front_port: u16) -> String {
     if front_port == PORT {
@@ -309,6 +318,8 @@ mod tests {
     fn the_address_hides_port_80_and_shows_any_other() {
         assert_eq!(address("myapp", 80), "http://myapp.localhost");
         assert_eq!(address("myapp", 7000), "http://myapp.localhost:7000");
+        assert_eq!(door(80), "http://localhost");
+        assert_eq!(door(7000), "http://localhost:7000");
     }
 
     #[test]

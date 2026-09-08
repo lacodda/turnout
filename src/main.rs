@@ -62,6 +62,13 @@ fn main() {
         cli::Command::Test { app } => commands::exec::run("test", app),
         cli::Command::Lint { app } => commands::exec::run("lint", app),
         cli::Command::Run { command, app } => commands::exec::run(&command, app),
+        cli::Command::Ssh { name, credential } => commands::ssh::run(name, credential),
+        cli::Command::Exec {
+            name,
+            credential,
+            dir,
+            command,
+        } => commands::remote_exec::run(name, credential, dir, command),
         cli::Command::DeploySetup { app, server } => commands::deploy_setup::run(app, server),
         cli::Command::Deploy {
             target,
