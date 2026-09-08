@@ -7,6 +7,13 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.16.1] - 2026-09-08
+
+### Bug Fixes
+- Dial the dev server by name, not by 127.0.0.1
+
+### Features
+- Vue and react demos that show the gateway at work
 ## [0.16.0] - 2026-09-08
 
 ### Features
