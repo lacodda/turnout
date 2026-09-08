@@ -167,7 +167,11 @@ fn client() -> &'static reqwest::Client {
 async fn forward(app: &App, dev_port: u16, front_port: u16, req: Request) -> Result<Response> {
     let (parts, body) = req.into_parts();
     let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let target = format!("http://127.0.0.1:{dev_port}{path_query}");
+    // `localhost`, not `127.0.0.1`: Vite binds the name, and Node resolves it
+    // to `::1` first on many machines, so the server answers on IPv6 only.
+    // The connector tries every address the name resolves to; a fixed
+    // address would try one and call a running server "not running".
+    let target = format!("http://localhost:{dev_port}{path_query}");
     let mut headers = parts.headers;
     crate::gateway::strip_hop_headers(&mut headers);
     // The dev server sees itself as localhost:PORT; Vite checks the Host it
@@ -216,7 +220,9 @@ async fn websocket(app: &App, dev_port: u16, req: Request) -> Result<Response> {
         .await
         .map_err(|err| anyhow!("invalid websocket upgrade: {err}"))?;
     let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    let target = format!("ws://127.0.0.1:{dev_port}{path_query}");
+    // The name, for the same reason as in `forward`: the socket tries each
+    // address it resolves to.
+    let target = format!("ws://localhost:{dev_port}{path_query}");
     let mut request = target.into_client_request().context("cannot build the upstream websocket request")?;
     if let Some(cookie) = parts.headers.get(COOKIE) {
         request.headers_mut().insert(COOKIE, cookie.clone());

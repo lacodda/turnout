@@ -631,6 +631,24 @@ fn the_front_door_routes_by_name_and_says_who_is_not_running() {
         .assert()
         .success();
     turnout(dir.path()).args(["app", "add", "idle", "--path"]).arg(&project).assert().success();
+    // Vite binds `localhost`, which Node resolves to `::1` first on many
+    // machines - the server then answers on IPv6 only. The door dials by
+    // name, so it finds it; a fixed 127.0.0.1 called a running Vite "not
+    // running" (found with the vue-demo example, v0.16.1). Skipped where
+    // the machine has no IPv6 loopback.
+    let six = std::net::TcpListener::bind("[::1]:0").ok();
+    if let Some(listener) = six.as_ref() {
+        let six_port = listener.local_addr().unwrap().port();
+        turnout(dir.path())
+            .args(["app", "add", "six", "--path"])
+            .arg(&project)
+            .args(["--dev-port", &six_port.to_string()])
+            .assert()
+            .success();
+    }
+    if let Some(listener) = six {
+        spawn_stand(listener);
+    }
 
     drop(gateway_reservation);
     drop(front_reservation);
@@ -662,6 +680,12 @@ fn the_front_door_routes_by_name_and_says_who_is_not_running() {
         let response = get("/login", format!("web.localhost:{front}")).await.unwrap();
         assert_eq!(response.status(), 302);
         assert_eq!(response.headers()["location"], format!("http://web.localhost:{front}/after"));
+
+        // An IPv6-only dev server is reached by name too.
+        if std::net::TcpListener::bind("[::1]:0").is_ok() {
+            let response = get("/hello", "six.localhost".into()).await.unwrap();
+            assert_eq!(response.status(), 200, "the door did not reach a server listening on ::1 only");
+        }
 
         // Who is not running is said in words, with the command to run.
         for name in ["gone", "idle"] {
@@ -1146,7 +1170,13 @@ fn reserved_port() -> (u16, std::net::TcpListener) {
 }
 
 fn wait_for_port(port: u16) {
-    let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    wait_for_addr(std::net::SocketAddr::from(([127, 0, 0, 1], port)));
+}
+
+/// The same wait for a listener on any loopback: a stand bound to `[::1]`
+/// never answers on `127.0.0.1`.
+fn wait_for_addr(address: std::net::SocketAddr) {
+    let port = address.port();
     for _ in 0..100 {
         if std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(100)).is_ok() {
             return;
@@ -1167,7 +1197,8 @@ impl Drop for ChildGuard {
 /// A tiny "stand": sets a session cookie, echoes cookies back, redirects to itself.
 /// Serves on the listener that reserved its port, so the port cannot be lost.
 fn spawn_stand(listener: std::net::TcpListener) -> u16 {
-    let port = listener.local_addr().unwrap().port();
+    let address = listener.local_addr().unwrap();
+    let port = address.port();
     std::thread::spawn(move || {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async move {
@@ -1217,7 +1248,7 @@ fn spawn_stand(listener: std::net::TcpListener) -> u16 {
             axum::serve(listener, app).await.unwrap();
         });
     });
-    wait_for_port(port);
+    wait_for_addr(address);
     port
 }
 
