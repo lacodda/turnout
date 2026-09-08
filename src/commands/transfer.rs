@@ -293,6 +293,8 @@ mod tests {
             commands: BTreeMap::new(),
             dist_dir: None,
             gateway_port: None,
+            gateway_env: None,
+            env_file: None,
             servers: Vec::new(),
         }
     }

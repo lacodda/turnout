@@ -18,9 +18,20 @@ pub fn run(command_name: &str, app_name: Option<String>) -> Result<()> {
         );
     };
     let dir = crate::utils::project_dir(Path::new(&app.path))?;
+    let command_line = crate::envfile::substitute(command_line, app)?;
+    // The gateway address rides along as a variable for `dev` and for any
+    // custom command - but not for `build`, `test` or `lint`. A variable in
+    // the process environment overrides every dotenv file whatever the mode,
+    // and a production bundle must not bake in localhost.
+    let mut env = Vec::new();
+    if !matches!(command_name, "build" | "test" | "lint")
+        && let Some(url) = app.gateway_url()
+    {
+        env.push((app.gateway_env_name(), url));
+    }
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     eprintln!("[{}] {command_line}", app.name);
-    let status = crate::utils::run_in_dir(command_line, &dir)?;
+    let status = crate::utils::run_in_dir_with(&command_line, &dir, &env)?;
     // 130 is the conventional "interrupted" exit; the raw Windows status for
     // Ctrl+C is a negative NTSTATUS nobody's scripts check for.
     let code = if crate::term::interrupted() { 130 } else { status.code().unwrap_or(1) };

@@ -338,6 +338,9 @@ fn gateway_start_and_stop_roundtrip() {
     // `start` returned only once the port answered, so this holds at once.
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     assert!(std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok());
+    // The dotenv file was already written by `app add`; `start` finds it in step.
+    let env = std::fs::read_to_string(project.join(".env.development.local")).unwrap();
+    assert!(env.contains(&format!("TURNOUT_GATEWAY_URL=http://localhost:{port}")), "{env}");
     turnout(dir.path())
         .args(["gateway", "stop"])
         .assert()
@@ -375,6 +378,159 @@ fn gateway_stop_forgets_a_record_whose_process_is_gone() {
         .assert()
         .success()
         .stdout(predicate::str::contains("not running"));
+}
+
+/// The header turnout writes above its line; a stable contract, so a file
+/// written by one version is recognised by the next.
+const ENV_HEADER: &str = "# Managed by turnout - the line below follows the app's gateway port.";
+
+#[test]
+fn app_add_writes_the_gateway_line_and_edit_rewrites_it() {
+    let (dir, project) = workspace();
+    let env_file = project.join(".env.development.local");
+    std::fs::write(
+        &env_file,
+        "VITE_OTHER=1
+",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join(".gitignore"),
+        "node_modules
+",
+    )
+    .unwrap();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", "7001", "--env-var", "VITE_API_URL"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Wrote").and(predicate::str::contains("VITE_API_URL=http://localhost:7001")));
+    // Foreign lines survive, the block lands after them, git ignores the file.
+    assert_eq!(
+        std::fs::read_to_string(&env_file).unwrap(),
+        format!(
+            "VITE_OTHER=1
+
+{ENV_HEADER}
+VITE_API_URL=http://localhost:7001
+"
+        )
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join(".gitignore")).unwrap(),
+        "node_modules
+.env.development.local
+"
+    );
+
+    // A new port rewrites the one line; a new name replaces it rather than
+    // leaving the old one behind.
+    turnout(dir.path()).args(["app", "edit", "myapp", "--port", "7002"]).assert().success();
+    turnout(dir.path()).args(["app", "edit", "myapp", "--env-var", "VITE_API"]).assert().success();
+    let text = std::fs::read_to_string(&env_file).unwrap();
+    assert_eq!(
+        text,
+        format!(
+            "VITE_OTHER=1
+
+{ENV_HEADER}
+VITE_API=http://localhost:7002
+"
+        )
+    );
+    assert_eq!(text.matches(ENV_HEADER).count(), 1, "the header was written twice");
+    turnout(dir.path())
+        .args(["app", "show", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Env:      VITE_API -> .env.development.local"));
+
+    // Unsetting the port takes the block out and leaves the rest.
+    turnout(dir.path()).args(["app", "edit", "myapp", "--port", "0"]).assert().success();
+}
+
+#[test]
+fn app_add_refuses_a_bad_variable_name_and_a_path_for_the_env_file() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", "7001", "--env-var", "1bad"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a variable name"));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", "7001", "--env-file", "sub/.env"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not a file name in the project directory"));
+    // A renamed file is written under that name.
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", "7001", "--env-file", ".env.local"])
+        .assert()
+        .success();
+    assert!(project.join(".env.local").exists());
+    assert!(!project.join(".env.development.local").exists());
+}
+
+#[test]
+fn run_hands_the_gateway_url_to_dev_but_not_to_build() {
+    let (dir, project) = workspace();
+    // Brackets make an unset variable visible: cmd prints the name back
+    // untouched, sh prints nothing.
+    let show = if cfg!(windows) {
+        "echo [%TURNOUT_GATEWAY_URL%]"
+    } else {
+        "echo [$TURNOUT_GATEWAY_URL]"
+    };
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", "7001"])
+        .args(["--command", &format!("dev={show}"), "--command", &format!("build={show}")])
+        .args(["--command", &format!("custom={show}"), "--command", "where=echo {gateway} {gateway_port}"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["dev", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[http://localhost:7001]"));
+    turnout(dir.path())
+        .args(["run", "custom", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[http://localhost:7001]"));
+    // A production bundle must not bake in localhost: `build` gets nothing.
+    turnout(dir.path())
+        .args(["build", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("http://localhost").not());
+    // Placeholders are filled in the command line itself.
+    turnout(dir.path())
+        .args(["run", "where", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("http://localhost:7001 7001"));
+    // Without a port the placeholder is a configuration error, not braces in a shell.
+    turnout(dir.path())
+        .args(["app", "add", "bare", "--path"])
+        .arg(&project)
+        .args(["--command", "where=echo {gateway}"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["run", "where", "bare"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no gateway port"));
 }
 
 #[test]

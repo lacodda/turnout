@@ -290,6 +290,8 @@ mod tests {
             commands: BTreeMap::new(),
             dist_dir: None,
             gateway_port: None,
+            gateway_env: None,
+            env_file: None,
             servers: servers.iter().map(|s| s.to_string()).collect(),
         }
     }

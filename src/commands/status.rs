@@ -57,7 +57,14 @@ pub fn run() -> Result<()> {
     }
     match &state.gateway {
         Some(gateway) if crate::commands::gateway::probe(gateway) => {
-            let ports: Vec<String> = gateway.ports.iter().map(|(port, app)| format!("{app}:{port}")).collect();
+            let ports: Vec<String> = gateway
+                .ports
+                .iter()
+                .map(|(port, name)| match apps.iter().find(|app| app.name == *name) {
+                    Some(app) => format!("{name}:{port} -> {}", app.gateway_env_name()),
+                    None => format!("{name}:{port}"),
+                })
+                .collect();
             println!("Gateway: running (pid {}; {})", gateway.pid, ports.join(", "));
         }
         Some(gateway) => println!("Gateway: recorded (pid {}) but not responding - try `turnout gateway stop`", gateway.pid),

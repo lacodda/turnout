@@ -36,19 +36,16 @@ cd ~/dev/myshop
 turnout app add
 ```
 
-The wizard detects the package manager from the lock file, proposes the standard commands (`pnpm dev`, `pnpm build`, ...), suggests a free gateway port - say **7100** - and lets you pick the allowed servers. The same, scripted:
+The wizard detects the package manager from the lock file, proposes the standard commands (`pnpm dev`, `pnpm build`, ...), suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project) and lets you pick the allowed servers. The same, scripted:
 
 ```bash
-turnout app add myshop --path . --port 7100 --server main --server second
+turnout app add myshop --path . --port 7100 --env-var VITE_API_URL --server main --server second
+# Wrote ./.env.development.local (VITE_API_URL=http://localhost:7100).
 ```
 
 ### 4. Point the app at the gateway - once and forever
 
-This is the core idea: the project knows only its gateway port, never a stand address. In `.env.development` (safe to commit - it never changes again):
-
-```ini
-VITE_API_URL=http://localhost:7100
-```
+This is the core idea: the project knows only its gateway port, never a stand address - and it does not even write the port down. The port is set once in turnout; the app is handed the address two ways: `turnout dev` puts `VITE_API_URL=http://localhost:7100` into the dev server's environment, and `.env.development.local` (written by turnout, ignored by git, read by Vite in development only) covers `pnpm dev` from an IDE. Change the port with `turnout app edit myshop --port 7200` and both follow.
 
 ```ts
 // src/api.ts
@@ -108,7 +105,7 @@ Creds:   1 (main-login)
 Paths:   none yet
 Bindings:
   myshop -> second
-Gateway: running (pid 18324; myshop:7100)
+Gateway: running (pid 18324; myshop:7100 -> VITE_API_URL)
 ```
 
 ## What the gateway handles for you

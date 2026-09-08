@@ -18,9 +18,39 @@ pub struct App {
     /// Local port the app talks to; the gateway listens here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway_port: Option<u16>,
+    /// Environment variable that carries the gateway URL to the app's
+    /// commands; `None` means `DEFAULT_GATEWAY_ENV`. Per app because the
+    /// framework decides what it can see: Vite only `VITE_*`, CRA `REACT_APP_*`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gateway_env: Option<String>,
+    /// Dotenv file, relative to `path`, that turnout keeps in step with the
+    /// gateway port; `None` means `DEFAULT_ENV_FILE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
     /// Names of servers this app is allowed to use.
     #[serde(default)]
     pub servers: Vec<String>,
+}
+
+/// The variable an app gets when it names none.
+pub const DEFAULT_GATEWAY_ENV: &str = "TURNOUT_GATEWAY_URL";
+/// The dotenv file an app gets when it names none: read by Vite and CRA in
+/// development only, on top of the project's own `.env`.
+pub const DEFAULT_ENV_FILE: &str = ".env.development.local";
+
+impl App {
+    /// The address the app reaches the gateway on, when it has a port.
+    pub fn gateway_url(&self) -> Option<String> {
+        self.gateway_port.map(|port| format!("http://localhost:{port}"))
+    }
+
+    pub fn gateway_env_name(&self) -> &str {
+        self.gateway_env.as_deref().unwrap_or(DEFAULT_GATEWAY_ENV)
+    }
+
+    pub fn env_file_name(&self) -> &str {
+        self.env_file.as_deref().unwrap_or(DEFAULT_ENV_FILE)
+    }
 }
 
 /// A machine: where it lives and how to reach it.

@@ -19,6 +19,11 @@ pub fn project_dir(path: &Path) -> Result<PathBuf> {
 
 /// Run a shell command line in a directory, streaming output to the terminal.
 pub fn run_in_dir(command_line: &str, dir: &Path) -> Result<std::process::ExitStatus> {
+    run_in_dir_with(command_line, dir, &[])
+}
+
+/// `run_in_dir` with extra environment variables for the child.
+pub fn run_in_dir_with(command_line: &str, dir: &Path, env: &[(&str, String)]) -> Result<std::process::ExitStatus> {
     #[cfg(windows)]
     let mut command = {
         let mut command = std::process::Command::new("cmd");
@@ -32,6 +37,9 @@ pub fn run_in_dir(command_line: &str, dir: &Path) -> Result<std::process::ExitSt
         command
     };
     command.current_dir(dir);
+    for (name, value) in env {
+        command.env(name, value);
+    }
     let mut child = command.spawn().with_context(|| format!("cannot run '{command_line}'"))?;
     // The whole tree dies with turnout, not only the direct child; and while
     // the child runs, Ctrl+C belongs to it (see `term`).

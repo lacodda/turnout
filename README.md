@@ -85,7 +85,7 @@ Targets: 1 (web-prod-eu)
 Bindings:
   api -> staging
   web -> prod-eu
-Gateway: running (pid 24180; web:7100, api:7101)
+Gateway: running (pid 24180; web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL)
 Recent:
   2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
   2026-08-09T01:12:44Z  use            web -> prod-eu
@@ -94,6 +94,7 @@ Recent:
 ## What you get
 
 - **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
+- **The port is written once.** An app's gateway port lives in turnout only; the app is handed the address - `turnout dev` sets it as an environment variable the framework can see (`VITE_API_URL`, `REACT_APP_API_URL`, your pick), and a `.env.development.local` that turnout keeps in step covers a dev server started from an IDE. `build` never gets it, so a production bundle cannot bake in localhost.
 - **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
 - **Named deploy targets.** The four of them under one name: `turnout deploy web-prod-eu` from any directory, no flags to re-type. A first deploy that has no target yet offers to save the one it just used.
 - **Key access set up, not just used.** `turnout key setup prod` generates an ed25519 key, authorizes it on the server, proves it signs in and only then switches the credential over - so a server-side misconfiguration never costs you the password that still works. Windows servers included: an administrator account keeps its keys in a different file that sshd reads instead, and turnout writes to the right one.

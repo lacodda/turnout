@@ -15,23 +15,27 @@ pub fn run(command: AppCommand) -> Result<()> {
             name,
             path,
             port,
+            env_var,
+            env_file,
             dist,
             commands,
             servers,
-        } => add(name, path, port, dist, commands, servers),
+        } => add(name, path, port, env_var, env_file, dist, commands, servers),
         AppCommand::List => list(),
         AppCommand::Show { name } => show(&resolve(name, "Show app")?),
         AppCommand::Edit {
             name,
             path,
             port,
+            env_var,
+            env_file,
             dist,
             commands,
             add_servers,
             rm_servers,
         } => {
             let name = resolve(name, "Edit app")?;
-            edit(&name, path, port, dist, commands, add_servers, rm_servers)
+            edit(&name, path, port, env_var, env_file, dist, commands, add_servers, rm_servers)
         }
         AppCommand::Remove { name, assume_yes } => {
             let name = resolve(name, "Remove app")?;
@@ -48,7 +52,17 @@ fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
     }
 }
 
-fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Option<String>, overrides: Vec<String>, servers: Vec<String>) -> Result<()> {
+#[allow(clippy::too_many_arguments)]
+fn add(
+    name: Option<String>,
+    path: Option<PathBuf>,
+    port: Option<u16>,
+    env_var: Option<String>,
+    env_file: Option<String>,
+    dist: Option<String>,
+    overrides: Vec<String>,
+    servers: Vec<String>,
+) -> Result<()> {
     let mut apps = store::load_apps()?;
     let known = store::load_servers()?;
     let wizard = name.is_none() || path.is_none();
@@ -112,6 +126,18 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
     if let Some(port) = port {
         ensure_port_is_free(&apps, port, &name)?;
     }
+    let env_file = env_file.map(validate_env_file).transpose()?;
+    let env_var = match env_var {
+        Some(name) => Some(validate_env_name(name)?),
+        None if wizard && port.is_some() => {
+            let answer: String = Input::new()
+                .with_prompt("Variable that carries the gateway URL to the app")
+                .default(suggested_env_name(&path).to_string())
+                .interact_text()?;
+            Some(validate_env_name(answer)?)
+        }
+        None => None,
+    };
 
     let servers = if wizard && servers.is_empty() && !known.is_empty() {
         pick_servers(&known, &[])?
@@ -126,13 +152,16 @@ fn add(name: Option<String>, path: Option<PathBuf>, port: Option<u16>, dist: Opt
         commands,
         dist_dir: dist,
         gateway_port: port,
+        gateway_env: env_var,
+        env_file,
         servers,
     };
-    apps.push(app);
+    apps.push(app.clone());
     apps.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_apps(&apps)?;
     crate::journal::record("app.add", Some(&name), None, None);
     println!("App '{name}' added.");
+    report_env_file(&app);
     Ok(())
 }
 
@@ -162,6 +191,7 @@ fn show(name: &str) -> Result<()> {
         Some(port) => println!("  Gateway:  localhost:{port}"),
         None => println!("  Gateway:  port not set"),
     }
+    println!("  Env:      {} -> {}", app.gateway_env_name(), app.env_file_name());
     if let Some(dist) = &app.dist_dir {
         println!("  Dist:     {dist}");
     }
@@ -184,6 +214,8 @@ fn edit(
     name: &str,
     path: Option<PathBuf>,
     port: Option<u16>,
+    env_var: Option<String>,
+    env_file: Option<String>,
     dist: Option<String>,
     overrides: Vec<String>,
     add_servers: Vec<String>,
@@ -192,7 +224,14 @@ fn edit(
     let mut apps = store::load_apps()?;
     let known = store::load_servers()?;
     let index = apps.iter().position(|a| a.name == name).ok_or_else(|| unknown_app(name))?;
-    let no_flags = path.is_none() && port.is_none() && dist.is_none() && overrides.is_empty() && add_servers.is_empty() && rm_servers.is_empty();
+    let no_flags = path.is_none()
+        && port.is_none()
+        && env_var.is_none()
+        && env_file.is_none()
+        && dist.is_none()
+        && overrides.is_empty()
+        && add_servers.is_empty()
+        && rm_servers.is_empty();
 
     if no_flags {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
@@ -214,6 +253,13 @@ fn edit(
             ensure_port_is_free(&apps, port, name)?;
         }
         let app = &mut apps[index];
+        if app.gateway_port.is_some() {
+            let env_var: String = Input::new()
+                .with_prompt("Variable that carries the gateway URL to the app")
+                .default(app.gateway_env_name().to_string())
+                .interact_text()?;
+            app.gateway_env = Some(validate_env_name(env_var)?);
+        }
         if !known.is_empty() {
             let current = app.servers.clone();
             app.servers = pick_servers(&known, &current)?;
@@ -229,6 +275,12 @@ fn edit(
             apps[index].gateway_port = Some(port);
         }
         let app = &mut apps[index];
+        if let Some(env_var) = env_var {
+            app.gateway_env = Some(validate_env_name(env_var)?);
+        }
+        if let Some(env_file) = env_file {
+            app.env_file = Some(validate_env_file(env_file)?);
+        }
         if dist.is_some() {
             app.dist_dir = dist;
         }
@@ -244,6 +296,7 @@ fn edit(
     store::save_apps(&apps)?;
     crate::journal::record("app.edit", Some(name), None, None);
     println!("App '{name}' updated.");
+    report_env_file(&apps[index]);
     Ok(())
 }
 
@@ -338,6 +391,44 @@ fn pick_servers(known: &[Server], current: &[String]) -> Result<Vec<String>> {
         .defaults(&defaults)
         .interact()?;
     Ok(picked.into_iter().map(|i| known[i].name.clone()).collect())
+}
+
+/// Bring the app's dotenv file in step and say what happened. A file that
+/// cannot be written is reported, not fatal: the catalog is already saved.
+fn report_env_file(app: &App) {
+    use crate::envfile::Outcome;
+    match crate::envfile::write(app) {
+        Ok(Outcome::Written(assignment)) => println!("Wrote {} ({assignment}).", crate::envfile::path_of(app).display()),
+        Ok(Outcome::Removed) => println!("Removed the gateway line from {}.", crate::envfile::path_of(app).display()),
+        Ok(Outcome::Unchanged | Outcome::Nothing) => {}
+        Err(error) => eprintln!("warning: {error:#}"),
+    }
+}
+
+/// A variable name a shell and a dotenv parser both accept.
+fn validate_env_name(name: String) -> Result<String> {
+    let name = name.trim().to_string();
+    let valid = !name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()) && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !valid {
+        bail!("'{name}' is not a variable name: letters, digits and underscores, not starting with a digit");
+    }
+    Ok(name)
+}
+
+/// A dotenv file name inside the project: no directories, no absolute paths.
+fn validate_env_file(file: String) -> Result<String> {
+    let file = file.trim().to_string();
+    if file.is_empty() || file.contains(['/', '\\']) {
+        bail!("'{file}' is not a file name in the project directory - pass a bare name such as .env.development.local");
+    }
+    Ok(file)
+}
+
+/// The variable a framework can actually see: Vite exposes only `VITE_*` to
+/// the client, so a Vite project gets that prefix by default.
+fn suggested_env_name(path: &Path) -> &'static str {
+    let vite = std::fs::read_to_string(path.join("package.json")).is_ok_and(|text| text.contains("\"vite\""));
+    if vite { "VITE_API_URL" } else { crate::model::DEFAULT_GATEWAY_ENV }
 }
 
 /// A gateway port belongs to exactly one app.

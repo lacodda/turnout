@@ -468,6 +468,12 @@ pub enum AppCommand {
         /// Local gateway port for this app
         #[arg(short = 'P', long)]
         port: Option<u16>,
+        /// Environment variable that carries the gateway URL to the app's commands (default: TURNOUT_GATEWAY_URL)
+        #[arg(short = 'e', long = "env-var", value_name = "NAME")]
+        env_var: Option<String>,
+        /// Dotenv file turnout keeps in step with the port, relative to the project (default: .env.development.local)
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_file: Option<String>,
         /// Build artifact directory, relative to the project path
         #[arg(short, long)]
         dist: Option<String>,
@@ -493,6 +499,12 @@ pub enum AppCommand {
         path: Option<PathBuf>,
         #[arg(short = 'P', long)]
         port: Option<u16>,
+        /// Environment variable that carries the gateway URL to the app's commands
+        #[arg(short = 'e', long = "env-var", value_name = "NAME")]
+        env_var: Option<String>,
+        /// Dotenv file turnout keeps in step with the port, relative to the project
+        #[arg(long = "env-file", value_name = "FILE")]
+        env_file: Option<String>,
         #[arg(short, long)]
         dist: Option<String>,
         /// Set a command as NAME=CMD, or NAME= to remove it (repeatable)

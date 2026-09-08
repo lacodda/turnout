@@ -29,7 +29,8 @@ pub fn run(command: GatewayCommand) -> Result<()> {
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn start() -> Result<()> {
-    let ports = gateway::listening_ports(&store::load_apps()?)?;
+    let apps = store::load_apps()?;
+    let ports = gateway::listening_ports(&apps)?;
     let mut state = store::load_state()?;
     if let Some(running) = &state.gateway
         && probe(running)
@@ -96,6 +97,15 @@ fn start() -> Result<()> {
     println!("Gateway started (pid {}).", child.id());
     for (port, app) in ports {
         println!("  {app}: http://localhost:{port}");
+    }
+    // The dotenv files are the road for apps started past turnout; a port
+    // changed since the last `app edit` is caught up here.
+    for app in apps.iter().filter(|app| app.gateway_port.is_some()) {
+        match crate::envfile::write(app) {
+            Ok(crate::envfile::Outcome::Written(assignment)) => println!("  {}: wrote {} ({assignment})", app.name, app.env_file_name()),
+            Ok(_) => {}
+            Err(error) => eprintln!("warning: {}: {error:#}", app.name),
+        }
     }
     Ok(())
 }

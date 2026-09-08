@@ -12,6 +12,15 @@ The core idea of turnout:
 
 Switching a stand is not editing `.env` files across repositories - it is one command that changes the app→server binding in one place. Your projects' env files stay stable and committable, pointing at `localhost` forever.
 
+## How the app learns the address
+
+The port is written once, in the app's turnout config. The app receives the address by two roads that back each other up (details on the [`turnout app`](/turnout/reference/app/#how-the-app-learns-the-gateway-address) page):
+
+- every command turnout starts for the app - `dev`, a custom `run` - carries it in an environment variable whose name the app chooses (`VITE_API_URL`, `REACT_APP_API_URL`, ...);
+- a dotenv file turnout keeps in step - `.env.development.local` by default - covers the app when it is started from an IDE or by hand.
+
+The file is read by Vite and CRA in development only, so a production build never sees `localhost`, and the project's own `.env` is never touched.
+
 ## Cookie jar per app+server
 
 The browser talks only to the gateway and holds only the gateway's own session. Cookies issued by stands are kept inside the gateway, in a separate jar for every app+server pair.

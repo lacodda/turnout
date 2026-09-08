@@ -3,6 +3,7 @@ mod alias;
 mod cli;
 mod commands;
 mod detect;
+mod envfile;
 mod gateway;
 mod journal;
 mod keysetup;
