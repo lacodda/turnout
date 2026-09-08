@@ -74,7 +74,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.13.1
+turnout 0.14.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)

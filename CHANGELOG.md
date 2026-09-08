@@ -7,6 +7,10 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.14.0] - 2026-09-08
+
+### Features
+- Hand the app the gateway address instead of the port
 ## [0.13.1] - 2026-09-07
 
 ### Bug Fixes
