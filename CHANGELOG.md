@@ -7,6 +7,14 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.17.0] - 2026-09-09
+
+### Documentation
+- Show the wizard, not just the flag tables
+- Record why the wizard is a list of fields
+
+### Features
+- Walk every field of an app in one form
 ## [0.16.1] - 2026-09-08
 
 ### Bug Fixes
