@@ -36,7 +36,7 @@ cd ~/dev/myshop
 turnout app add
 ```
 
-The wizard detects the package manager from the lock file, proposes the standard commands (`pnpm dev --port {port}`, `pnpm build`, ... - a Vite dev script takes its port from turnout), suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project) and lets you pick the allowed servers. The same, scripted:
+The [wizard](/turnout/reference/app/#the-wizard) walks every field of the app. It detects the package manager from the lock file and proposes the standard commands (`pnpm dev --port {port}`, `pnpm build`, ... - a Vite dev script takes its port from turnout), which you can correct, rename or extend on the spot; then it suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project), which dotenv file to keep in step, which dev server port to pin (empty lets the first `dev` assign one), which directory the build lands in, and which servers the app may use. The same, scripted:
 
 ```bash
 turnout app add myshop --path . --port 7100 --env-var VITE_API_URL --server main --server second

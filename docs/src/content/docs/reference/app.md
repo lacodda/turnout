@@ -29,9 +29,38 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file F
 | `--command` | `-c` | Set a command as `NAME=CMD` (repeatable); overrides detected defaults |
 | `--server` | `-s` | Allow a server for this app (repeatable) |
 
-With `NAME` or `--path` missing, an interactive wizard walks you through: it detects the project type (pnpm / yarn / npm / cargo) from lock and manifest files, proposes commands, suggests a free gateway port and lets you pick allowed servers from the catalog.
+With `NAME` or `--path` missing, the [wizard](#the-wizard) walks every field of the app, so nothing here needs a flag.
 
 A gateway port belongs to exactly one app: `add` and `edit` refuse a port another app already holds and name that app. Two apps on one port would leave the gateway unable to bind the second listener.
+
+## The wizard
+
+`turnout app add` with nothing to go on, and `turnout app edit NAME` with no flags, open the same form. It asks for **every field an app has**, in order: the project directory, the commands, the gateway port, the variable that carries the gateway URL, the dotenv file, the dev server port, the build artifact directory and the allowed servers. `add` starts from an empty app and offers a free port; `edit` starts from the stored one, with its current values as the defaults - pressing enter through the form changes nothing.
+
+Empty means *not set*: clearing the gateway port unsets it, and an empty dev port hands the port back so the next `dev` assigns a fresh one. Questions that would name nothing are skipped - without a gateway port there is no address to carry, so the variable and the dotenv file are not asked for.
+
+### Commands
+
+The commands question shows what the app has and works on the list:
+
+```
+Commands of 'myshop':
+  build     pnpm build
+  dev       pnpm dev --port {port}
+  storybook pnpm storybook
+? Commands >
+  Done
+  Add a command
+  Change a command line
+  Rename a command
+  Remove a command
+```
+
+**Add** offers turnout's own roles first - `dev`, `build`, `test`, `lint`, the ones run by name - and takes any other name for a command reachable through [`turnout run`](/turnout/reference/run/). **Change** edits a command line with the current one already filled in.
+
+Detection proposes; it does not rule. On `add`, and on an `edit` that moves the app to another directory, turnout reads the project and fills in the roles it recognises - without ever overwriting a command set by hand. What it proposes is simply there in the list, to be corrected, renamed or removed.
+
+Flags do the same non-interactively, for scripts: `--command NAME=CMD` sets one and `--command NAME=` removes it.
 
 ## How the app learns the gateway address
 
@@ -95,7 +124,7 @@ turnout app show myapp    # full card: commands, dist, allowed servers
 ## edit
 
 ```bash
-turnout app edit myapp                              # interactive wizard
+turnout app edit myapp                              # the wizard, over every field
 turnout app edit myapp --port 7200                  # change one field; the dotenv file follows
 turnout app edit myapp --env-var REACT_APP_API_URL  # the name the framework can see
 turnout app edit myapp --command "deploy=make ship" # add or override a command

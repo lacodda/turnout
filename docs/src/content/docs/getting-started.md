@@ -82,7 +82,7 @@ Shows the data directory, the four catalogs - apps, servers, credentials, paths 
 
 ```bash
 cd ~/dev/myapp
-turnout app add        # wizard: detects the project type, proposes commands
+turnout app add        # wizard: every field of the app, commands included
 turnout server add     # wizard: URL, SSH host, credential, TLS policy
 ```
 
