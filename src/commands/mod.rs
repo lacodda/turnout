@@ -1,4 +1,5 @@
 pub mod app;
+pub mod app_wizard;
 pub mod backup;
 pub mod complete;
 pub mod completions;
