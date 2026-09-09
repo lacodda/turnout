@@ -156,7 +156,7 @@ Both installers take the newest release by default; set `TURNOUT_VERSION` to a t
 
 ```bash
 turnout setup                  # first-run wizard: creates the data directory
-turnout app add                # register a project (detects its commands)
+turnout app add                # register a project (a wizard over every field)
 turnout server add             # register a stand
 turnout use                    # bind one to the other
 turnout gateway start          # route traffic through the gateway

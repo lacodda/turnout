@@ -18,3 +18,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0012](0012-alias-as-a-link.md) | The short alias is a link, not a second binary | accepted |
 | [0013](0013-named-builds.md) | A deploy target is a named entity, not a field on the server | accepted |
 | [0014](0014-key-setup-is-its-own-command.md) | Key setup is its own command, switching the credential last | accepted |
+| [0015](0015-the-wizard-is-a-list-of-fields.md) | The app wizard is a list of fields, not a run of prompts | accepted |
