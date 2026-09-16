@@ -57,7 +57,14 @@ pub fn run() -> Result<()> {
     }
     match &state.gateway {
         Some(gateway) if crate::commands::gateway::probe(gateway) => {
-            let ports: Vec<String> = gateway
+            println!("Gateway: running (pid {})", gateway.pid);
+            match gateway.front_port {
+                Some(front) => println!("Front:   {} - {}", crate::front::door(front), crate::front::address("NAME", front)),
+                None => println!("Front:   closed (ports {} and {} were taken)", crate::front::PORT, crate::front::FALLBACK_PORT),
+            }
+            // The spare address per app: the way in when the front door is
+            // shut, and the URL the app's own variable carries.
+            let spares: Vec<String> = gateway
                 .ports
                 .iter()
                 .map(|(port, name)| match apps.iter().find(|app| app.name == *name) {
@@ -65,10 +72,8 @@ pub fn run() -> Result<()> {
                     None => format!("{name}:{port}"),
                 })
                 .collect();
-            println!("Gateway: running (pid {}; {})", gateway.pid, ports.join(", "));
-            match gateway.front_port {
-                Some(front) => println!("Front:   {} - {}", crate::front::door(front), crate::front::address("NAME", front)),
-                None => println!("Front:   closed (ports {} and {} were taken)", crate::front::PORT, crate::front::FALLBACK_PORT),
+            if !spares.is_empty() {
+                println!("Spare:   {}", spares.join(", "));
             }
         }
         Some(gateway) => println!("Gateway: recorded (pid {}) but not responding - try `turnout gateway stop`", gateway.pid),
