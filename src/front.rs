@@ -248,14 +248,44 @@ async fn websocket(app: &App, dev_port: u16, req: Request) -> Result<Response> {
 /// not collide with one turnout placed.
 pub const DEV_PORTS: std::ops::RangeInclusive<u16> = 5100..=5199;
 
+/// Ports the per-app gateway listeners are handed out from, one per app,
+/// fixed when the app is registered. Same size and the same reasoning as
+/// [`DEV_PORTS`]; 7100 is where the wizard used to start counting, so a
+/// catalog filled in by hand keeps the numbers it already had.
+pub const GATEWAY_PORTS: std::ops::RangeInclusive<u16> = 7100..=7199;
+
 /// A dev port for `app`: its own when it has one, else the first free port
 /// of the range no other app holds. `None` when the range is exhausted.
+///
+/// Assigned late, on the first `dev`: nothing needs the number until a
+/// server is actually started.
 pub fn dev_port_for(apps: &[App], app: &str) -> Option<u16> {
-    if let Some(port) = apps.iter().find(|a| a.name == app).and_then(|a| a.dev_port) {
-        return Some(port);
+    free_port(DEV_PORTS, apps, apps.iter().find(|a| a.name == app).and_then(|a| a.dev_port))
+}
+
+/// A gateway port for a new app: the first of the range no app holds and
+/// nothing on the machine is listening on. `None` when the range is
+/// exhausted.
+///
+/// Assigned early, when the app is registered - unlike a dev port. The
+/// number is written into the app's dotenv file and substituted into
+/// `{gateway}` command lines straight away, so an app without one is an app
+/// whose IDE-run `pnpm dev` talks to nothing.
+pub fn free_gateway_port(apps: &[App]) -> Option<u16> {
+    free_port(GATEWAY_PORTS, apps, None)
+}
+
+/// The first port of `range` that no app in `apps` holds - either kind, so
+/// the two ranges could overlap without two apps colliding - and that the
+/// machine will actually hand out. `held` short-circuits: an app that
+/// already has its port keeps it, taken or not, because moving it would
+/// break the address its dotenv file already carries.
+fn free_port(range: std::ops::RangeInclusive<u16>, apps: &[App], held: Option<u16>) -> Option<u16> {
+    if held.is_some() {
+        return held;
     }
     let taken: Vec<u16> = apps.iter().flat_map(|a| a.dev_port.into_iter().chain(a.gateway_port)).collect();
-    DEV_PORTS
+    range
         .filter(|port| !taken.contains(port))
         .find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
 }
@@ -339,6 +369,26 @@ mod tests {
         assert!(ensure_dev_port_is_free(&apps, 5100, "web").is_ok());
         let error = ensure_dev_port_is_free(&apps, 5100, "new").unwrap_err().to_string();
         assert!(error.contains("already used by app 'web'"), "{error}");
+    }
+
+    #[test]
+    fn a_gateway_port_comes_from_its_own_range_and_skips_what_apps_hold() {
+        assert_eq!(free_gateway_port(&[]), Some(*GATEWAY_PORTS.start()));
+        let apps = [app("web", None, Some(7100)), app("api", Some(7101), None)];
+        // 7100 is web's gateway port and 7101 is api's dev port, pinned there
+        // by hand: both are out, whichever kind of port they are.
+        let picked = free_gateway_port(&apps).unwrap();
+        assert!(picked >= 7102, "{picked}");
+        assert!(GATEWAY_PORTS.contains(&picked));
+    }
+
+    #[test]
+    fn a_port_already_held_is_kept_even_when_the_machine_holds_it_too() {
+        // Something else is listening on the port the app was given. Moving
+        // it would break the address its dotenv file carries, so it stays.
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let busy = listener.local_addr().unwrap().port();
+        assert_eq!(free_port(DEV_PORTS, &[], Some(busy)), Some(busy));
     }
 
     #[test]

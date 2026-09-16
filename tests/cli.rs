@@ -534,10 +534,13 @@ fn run_hands_the_gateway_url_to_dev_but_not_to_build() {
         .assert()
         .success()
         .stdout(predicate::str::contains("http://localhost:7001 7001"));
-    // Without a port the placeholder is a configuration error, not braces in a shell.
+    // Without a port the placeholder is a configuration error, not braces in a
+    // shell. An app only gets there by handing its port back with `--port 0`:
+    // since v0.18.0 every app is given one when it is added.
     turnout(dir.path())
         .args(["app", "add", "bare", "--path"])
         .arg(&project)
+        .args(["--port", "0"])
         .args(["--command", "where=echo {gateway}"])
         .assert()
         .success();
@@ -546,6 +549,83 @@ fn run_hands_the_gateway_url_to_dev_but_not_to_build() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("has no gateway port"));
+}
+
+/// The point of v0.18.0: the user names no port and the app still has an
+/// address, in the catalog and in the dotenv file the IDE reads.
+#[test]
+fn an_app_is_given_a_gateway_port_without_being_asked() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "first", "--path"]).arg(&project).assert().success();
+    let first = gateway_port_of(dir.path(), "first");
+    assert!((7100..=7199).contains(&first), "the port comes from the gateway range, got {first}");
+    // The address is in the app's dotenv file straight away - that is the
+    // whole reason the port is assigned now rather than on first use.
+    let dotenv = std::fs::read_to_string(project.join(".env.development.local")).unwrap();
+    assert!(dotenv.contains(&format!("http://localhost:{first}")), "{dotenv}");
+
+    // A second app gets a different one: two apps on one port is a gateway
+    // that dies on its second bind.
+    let second_project = project.parent().unwrap().join("second");
+    std::fs::create_dir_all(&second_project).unwrap();
+    turnout(dir.path())
+        .args(["app", "add", "second", "--path"])
+        .arg(&second_project)
+        .assert()
+        .success();
+    assert_ne!(first, gateway_port_of(dir.path(), "second"));
+
+    // `--port` still pins one, and 0 hands it back.
+    turnout(dir.path()).args(["app", "edit", "first", "--port", "7250"]).assert().success();
+    assert_eq!(gateway_port_of(dir.path(), "first"), 7250);
+    turnout(dir.path()).args(["app", "edit", "first", "--port", "0"]).assert().success();
+    let apps = read_apps(dir.path());
+    assert!(apps.iter().find(|a| a["name"] == "first").unwrap()["gateway_port"].is_null());
+}
+
+/// An app written before v0.18.0 with no gateway port is given one when the
+/// data directory is migrated, and an app that has one keeps that number.
+#[test]
+fn the_migration_fills_the_apps_that_have_no_gateway_port() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "kept", "--path"])
+        .arg(&project)
+        .args(["--port", "7001"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "filled", "--path"])
+        .arg(&project)
+        .args(["--port", "0"])
+        .assert()
+        .success();
+    // Wind the directory back to the schema before this release.
+    let meta_path = dir.path().join("meta.json");
+    let mut meta: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+    meta["schema_version"] = serde_json::json!(3);
+    std::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap()).unwrap();
+
+    turnout(dir.path()).args(["app", "list"]).assert().success();
+
+    // The pinned port survives untouched: the number is already in a dotenv
+    // file, and renumbering it would be a silent break.
+    assert_eq!(gateway_port_of(dir.path(), "kept"), 7001);
+    let filled = gateway_port_of(dir.path(), "filled");
+    assert!((7100..=7199).contains(&filled), "got {filled}");
+}
+
+fn read_apps(home: &std::path::Path) -> Vec<serde_json::Value> {
+    let text = std::fs::read_to_string(home.join("apps.json")).unwrap();
+    serde_json::from_str(&text).unwrap()
+}
+
+fn gateway_port_of(home: &std::path::Path, name: &str) -> u16 {
+    let apps = read_apps(home);
+    let app = apps.iter().find(|a| a["name"] == name).unwrap_or_else(|| panic!("no app '{name}' in {apps:?}"));
+    app["gateway_port"]
+        .as_u64()
+        .unwrap_or_else(|| panic!("app '{name}' has no gateway port: {app}")) as u16
 }
 
 #[test]

@@ -493,7 +493,7 @@ pub enum AppCommand {
         /// Project directory
         #[arg(short, long)]
         path: Option<PathBuf>,
-        /// Local gateway port for this app
+        /// Pin the app's gateway port (default: assigned from 7100-7199 when the app is added)
         #[arg(short = 'P', long)]
         port: Option<u16>,
         /// Environment variable that carries the gateway URL to the app's commands (default: TURNOUT_GATEWAY_URL)
@@ -528,6 +528,7 @@ pub enum AppCommand {
         name: Option<String>,
         #[arg(short, long)]
         path: Option<PathBuf>,
+        /// The app's gateway port; 0 leaves the app without one
         #[arg(short = 'P', long)]
         port: Option<u16>,
         /// Environment variable that carries the gateway URL to the app's commands

@@ -102,6 +102,14 @@ fn add(
         servers: Vec::new(),
     };
 
+    // The gateway port is turnout's to hand out, before anything asks for it:
+    // the form's questions about the variable and the dotenv file are only
+    // worth asking when there is an address to carry, and `report_env_file`
+    // below writes that address the moment the app is saved. `--port` applied
+    // afterwards still has the last word, including `--port 0` for an app
+    // that wants no listener at all.
+    app.gateway_port = assign_gateway_port(&apps, &name)?;
+
     if wizard {
         let around = app_wizard::Surroundings {
             others: apps.clone(),
@@ -160,10 +168,14 @@ fn list() -> Result<()> {
         return Ok(());
     }
     let width = apps.iter().map(|a| a.name.len()).max().unwrap_or(0);
+    let path_width = apps.iter().map(|a| a.path.len()).max().unwrap_or(0);
     for app in apps {
-        let port = app.gateway_port.map(|p| format!(":{p}")).unwrap_or_default();
-        let address = app.dev_port.map(|p| format!("  http://{}.localhost -> :{p}", app.name)).unwrap_or_default();
-        println!("{:width$}  {}{}{}", app.name, app.path, port, address);
+        // The name, then the spare port behind it. The port used to be stuck
+        // straight onto the path with no separator - `/home/me/web:7100` reads
+        // as part of the directory.
+        let address = format!("http://{}.localhost", app.name);
+        let spare = app.gateway_port.map(|p| format!(" (spare :{p})")).unwrap_or_default();
+        println!("{:width$}  {:path_width$}  {address}{spare}", app.name, app.path);
     }
     Ok(())
 }
@@ -176,11 +188,8 @@ fn show(name: &str) -> Result<()> {
     if !Path::new(&app.path).is_dir() {
         println!("            (warning: directory no longer exists)");
     }
-    match app.gateway_port {
-        Some(port) => println!("  Gateway:  localhost:{port}"),
-        None => println!("  Gateway:  port not set"),
-    }
-    println!("  Env:      {} -> {}", app.gateway_env_name(), app.env_file_name());
+    // The front door first, the port second: the name is the address to use
+    // and to share, the port is the way in when the door is shut.
     let door = store::load_state()?
         .gateway
         .and_then(|gateway| gateway.front_port)
@@ -192,6 +201,11 @@ fn show(name: &str) -> Result<()> {
             crate::front::address(&app.name, door)
         ),
     }
+    match app.gateway_port {
+        Some(port) => println!("  Spare:    http://localhost:{port} (the app's own gateway port)"),
+        None => println!("  Spare:    none - this app has no gateway port"),
+    }
+    println!("  Env:      {} -> {}", app.gateway_env_name(), app.env_file_name());
     if let Some(dist) = &app.dist_dir {
         println!("  Dist:     {dist}");
     }
@@ -331,8 +345,13 @@ fn apply_flags(
         app.path = crate::utils::project_dir(&path)?.display().to_string();
     }
     if let Some(port) = port {
-        ensure_port_is_free(others, port, &app.name)?;
-        app.gateway_port = Some(port);
+        // 0 hands the port back, as `--dev-port 0` does: an app that should
+        // talk to a stand directly, with no gateway listener of its own.
+        let wanted = (port != 0).then_some(port);
+        if let Some(port) = wanted {
+            ensure_port_is_free(others, port, &app.name)?;
+        }
+        app.gateway_port = wanted;
     }
     if let Some(env_var) = env_var {
         app.gateway_env = Some(validate_env_name(env_var)?);
@@ -445,6 +464,22 @@ pub(super) fn validate_env_file(file: String) -> Result<String> {
         bail!("'{file}' is not a file name in the project directory - pass a bare name such as .env.development.local");
     }
     Ok(file)
+}
+
+/// The gateway port a newly registered app gets, handed out by turnout.
+///
+/// Since v0.18.0 the user is not asked: a gateway port is an implementation
+/// detail of the front door, and any free number does the job. The range is
+/// a hundred wide, which is more apps than a workstation runs; exhausting it
+/// is a real error rather than a silent app with no address, and `--port`
+/// names a specific one for whoever needs it.
+fn assign_gateway_port(apps: &[App], name: &str) -> Result<Option<u16>> {
+    crate::front::free_gateway_port(apps).map(Some).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no free gateway port left in {:?} - pin one with `turnout app add {name} --port PORT`",
+            crate::front::GATEWAY_PORTS
+        )
+    })
 }
 
 /// A gateway port belongs to exactly one app.

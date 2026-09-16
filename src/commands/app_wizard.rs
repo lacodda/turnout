@@ -11,6 +11,11 @@
 //! And a run of `dialoguer` calls cannot be tested at all: every prompt needs a
 //! terminal, while the CLI tests drive turnout without one. A list can be
 //! checked as data, which is what [`FIELDS`] and the gate over it do.
+//!
+//! One field of `App` is deliberately not in the list: since v0.18.0 turnout
+//! assigns the gateway port itself. It was the one question the user had no
+//! way to answer well - any free number does, and which numbers are free is
+//! turnout's business, not theirs. `--port` still pins a specific one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -53,10 +58,6 @@ const FIELDS: &[Field] = &[
     Field {
         name: "commands",
         ask: ask_commands,
-    },
-    Field {
-        name: "gateway_port",
-        ask: ask_gateway_port,
     },
     Field {
         name: "gateway_env",
@@ -121,44 +122,11 @@ fn merge_detected(current: &BTreeMap<String, String>, path: &Path) -> BTreeMap<S
     merged
 }
 
-fn ask_gateway_port(app: &mut App, around: &Surroundings) -> Result<()> {
-    let default = match app.gateway_port {
-        Some(port) => port.to_string(),
-        // A fresh app is offered the first port nothing else holds.
-        None if around.adding => free_gateway_port(&around.others).to_string(),
-        None => String::new(),
-    };
-    let answer: String = Input::new()
-        .with_prompt("Local gateway port (empty for none)")
-        .default(default)
-        .allow_empty(true)
-        .interact_text()?;
-    let answer = answer.trim();
-    if answer.is_empty() {
-        app.gateway_port = None;
-        return Ok(());
-    }
-    let port: u16 = answer.parse().context("port must be a number")?;
-    if let Some(other) = around.others.iter().find(|a| a.gateway_port == Some(port)) {
-        bail!(
-            "port {port} is already used by app '{0}' - pick another, or move '{0}' first with `turnout app edit {0} --port PORT`",
-            other.name
-        );
-    }
-    app.gateway_port = Some(port);
-    Ok(())
-}
-
-/// The lowest port from 7100 up that no app holds.
-fn free_gateway_port(others: &[App]) -> u16 {
-    (7100..u16::MAX)
-        .find(|port| !others.iter().any(|a| a.gateway_port == Some(*port)))
-        .unwrap_or(7100)
-}
-
 fn ask_gateway_env(app: &mut App, _around: &Surroundings) -> Result<()> {
     // Without a gateway port there is no address to carry, so the variable
-    // would name nothing.
+    // would name nothing. An app reaching the form has one, assigned when it
+    // was registered; this covers a catalog entry whose port was cleared by
+    // hand with `--port 0`.
     if app.gateway_port.is_none() {
         app.gateway_env = None;
         return Ok(());
@@ -395,7 +363,10 @@ mod tests {
 
         // `name` identifies the app: `add` takes it before the form opens and
         // `edit` addresses the app by it, so the form never asks for it.
-        let outside_the_form = ["name"];
+        // `gateway_port` turnout assigns itself when the app is registered
+        // (v0.18.0) - asking for a number the user has no way to choose well
+        // was the most awkward question in the form. `--port` still pins one.
+        let outside_the_form = ["name", "gateway_port"];
         let covered = covered_fields();
         let missing: Vec<&str> = model_fields
             .iter()
@@ -429,22 +400,14 @@ mod tests {
         assert!(validate_command_name(String::new()).is_err());
     }
 
-    /// The port offered to a new app is one nothing else holds.
+    /// The form no longer asks for a port of either kind by default: the
+    /// gateway port is assigned when the app is registered, the dev port on
+    /// the first `dev`. This is the gate against the question coming back.
     #[test]
-    fn the_offered_port_steps_over_the_ones_taken() {
-        let app = |port: u16| App {
-            name: format!("app{port}"),
-            path: String::new(),
-            commands: BTreeMap::new(),
-            dist_dir: None,
-            gateway_port: Some(port),
-            gateway_env: None,
-            env_file: None,
-            dev_port: None,
-            servers: Vec::new(),
-        };
-        assert_eq!(free_gateway_port(&[]), 7100);
-        assert_eq!(free_gateway_port(&[app(7100), app(7101)]), 7102);
-        assert_eq!(free_gateway_port(&[app(7101)]), 7100);
+    fn the_form_asks_for_no_gateway_port() {
+        assert!(
+            !covered_fields().contains(&"gateway_port"),
+            "the gateway port is turnout's to assign - see `front::free_gateway_port`"
+        );
     }
 }

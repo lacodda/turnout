@@ -83,7 +83,9 @@ pub fn run(name: Option<String>, server_name: Option<String>, no_check: bool) ->
             if members.iter().any(|app| app.gateway_port.is_some()) {
                 println!("Start the gateway with `turnout gateway start` to route the traffic.");
             } else {
-                println!("Set a gateway port first: `turnout app edit NAME --port PORT`.");
+                // Every app registered since v0.18.0 has a port; reaching here
+                // means they were all cleared by hand with `--port 0`.
+                println!("These apps have no gateway port to route through: `turnout app edit NAME --port PORT`.");
             }
         }
     }

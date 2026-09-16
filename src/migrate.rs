@@ -30,10 +30,15 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
+/// 4 since v0.18.0: every app has a gateway port, because turnout hands them
+/// out itself and no longer asks. Nothing changed shape - an app that already
+/// had a port keeps exactly the number it had; the migration only fills the
+/// apps that had none.
+///
 /// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
 /// the server's own `deploy` map - which held the app-to-path relationship - is
 /// gone (ADR 0013).
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 4;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -65,6 +70,12 @@ const STEPS: &[Step] = &[
         from: 2,
         describes: "deploy targets moved out of the servers into a catalog of their own",
         apply: targets_from_server_deploy,
+        rewrites: true,
+    },
+    Step {
+        from: 3,
+        describes: "apps without a gateway port were given one - turnout assigns them now",
+        apply: gateway_ports_for_every_app,
         rewrites: true,
     },
 ];
@@ -179,6 +190,50 @@ fn targets_from_server_deploy(dir: &Path) -> Result<()> {
     re-create with `turnout target add`",
             skipped.join(", ")
         );
+    }
+    Ok(())
+}
+
+/// Schema 3 -> 4: every app ends up with a gateway port.
+///
+/// Until v0.18.0 the port was a question in the wizard, and "empty for none"
+/// was an answer - so a catalog can hold apps that have no address to hand to
+/// their dotenv file, and whose `{gateway}` commands refuse to run. Now that
+/// turnout assigns the port itself, those apps are the only ones that could
+/// still be in that state, and there is no reason to leave them there.
+///
+/// **A port already written is taken as it stands** - including one outside
+/// [`crate::front::GATEWAY_PORTS`], because the app's dotenv file and any
+/// `.env` a developer copied from it already carry that number. Renumbering
+/// would be a silent breaking change dressed up as a migration.
+fn gateway_ports_for_every_app(dir: &Path) -> Result<()> {
+    let apps_file = dir.join("apps.json");
+    let mut apps: Vec<crate::model::App> = read_json_array(&apps_file)?;
+    let mut given = Vec::new();
+    for index in 0..apps.len() {
+        if apps[index].gateway_port.is_some() {
+            continue;
+        }
+        // Read against the catalog as it stands after the ports handed out so
+        // far, so two portless apps cannot be given the same number.
+        let Some(port) = crate::front::free_gateway_port(&apps) else {
+            // Not fatal: a catalog this full is better off keeping the apps it
+            // has than refusing to open. The user is told which ones are short.
+            eprintln!(
+                "    no free gateway port left for '{}' - set one with `turnout app edit {} --port PORT`",
+                apps[index].name, apps[index].name
+            );
+            continue;
+        };
+        apps[index].gateway_port = Some(port);
+        given.push(format!("{} on {port}", apps[index].name));
+    }
+    write_json(&apps_file, &apps)?;
+    if !given.is_empty() {
+        // Named rather than counted: the number goes into the app's dotenv
+        // file on its next `app edit`, and the user may recognize a clash with
+        // something they run by hand.
+        eprintln!("    gateway port: {}", given.join(", "));
     }
     Ok(())
 }
