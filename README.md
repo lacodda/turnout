@@ -74,7 +74,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.17.0
+turnout 0.18.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
@@ -85,8 +85,9 @@ Targets: 1 (web-prod-eu)
 Bindings:
   api -> staging
   web -> prod-eu
-Gateway: running (pid 24180; web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL)
+Gateway: running (pid 24180)
 Front:   http://localhost - http://NAME.localhost
+Spare:   web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL
 Recent:
   2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
   2026-08-09T01:12:44Z  use            web -> prod-eu
@@ -96,7 +97,7 @@ Recent:
 
 - **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
 - **One address per app.** `http://myapp.localhost` reaches the dev server turnout started for `myapp`, whichever port it took - the gateway's front door routes by name, and `*.localhost` needs no hosts file. The port is assigned once and handed to the server as `PORT` and `{port}`; `turnout open myapp` opens the address.
-- **The port is written once.** An app's gateway port lives in turnout only; the app is handed the address - `turnout dev` sets it as an environment variable the framework can see (`VITE_API_URL`, `REACT_APP_API_URL`, your pick), and a `.env.development.local` that turnout keeps in step covers a dev server started from an IDE. `build` never gets it, so a production bundle cannot bake in localhost.
+- **You never type a port.** turnout assigns an app's gateway port when you register it and its dev port on the first `dev`; both live in turnout only, and the app is handed the address - `turnout dev` sets it as an environment variable the framework can see (`VITE_API_URL`, `REACT_APP_API_URL`, your pick), and a `.env.development.local` that turnout keeps in step covers a dev server started from an IDE. `build` never gets it, so a production bundle cannot bake in localhost.
 - **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
 - **Named deploy targets.** The four of them under one name: `turnout deploy web-prod-eu` from any directory, no flags to re-type. A first deploy that has no target yet offers to save the one it just used.
 - **Key access set up, not just used.** `turnout key setup prod` generates an ed25519 key, authorizes it on the server, proves it signs in and only then switches the credential over - so a server-side misconfiguration never costs you the password that still works. Windows servers included: an administrator account keeps its keys in a different file that sshd reads instead, and turnout writes to the right one.

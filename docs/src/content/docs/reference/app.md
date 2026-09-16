@@ -11,6 +11,8 @@ turnout app <add|list|show|edit|remove> [...]
 
 An **app** is a local project: its path, its commands (`dev`, `build`, ...), its gateway port and the servers it is allowed to use. See [Entities](/turnout/concepts/entities/).
 
+You are not asked for a port of either kind. Since v0.18.0 turnout assigns the gateway port when the app is added and the dev port on the first `turnout dev`; both flags are still there for a project that insists on a specific number.
+
 ## add
 
 ```bash
@@ -21,7 +23,7 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file F
 | Flag | Short | Description |
 | --- | --- | --- |
 | `--path` | `-p` | Project directory |
-| `--port` | `-P` | Local gateway port for this app |
+| `--port` | `-P` | Pin the app's gateway port; assigned from `7100-7199` when the app is added |
 | `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `TURNOUT_GATEWAY_URL`) |
 | `--env-file` | | Dotenv file turnout keeps in step with the port, relative to the project (default `.env.development.local`) |
 | `--dev-port` | | Port the dev server listens on; assigned from `5100-5199` on the first `dev` when unset, `0` hands it back |
@@ -31,13 +33,23 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file F
 
 With `NAME` or `--path` missing, the [wizard](#the-wizard) walks every field of the app, so nothing here needs a flag.
 
+### Ports turnout hands out
+
+A new app is given a **gateway port** from `7100-7199` straight away - the first of the range no app holds and nothing on the machine is listening on. It is assigned at this point rather than on first use because the number goes into the app's [dotenv file](#how-the-app-learns-the-gateway-address) immediately, which is what lets `pnpm dev` from an IDE reach the stand without turnout in the loop.
+
 A gateway port belongs to exactly one app: `add` and `edit` refuse a port another app already holds and name that app. Two apps on one port would leave the gateway unable to bind the second listener.
+
+`--port PORT` pins a specific one, and `turnout app edit NAME --port 0` hands it back - an app with no gateway port has no listener of its own and no address to carry, which is what you want for a project that talks to its stand directly.
+
+An app registered by an older turnout that has no gateway port is given one when the data directory is migrated. **A port already written is kept as it stands**, including one from outside the range: the number is already in a dotenv file, and renumbering it would break a working setup silently.
 
 ## The wizard
 
-`turnout app add` with nothing to go on, and `turnout app edit NAME` with no flags, open the same form. It asks for **every field an app has**, in order: the project directory, the commands, the gateway port, the variable that carries the gateway URL, the dotenv file, the dev server port, the build artifact directory and the allowed servers. `add` starts from an empty app and offers a free port; `edit` starts from the stored one, with its current values as the defaults - pressing enter through the form changes nothing.
+`turnout app add` with nothing to go on, and `turnout app edit NAME` with no flags, open the same form. It asks for **every field an app has except the gateway port**, in order: the project directory, the commands, the variable that carries the gateway URL, the dotenv file, the dev server port, the build artifact directory and the allowed servers. `edit` starts from the stored app, with its current values as the defaults - pressing enter through the form changes nothing.
 
-Empty means *not set*: clearing the gateway port unsets it, and an empty dev port hands the port back so the next `dev` assigns a fresh one. Questions that would name nothing are skipped - without a gateway port there is no address to carry, so the variable and the dotenv file are not asked for.
+The gateway port is not among the questions: turnout assigns it, and `--port` changes it for the rare project that needs a particular number. It was the one question with no good answer - any free port does, and which ports are free is turnout's business.
+
+Empty means *not set*: an empty dev port hands the port back so the next `dev` assigns a fresh one. Questions that would name nothing are skipped - an app whose port was handed back with `--port 0` has no address to carry, so the variable and the dotenv file are not asked for.
 
 ### Commands
 
@@ -77,11 +89,11 @@ Every app answers at `http://NAME.localhost` through the gateway's [front door](
 
 `dev` hands the port to the server as the `PORT` variable and as `{port}` in the command line. Vite does not read `PORT`, so a Vite project's detected dev command already ends in `--port {port}` (`pnpm dev --port {port}`, `npm run dev -- --port {port}`); a project registered before that gets the same with `turnout app edit myapp --command "dev=pnpm dev --port {port}"`.
 
-`app list` shows the address next to apps that have a dev port; `app show` prints it with the port; `turnout open myapp` opens it.
+`app list` shows the front-door address of every app; `app show` prints it with the dev server port behind it; `turnout open myapp` opens it.
 
 ```bash
-turnout app add myshop --path ~/dev/myshop --port 7001 --env-var VITE_API_URL
-# Wrote ~/dev/myshop/.env.development.local (VITE_API_URL=http://localhost:7001).
+turnout app add myshop --path ~/dev/myshop --env-var VITE_API_URL
+# Wrote ~/dev/myshop/.env.development.local (VITE_API_URL=http://localhost:7100).
 ```
 
 With both given, `add` is fully non-interactive (useful for scripts): commands come from detection, adjustable via `--command`.
@@ -107,7 +119,8 @@ Projects without a `package.json` (or without `scripts`) fall back to the conven
 
 ```bash
 turnout app add                        # wizard, from the current directory
-turnout app add myapp --path ~/dev/myapp --port 7100
+turnout app add myapp --path ~/dev/myapp
+turnout app add legacy --path ~/dev/legacy --port 7001   # pin a port the stand expects
 turnout app add api --path ~/dev/api --command "dev=make run" --server staging
 turnout app add api -p ~/dev/api -c "dev=make run" -s staging   # same, short form
 ```
@@ -115,9 +128,16 @@ turnout app add api -p ~/dev/api -c "dev=make run" -s staging   # same, short fo
 ## list / show
 
 ```bash
-turnout app list          # one line per app: name, path, gateway port, address
+turnout app list          # one line per app: name, path, address, spare port
 turnout app show myapp    # full card: commands, dist, allowed servers
 ```
+
+```
+myshop  /home/me/dev/myshop  http://myshop.localhost (spare :7100)
+api     /home/me/dev/api     http://api.localhost (spare :7101)
+```
+
+The address is the one to use and to share; the **spare** is the app's own gateway port, the way in when the front door cannot open (see [gateway](/turnout/reference/gateway/#the-front-door)).
 
 `show` warns if the project directory no longer exists on disk. Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 
@@ -125,7 +145,7 @@ turnout app show myapp    # full card: commands, dist, allowed servers
 
 ```bash
 turnout app edit myapp                              # the wizard, over every field
-turnout app edit myapp --port 7200                  # change one field; the dotenv file follows
+turnout app edit myapp --port 7200                  # pin another port; the dotenv file follows
 turnout app edit myapp --env-var REACT_APP_API_URL  # the name the framework can see
 turnout app edit myapp --command "deploy=make ship" # add or override a command
 turnout app edit myapp --command deploy=            # remove a command
@@ -135,7 +155,7 @@ turnout app edit myapp --add-server prod --rm-server staging
 | Flag | Short | Description |
 | --- | --- | --- |
 | `--path` | `-p` | Project directory |
-| `--port` | `-P` | Local gateway port for this app |
+| `--port` | `-P` | The app's gateway port; `0` leaves the app without one |
 | `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `TURNOUT_GATEWAY_URL`) |
 | `--env-file` | | Dotenv file turnout keeps in step with the port, relative to the project (default `.env.development.local`) |
 | `--dev-port` | | Port the dev server listens on; assigned from `5100-5199` on the first `dev` when unset, `0` hands it back |

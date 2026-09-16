@@ -15,13 +15,13 @@ One command that answers "what is going on":
 - whether turnout is set up on this machine;
 - every catalog - apps, servers, credentials, paths and groups - by count and name;
 - which server each app is bound to for development;
-- whether the gateway is running;
+- whether the gateway is running, its front door, and the spare port of each app behind it;
 - the five most recent actions from the [journal](/turnout/concepts/journal/).
 
 `status` never prints secrets - it only reports which credentials exist.
 
 ```text
-turnout 0.17.0
+turnout 0.18.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    2 (myapp, api)
 Servers: 2 (prod, staging)

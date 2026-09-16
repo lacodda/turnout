@@ -36,16 +36,18 @@ cd ~/dev/myshop
 turnout app add
 ```
 
-The [wizard](/turnout/reference/app/#the-wizard) walks every field of the app. It detects the package manager from the lock file and proposes the standard commands (`pnpm dev --port {port}`, `pnpm build`, ... - a Vite dev script takes its port from turnout), which you can correct, rename or extend on the spot; then it suggests a free gateway port - say **7100** - asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project), which dotenv file to keep in step, which dev server port to pin (empty lets the first `dev` assign one), which directory the build lands in, and which servers the app may use. The same, scripted:
+The [wizard](/turnout/reference/app/#the-wizard) walks every field of the app. It detects the package manager from the lock file and proposes the standard commands (`pnpm dev --port {port}`, `pnpm build`, ... - a Vite dev script takes its port from turnout), which you can correct, rename or extend on the spot; then it asks which variable carries the gateway URL to the app (it proposes `VITE_API_URL` for a Vite project), which dotenv file to keep in step, which dev server port to pin (empty lets the first `dev` assign one), which directory the build lands in, and which servers the app may use.
+
+**You are not asked for a gateway port.** turnout takes the first free one from `7100-7199` - say **7100** - and writes it into the dotenv file on the spot. The same, scripted:
 
 ```bash
-turnout app add myshop --path . --port 7100 --env-var VITE_API_URL --server main --server second
+turnout app add myshop --path . --env-var VITE_API_URL --server main --server second
 # Wrote ./.env.development.local (VITE_API_URL=http://localhost:7100).
 ```
 
 ### 4. Point the app at the gateway - once and forever
 
-This is the core idea: the project knows only its gateway port, never a stand address - and it does not even write the port down. The port is set once in turnout; the app is handed the address two ways: `turnout dev` puts `VITE_API_URL=http://localhost:7100` into the dev server's environment, and `.env.development.local` (written by turnout, ignored by git, read by Vite in development only) covers `pnpm dev` from an IDE. Change the port with `turnout app edit myshop --port 7200` and both follow.
+This is the core idea: the project knows only its gateway port, never a stand address - and it does not even write the port down. The port is turnout's, assigned when the app was registered; the app is handed the address two ways: `turnout dev` puts `VITE_API_URL=http://localhost:7100` into the dev server's environment, and `.env.development.local` (written by turnout, ignored by git, read by Vite in development only) covers `pnpm dev` from an IDE. Pin another port with `turnout app edit myshop --port 7200` and both follow.
 
 ```ts
 // src/api.ts
@@ -100,7 +102,7 @@ And when you come back with `turnout use myshop main`, you are **still logged in
 
 ```text
 $ turnout status
-turnout 0.17.0
+turnout 0.18.0
 Data directory: C:\Users\me\AppData\Local\lacodda\turnout
 Apps:    1 (myshop)
 Servers: 2 (main, second)
@@ -108,8 +110,9 @@ Creds:   1 (main-login)
 Paths:   none yet
 Bindings:
   myshop -> second
-Gateway: running (pid 18324; myshop:7100 -> VITE_API_URL)
+Gateway: running (pid 18324)
 Front:   http://localhost - http://NAME.localhost
+Spare:   myshop:7100 -> VITE_API_URL
 ```
 
 ## What the gateway handles for you
@@ -121,7 +124,7 @@ Front:   http://localhost - http://NAME.localhost
 
 ## When a second app appears
 
-Give it its own port (`--port 7101`), then group the contour and switch everything at once:
+It gets its own port without being asked (7101, and so on); group the contour and switch everything at once:
 
 ```bash
 turnout group add front --app myshop --app admin

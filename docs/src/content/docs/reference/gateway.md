@@ -9,7 +9,9 @@ sidebar:
 turnout gateway <start|run|stop>
 ```
 
-The gateway has two kinds of doors. Per app, it listens on `localhost` - one port per app (`--port` in the app config) - and forwards every request to the server the app is currently [bound to](/turnout/reference/use/); how it treats cookies and redirects is described in [The Dev Gateway](/turnout/concepts/gateway/). On top of that, one [front door](#the-front-door) answers by name: `http://myapp.localhost` reaches the dev server turnout started for `myapp`.
+The gateway has two kinds of doors. Per app, it listens on `localhost` - one port per app, [assigned by turnout](/turnout/reference/app/#ports-turnout-hands-out) when the app is registered - and forwards every request to the server the app is currently [bound to](/turnout/reference/use/); how it treats cookies and redirects is described in [The Dev Gateway](/turnout/concepts/gateway/). On top of that, one [front door](#the-front-door) answers by name: `http://myapp.localhost` reaches the dev server turnout started for `myapp`.
+
+The name is the address to use. The per-app port is the **spare**: the way in when the front door cannot open, and the URL the app's own variable carries.
 
 ## start / stop
 

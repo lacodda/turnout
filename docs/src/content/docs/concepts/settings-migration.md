@@ -19,6 +19,12 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 4: every app has a gateway port
+
+**v0.18.0** made the gateway port turnout's to hand out rather than yours to type, so an app without one is no longer a state you can reach by pressing enter. Migrating to schema 4 gives every app that has none a port from `7100-7199`.
+
+**An app that already has a port keeps exactly that number**, including one from outside the range. It is already written into the app's dotenv file, and probably into a copy someone made from it; renumbering would break a working setup while claiming to upgrade it. The migration only fills the gaps, and names the apps it filled.
+
 ## Schema 3: targets
 
 **v0.11.0** pulled the app-to-path map out of the server and into its own entity, the [target](/turnout/reference/target/). A schema-2 directory has that map spread across every server as `server.deploy[app] = path`; migrating to schema 3 walks each one and creates a target named `{app}-{server}` for every entry, carrying over the server's own credential.
