@@ -170,13 +170,10 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-Everything above works today. What is next:
-
-- [ ] **Background runs** - `dev --detach`, `ps`, `logs`, `stop`, OS notifications
-- [ ] **Observability** - gateway request log, `doctor`, `report` for handing context to an assistant
-- [ ] **Deploy consists** - atomic deploy and rollback across a group of apps
-
-Released versions and what landed in each: [CHANGELOG on the Releases page](https://github.com/lacodda/turnout/releases).
+v0.18.0, in daily use. Everything above works today: stands and switching
+between them, the gateway, secrets in the OS keyring, and build and deploy from
+any directory. What landed in each version:
+[the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation
 
