@@ -160,44 +160,142 @@ fn is_assignment(line: &str) -> bool {
 
 /// Keep the dotenv file out of git.
 ///
-/// Appends the file name to `.gitignore` when the project has one (or is a
-/// repository without one). A directory that is not a repository is left
-/// alone: a `.gitignore` there would be turnout's litter, not the user's.
+/// A repository is not always the app's own directory. In a monorepo the app
+/// sits at `repo/apps/web` and the `.git` is levels up, so looking for a
+/// `.gitignore` beside the dotenv file found nothing, concluded this was not
+/// a repository at all, and left `.env.development.local` showing up as
+/// untracked in every `git status` - the defect found in the demo under
+/// `examples/`.
+///
+/// So the search walks up from the app to the repository root and writes into
+/// the nearest `.gitignore` on the way, spelling the entry relative to *that*
+/// file's directory. Only within the repository: a `.gitignore` above the
+/// root belongs to somebody else.
+///
+/// When the repository has no `.gitignore` anywhere on that path, one is
+/// started at its root, which is where a repository's ignores belong. A
+/// directory under no repository and with no ignore file above it is still
+/// left alone - a `.gitignore` invented there is turnout's litter.
 fn ensure_ignored(dir: &Path, file_name: &str) -> Result<()> {
-    let gitignore = dir.join(".gitignore");
+    let Some((gitignore, entry)) = ignore_target(dir, file_name) else {
+        return Ok(());
+    };
     let existing = match std::fs::read_to_string(&gitignore) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if !dir.join(".git").exists() {
-                return Ok(());
-            }
-            String::new()
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error).with_context(|| format!("cannot read {}", gitignore.display())),
     };
-    if existing.lines().any(|line| ignores(line.trim(), file_name)) {
+    if existing.lines().any(|line| covers(line.trim(), &entry)) {
         return Ok(());
     }
     let mut text = existing;
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(file_name);
+    text.push_str(&entry);
     text.push('\n');
     std::fs::write(&gitignore, text).with_context(|| format!("cannot write {}", gitignore.display()))
 }
 
-/// Whether a `.gitignore` line already covers the file. The two common
-/// spellings the file has - `.env.development.local` and the `.env*.local`
-/// / `*.local` globs every framework template ships - are matched as a
-/// literal and as a glob with `*` only; anything fancier is nobody's ignore
-/// line for a dotenv file.
+/// The `.gitignore` to write into and the entry to write, or `None` when
+/// nothing on the way up says this is a repository at all.
+///
+/// The nearest existing `.gitignore` between the app directory and the
+/// repository root wins, falling back to a new one at the root. The walk
+/// stops at the root, so a `.gitignore` belonging to an outer repository is
+/// never reached - by construction, not by a check. A `.gitignore` beside the
+/// app with no `.git` above it anywhere still counts: the user put it there,
+/// and writing into a file that exists is never litter. The entry is spelled
+/// relative to the chosen file with forward slashes, the only separator git
+/// reads on every platform.
+fn ignore_target(dir: &Path, file_name: &str) -> Option<(PathBuf, String)> {
+    let mut nearest: Option<PathBuf> = None;
+    let mut root: Option<&Path> = None;
+    let mut at = Some(dir);
+    while let Some(current) = at {
+        if nearest.is_none() && current.join(".gitignore").is_file() {
+            nearest = Some(current.to_path_buf());
+        }
+        // `.git` is a directory in an ordinary clone and a file in a worktree
+        // or a submodule; either marks the root, and the walk stops there.
+        if current.join(".git").exists() {
+            root = Some(current);
+            break;
+        }
+        at = current.parent();
+    }
+    // The walk stops at the root, so anything `nearest` holds was found at or
+    // below it - an outer repository's `.gitignore` is never a candidate, by
+    // construction rather than by a check.
+    let holder = match (nearest, root) {
+        (Some(found), _) => found,
+        // A repository with no ignore file anywhere on the path: start one
+        // where a repository's ignores belong.
+        (None, Some(root)) => root.to_path_buf(),
+        (None, None) => return None,
+    };
+    let relative = dir.strip_prefix(&holder).ok()?;
+    let mut entry = String::new();
+    for part in relative.components() {
+        entry.push_str(&part.as_os_str().to_string_lossy());
+        entry.push('/');
+    }
+    entry.push_str(file_name);
+    Some((holder.join(".gitignore"), entry))
+}
+
+/// Whether a `.gitignore` line already covers the entry, read the way git
+/// reads one.
+///
+/// Two kinds of line, told apart the way git tells them apart - by whether
+/// the pattern contains a slash:
+///
+/// * **No slash** (`.env.development.local`, `.env*.local`, `node_modules`):
+///   it matches a *name* at any depth. Matching the file's own name covers
+///   the file; matching a directory on the way to it covers everything under
+///   that directory, the file included.
+/// * **With a slash** (`apps/web/.env.development.local`,
+///   `examples/*/.env.development.local`): it is anchored at the ignore
+///   file's own directory, so it is matched segment by segment from the
+///   start. A pattern shorter than the entry names a directory above it and
+///   covers it; one longer names something below the file and covers nothing.
+///
+/// Blank lines, comments (`#...`) and negations (`!...`) cover nothing, and
+/// need no test of their own to be turned away: `#` and `!` are ordinary
+/// characters to [`ignores`], and no segment of a path turnout wrote begins
+/// with one, so such a line simply matches nothing. Reading a negation as
+/// "covered" would be exactly backwards - it un-ignores the file - and
+/// falling through is already the safe answer.
+fn covers(pattern: &str, entry: &str) -> bool {
+    // A trailing slash means "a directory", which changes what the pattern
+    // may match, not whether it matches this path; a leading one anchors it,
+    // which it already is once it contains a slash of its own.
+    let anchored = pattern.trim_end_matches('/').starts_with('/');
+    let pattern = pattern.trim_end_matches('/').trim_start_matches('/');
+    let entry_parts: Vec<&str> = entry.split('/').collect();
+    if !pattern.contains('/') && !anchored {
+        // At any depth: the file's own name, or a directory it lives under.
+        return entry_parts.iter().any(|part| ignores(pattern, part));
+    }
+    let pattern_parts: Vec<&str> = pattern.split('/').collect();
+    if pattern_parts.len() > entry_parts.len() {
+        return false;
+    }
+    pattern_parts.iter().zip(&entry_parts).all(|(pattern, part)| ignores(pattern, part))
+}
+
+/// Whether one `.gitignore` path segment matches one segment of a path.
+///
+/// A literal, or a glob with `*` - the only wildcard that appears in an
+/// ignore line for a dotenv file. Anything fancier (`?`, character classes,
+/// `**`) is nobody's ignore line for one, and falling through means turnout
+/// adds an entry that was already covered rather than skipping one that was
+/// not - the harmless direction.
 fn ignores(pattern: &str, file_name: &str) -> bool {
-    let pattern = pattern.trim_start_matches('/');
     if pattern == file_name {
         return true;
     }
-    if !pattern.contains('*') || pattern.contains('/') {
+    if !pattern.contains('*') {
         return false;
     }
     let parts: Vec<&str> = pattern.split('*').collect();
@@ -326,11 +424,66 @@ mod tests {
 
     #[test]
     fn gitignore_patterns_that_cover_the_file_are_recognised() {
-        for pattern in [".env.development.local", "/.env.development.local", ".env*.local", "*.local", ".env.*", "*"] {
-            assert!(ignores(pattern, ".env.development.local"), "{pattern} should cover the file");
+        // A bare pattern matches the file at any depth, which is how git
+        // reads one - so the same line covers the app at the root and the app
+        // two directories down.
+        for entry in [".env.development.local", "apps/web/.env.development.local"] {
+            for pattern in [".env.development.local", ".env*.local", "*.local", ".env.*", "*"] {
+                assert!(covers(pattern, entry), "{pattern} should cover {entry}");
+            }
+            for pattern in [
+                "",
+                "# .env.development.local",
+                "!.env.development.local",
+                ".env",
+                ".env.local",
+                "*.log",
+                ".env.production.local",
+            ] {
+                assert!(!covers(pattern, entry), "{pattern:?} should not cover {entry}");
+            }
         }
-        for pattern in [".env", ".env.local", "*.log", "build/*.local", ".env.production.local"] {
-            assert!(!ignores(pattern, ".env.development.local"), "{pattern} should not cover the file");
+        // A leading slash anchors the pattern at the ignore file's own
+        // directory, so it covers the app beside it and not one two levels
+        // down. Reading it as unanchored would skip an entry git still needs.
+        assert!(covers("/.env.development.local", ".env.development.local"));
+        assert!(!covers("/.env.development.local", "apps/web/.env.development.local"));
+        // A blank line, a comment and a negation are not covers. Taking one
+        // for a cover would make turnout skip an entry git needs - worst of
+        // all for `!`, which un-ignores the very file being filed.
+        for pattern in ["", "   ", "!*", "#*", "!*.local", "!.env*.local", "!apps/*/.env.development.local", "# *.local"] {
+            assert!(!covers(pattern, "apps/web/.env.development.local"), "{pattern:?} is not a cover");
+        }
+    }
+
+    /// A pattern with a slash is anchored, and read segment by segment - the
+    /// case that made turnout append an entry its own repository already
+    /// ignored through `examples/*/.env.development.local`.
+    #[test]
+    fn an_anchored_glob_path_is_recognised_as_covering_the_entry() {
+        let entry = "examples/vue-demo/.env.development.local";
+        for pattern in [
+            "examples/vue-demo/.env.development.local",
+            "/examples/vue-demo/.env.development.local",
+            "examples/*/.env.development.local",
+            "examples/*/.env*.local",
+            "examples/vue-demo",
+            "examples/vue-demo/",
+            "examples",
+        ] {
+            assert!(covers(pattern, entry), "{pattern} should cover {entry}");
+        }
+        for pattern in [
+            // A different app under the same parent.
+            "examples/react-demo/.env.development.local",
+            // A different parent.
+            "docs/*/.env.development.local",
+            // Longer than the entry: it names something below the file.
+            "examples/vue-demo/.env.development.local/deeper",
+            // Anchored one level too shallow - `examples` is not `vue-demo`.
+            "vue-demo/.env.development.local",
+        ] {
+            assert!(!covers(pattern, entry), "{pattern} should not cover {entry}");
         }
     }
 
@@ -384,5 +537,151 @@ mod tests {
         app.path = dir.path().display().to_string();
         write(&app).unwrap();
         assert!(!dir.path().join(".gitignore").exists(), "a .gitignore was invented outside a repository");
+    }
+
+    /// The monorepo defect: with the `.git` levels above the app, the entry
+    /// goes into the repository's `.gitignore` spelled as a path, not into a
+    /// new file beside the app - and not nowhere, which is what used to happen.
+    #[test]
+    fn a_monorepo_app_is_ignored_from_the_repository_root() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        std::fs::write(repo.path().join(".gitignore"), "node_modules\n").unwrap();
+        let project = repo.path().join("apps").join("web");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+            "node_modules\napps/web/.env.development.local\n"
+        );
+        assert!(!project.join(".gitignore").exists(), "a second .gitignore appeared beside the app");
+        // Writing twice must not append the entry twice.
+        write(&app).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+            "node_modules\napps/web/.env.development.local\n"
+        );
+    }
+
+    /// The nearest `.gitignore` wins over the root's, and its entry is
+    /// relative to it - a package with its own ignores keeps them local.
+    #[test]
+    fn the_nearest_gitignore_inside_the_repository_takes_the_entry() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        std::fs::write(repo.path().join(".gitignore"), "node_modules\n").unwrap();
+        let package = repo.path().join("apps");
+        let project = package.join("web");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(package.join(".gitignore"), "dist\n").unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(package.join(".gitignore")).unwrap(),
+            "dist\nweb/.env.development.local\n"
+        );
+        assert_eq!(std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(), "node_modules\n");
+    }
+
+    /// A repository with no `.gitignore` anywhere gets one at its root, where
+    /// a repository's ignores belong - not beside the app.
+    #[test]
+    fn a_repository_without_any_gitignore_gets_one_at_its_root() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        let project = repo.path().join("apps").join("web");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+            "apps/web/.env.development.local\n"
+        );
+        assert!(!project.join(".gitignore").exists());
+    }
+
+    /// A glob in the repository root already covers the file: nothing is
+    /// appended, whichever way the file is spelled from there.
+    #[test]
+    fn a_root_glob_already_covers_a_nested_app() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::create_dir(repo.path().join(".git")).unwrap();
+        std::fs::write(repo.path().join(".gitignore"), "*.local\n").unwrap();
+        let project = repo.path().join("apps").join("web");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(), "*.local\n");
+    }
+
+    /// A `.git` *file* - a worktree or a submodule - is a repository root too.
+    #[test]
+    fn a_worktree_marker_file_counts_as_a_repository() {
+        let repo = tempfile::tempdir().unwrap();
+        std::fs::write(repo.path().join(".git"), "gitdir: /elsewhere/.git/worktrees/w\n").unwrap();
+        let project = repo.path().join("app");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(), "app/.env.development.local\n");
+    }
+
+    /// An ignore file the user keeps outside any repository is honoured where
+    /// it stands - writing into a file that already exists is never litter,
+    /// and it is the case the old behaviour covered.
+    #[test]
+    fn a_gitignore_without_a_repository_is_still_written_to() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "node_modules\n").unwrap();
+        let mut app = app(Some(7001));
+        app.path = dir.path().display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".gitignore")).unwrap(),
+            "node_modules\n.env.development.local\n"
+        );
+    }
+
+    /// A `.gitignore` above the repository root is an outer repository's; the
+    /// entry belongs to this one, at its own root.
+    #[test]
+    fn a_gitignore_outside_the_root_is_not_written_to() {
+        let outer = tempfile::tempdir().unwrap();
+        std::fs::write(outer.path().join(".gitignore"), "outer\n").unwrap();
+        let repo = outer.path().join("inner");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(repo.join(".git")).unwrap();
+        let project = repo.join("app");
+        std::fs::create_dir_all(&project).unwrap();
+
+        let mut app = app(Some(7001));
+        app.path = project.display().to_string();
+        app.gateway_env = Some("VITE_API_URL".into());
+        write(&app).unwrap();
+
+        assert_eq!(std::fs::read_to_string(outer.path().join(".gitignore")).unwrap(), "outer\n");
+        assert_eq!(std::fs::read_to_string(repo.join(".gitignore")).unwrap(), "app/.env.development.local\n");
     }
 }
