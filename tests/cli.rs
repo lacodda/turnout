@@ -1431,6 +1431,266 @@ fn run_executes_app_commands_with_exit_codes() {
         .stderr(predicate::str::contains("has no 'nosuch' command"));
 }
 
+/// Every job writes its output to a log file, whatever the console does with
+/// it. This is the half of the background mode (v0.20) that has to work
+/// before a job can be detached, so it is pinned from the outside: one file
+/// per app and command, holding both streams, truncated by the next run.
+#[test]
+fn every_job_leaves_its_output_in_a_log_file() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            "hello=echo out-line",
+            "--command",
+            "both=echo out-line && echo err-line 1>&2",
+            "--command",
+            "second=echo replaced",
+        ])
+        .assert()
+        .success();
+
+    let log = dir.path().join("logs").join("myapp-hello.log");
+    turnout(dir.path()).args(["run", "hello", "myapp"]).assert().success();
+    assert!(log.is_file(), "no log at {}", log.display());
+    assert!(std::fs::read_to_string(&log).unwrap().contains("out-line"));
+
+    // Both streams land in the one file: a failure reads back the way it
+    // looked on screen, not stdout only.
+    turnout(dir.path()).args(["run", "both", "myapp"]).assert().success();
+    let both = std::fs::read_to_string(dir.path().join("logs").join("myapp-both.log")).unwrap();
+    assert!(both.contains("out-line") && both.contains("err-line"), "{both}");
+
+    // The next run of the same command replaces the file rather than growing it.
+    turnout(dir.path()).args(["run", "hello", "myapp"]).assert().success();
+    let text = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(text.matches("out-line").count(), 1, "the log grew instead of being replaced: {text}");
+}
+
+/// A command whose name is not a file name still gets a log.
+///
+/// `test:e2e` is an ordinary npm script; a colon is an alternate data stream
+/// on Windows, so the name has to be made safe before it reaches the disk.
+#[test]
+fn a_command_named_like_an_npm_script_still_gets_a_log() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "test:e2e=echo e2e ran"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "test:e2e", "myapp"]).assert().success();
+    let log = dir.path().join("logs").join("myapp-test-e2e.log");
+    assert!(log.is_file(), "no log at {}", log.display());
+    assert!(std::fs::read_to_string(&log).unwrap().contains("e2e ran"));
+}
+
+/// `--verbose` is accepted by every command that can hide output, and changes
+/// nothing about what a pipe sees - off a terminal the output streams either
+/// way, and the exit code still belongs to the child.
+#[test]
+fn verbose_streams_the_output_and_keeps_the_exit_code() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            "build=echo building",
+            "--command",
+            "test=echo testing",
+            "--command",
+            "lint=echo linting",
+            "--command",
+            "dev=echo serving",
+            "--command",
+            "fail=exit 3",
+        ])
+        .assert()
+        .success();
+    for command in [["build"], ["test"], ["lint"]] {
+        turnout(dir.path())
+            .args(command)
+            .args(["myapp", "--verbose"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(command[0].trim_end_matches('d')));
+    }
+    turnout(dir.path())
+        .args(["dev", "myapp", "--verbose"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("serving"));
+    turnout(dir.path()).args(["run", "fail", "myapp", "-v"]).assert().code(3);
+}
+
+/// The quiet console, exercised rather than reasoned about.
+///
+/// A test harness has no terminal, so the modes that hide output would never
+/// run under `cargo test`; `TURNOUT_CONSOLE` puts the child in one anyway.
+/// What is pinned here is the promise: a command that succeeds shows its
+/// loader line and not its output, and a command that fails shows the output
+/// immediately, without being run again.
+#[test]
+fn a_quiet_command_hides_its_output_until_it_fails() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            "build=echo compiling module one && echo compiling module two",
+            "--command",
+            "broken=echo compiling module one && echo boom: undefined symbol 1>&2 && exit 2",
+        ])
+        .assert()
+        .success();
+
+    // The success case: the loader says what happened, the build's own
+    // chatter does not reach the terminal at all.
+    turnout(dir.path())
+        .env("TURNOUT_CONSOLE", "quiet")
+        .args(["build", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("compiling module one").not())
+        .stdout(predicate::str::contains("Building myapp"));
+
+    // The failure case: the point of hiding output is that a failure gets to
+    // show it, here and now, with the log named for the rest.
+    turnout(dir.path())
+        .env("TURNOUT_CONSOLE", "quiet")
+        .args(["run", "broken", "myapp"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("boom: undefined symbol"))
+        .stderr(predicate::str::contains("compiling module one"))
+        .stderr(predicate::str::contains("full output:"));
+
+    // Hidden or not, the output is on disk either way.
+    let log = dir.path().join("logs").join("myapp-build.log");
+    assert!(std::fs::read_to_string(&log).unwrap().contains("compiling module two"));
+}
+
+/// A `dev` server goes quiet once it says it is up, and stays quiet for its
+/// own chatter - but never swallows a problem.
+#[test]
+fn a_dev_server_goes_quiet_once_it_is_ready() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            // A stand-in for a dev server: it announces itself, chatters, then
+            // reports a problem and keeps running.
+            "dev=echo VITE v5.4.0 ready in 431 ms && echo hmr update /src/App.vue && echo Error: failed to resolve import",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_CONSOLE", "ready")
+        .args(["dev", "myapp"])
+        .assert()
+        .success()
+        // The ready line replaces the server's own banner ...
+        .stdout(predicate::str::contains("myapp ready in"))
+        // ... the chatter after it is gone ...
+        .stdout(predicate::str::contains("hmr update").not())
+        // ... and the problem is not.
+        .stdout(predicate::str::contains("Error: failed to resolve import"));
+
+    // Everything, chatter included, is still in the log.
+    let log = std::fs::read_to_string(dir.path().join("logs").join("myapp-dev.log")).unwrap();
+    assert!(log.contains("hmr update /src/App.vue"), "{log}");
+}
+
+/// A shell snippet that pauses for about a second, in the shell turnout runs
+/// app commands through - `cmd` on Windows, `sh` everywhere else.
+fn pause_a_second() -> &'static str {
+    if cfg!(windows) {
+        // No `sleep` in cmd; pinging loopback twice is the usual stand-in.
+        "ping -n 2 127.0.0.1 >nul"
+    } else {
+        "sleep 1"
+    }
+}
+
+/// A server that never says it is up must not leave the console behind a
+/// spinner for as long as it runs: after the wait, turnout hands the terminal
+/// over and everything it held back appears.
+#[test]
+fn a_server_that_never_announces_itself_gets_the_console_back() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            // Nothing here looks like a server coming up - no address, no
+            // "ready", no "compiled". Under the quiet mode it would be hidden.
+            &format!("dev=echo booting the thing && {} && echo still going", pause_a_second()),
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_CONSOLE", "ready")
+        .env("TURNOUT_READY_PATIENCE_MS", "300")
+        .args(["dev", "myapp"])
+        .assert()
+        .success()
+        // Held back at first, replayed when the wait ran out ...
+        .stderr(predicate::str::contains("booting the thing"))
+        // ... and streamed from then on.
+        .stdout(predicate::str::contains("still going"));
+}
+
+/// `--open` belongs to the commands that can wait for a server - `dev` and
+/// `run`. A command that finishes never has a door to open, so the flag is
+/// not offered there at all rather than accepted and ignored.
+#[test]
+fn open_is_offered_only_where_a_server_can_come_up() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "build=echo building", "--command", "dev=echo ready in 10 ms"])
+        .assert()
+        .success();
+    for command in [["build"], ["test"], ["lint"]] {
+        turnout(dir.path()).args(command).args(["myapp", "--open"]).assert().failure();
+    }
+    // `dev` takes it; with no gateway running there is no door, and that is a
+    // note where the browser would have been, not a failed command.
+    turnout(dir.path())
+        .env("TURNOUT_CONSOLE", "ready")
+        .args(["dev", "myapp", "--open"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp ready in"))
+        .stderr(predicate::str::contains("--open needs the gateway's front door"));
+    // `run build` reaches the same command the long way round; the flag is
+    // valid there, and says why it has nothing to wait for.
+    turnout(dir.path())
+        .args(["run", "build", "myapp", "--open"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("--open waits for a server"));
+
+    // `-v --open` is a pair a person types: show me everything *and* open the
+    // page. Verbosity is about the console, not about whether the browser
+    // opens, so the detector still runs and still has its say.
+    turnout(dir.path())
+        .args(["dev", "myapp", "--verbose", "--open"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("ready in 10 ms"))
+        .stderr(predicate::str::contains("--open needs the gateway's front door"));
+}
+
 #[test]
 fn run_resolves_app_from_current_directory() {
     let (dir, project) = workspace();

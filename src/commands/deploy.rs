@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
+use crate::job;
 use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
 use crate::remote::{self, Resolved};
 use crate::shell::Dialect;
@@ -52,7 +53,15 @@ impl Reached {
     }
 }
 
-pub fn run(target_name: Option<String>, overrides: remote::Overrides, no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Result<()> {
+pub fn run(
+    target_name: Option<String>,
+    overrides: remote::Overrides,
+    no_build: bool,
+    backup: bool,
+    clear: bool,
+    no_archive: bool,
+    verbose: bool,
+) -> Result<()> {
     let target = remote::resolve(target_name, overrides)?;
     let (app, server) = (&target.app, &target.server);
     let Some(dist) = &app.dist_dir else {
@@ -62,9 +71,15 @@ pub fn run(target_name: Option<String>, overrides: remote::Overrides, no_build: 
     let project = crate::utils::project_dir(Path::new(&app.path))?;
     if !no_build && let Some(build) = app.commands.get("build") {
         eprintln!("[{}] {build}", app.name);
-        let status = crate::utils::run_in_dir(build, &project)?;
-        if !status.success() {
-            bail!("build failed with {status} - nothing uploaded");
+        // Same quiet console as `turnout build`: a loader with the elapsed
+        // time, the output only when it fails. A deploy already renders a
+        // checklist below this, and a build tool's own scrollback between the
+        // two made the whole command look like two unrelated programs.
+        let mode = job::Mode::resolve(job::Mode::Quiet, verbose);
+        let mut log = job::Log::open(&app.name, "build");
+        let outcome = job::run(build, &project, &[], mode, &format!("Building {}", app.name), &mut log, None)?;
+        if !outcome.status.success() {
+            bail!("build failed with {} - nothing uploaded", outcome.status);
         }
     }
     let local = project.join(dist);

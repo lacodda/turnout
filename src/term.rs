@@ -18,7 +18,7 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-/// Set while `run_in_dir` waits on a child; the interrupt handler consults it.
+/// Set while `job::run` waits on a child; the interrupt handler consults it.
 static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// How many Ctrl+C arrived while a child was active; the second one means the
 /// child ignored the first, and the user wants the tree gone now.

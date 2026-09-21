@@ -6,6 +6,7 @@ mod detect;
 mod envfile;
 mod front;
 mod gateway;
+mod job;
 mod journal;
 mod keysetup;
 mod migrate;
@@ -56,12 +57,12 @@ fn main() {
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
-        cli::Command::Dev { app } => commands::exec::run("dev", app),
+        cli::Command::Dev { app, verbose, open } => commands::exec::run("dev", app, commands::exec::Options { verbose, open }),
         cli::Command::Open { app } => commands::open::run(app),
-        cli::Command::Build { app } => commands::exec::run("build", app),
-        cli::Command::Test { app } => commands::exec::run("test", app),
-        cli::Command::Lint { app } => commands::exec::run("lint", app),
-        cli::Command::Run { command, app } => commands::exec::run(&command, app),
+        cli::Command::Build { app, verbose } => commands::exec::run("build", app, commands::exec::Options { verbose, open: false }),
+        cli::Command::Test { app, verbose } => commands::exec::run("test", app, commands::exec::Options { verbose, open: false }),
+        cli::Command::Lint { app, verbose } => commands::exec::run("lint", app, commands::exec::Options { verbose, open: false }),
+        cli::Command::Run { command, app, verbose, open } => commands::exec::run(&command, app, commands::exec::Options { verbose, open }),
         cli::Command::Ssh { name, credential } => commands::ssh::run(name, credential),
         cli::Command::Exec {
             name,
@@ -79,7 +80,16 @@ fn main() {
             backup,
             clear,
             no_archive,
-        } => commands::deploy::run(target, remote::Overrides { server, credential, path }, no_build, backup, clear, no_archive),
+            verbose,
+        } => commands::deploy::run(
+            target,
+            remote::Overrides { server, credential, path },
+            no_build,
+            backup,
+            clear,
+            no_archive,
+            verbose,
+        ),
         cli::Command::Backup {
             target,
             server,

@@ -78,17 +78,49 @@ pub enum Command {
         command: GatewayCommand,
     },
     /// Run the app's `dev` command (app resolved from the current directory if omitted)
-    Dev { app: Option<String> },
+    Dev {
+        app: Option<String>,
+        /// Stream the server's output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
+        /// Open the app's front door in the browser once the server is up
+        #[arg(short, long)]
+        open: bool,
+    },
     /// Open the app in the browser at http://NAME.localhost (through the gateway's front door)
     Open { app: Option<String> },
     /// Run the app's `build` command
-    Build { app: Option<String> },
+    Build {
+        app: Option<String>,
+        /// Stream the build's output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Run the app's `test` command
-    Test { app: Option<String> },
+    Test {
+        app: Option<String>,
+        /// Stream the test output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Run the app's `lint` command
-    Lint { app: Option<String> },
+    Lint {
+        app: Option<String>,
+        /// Stream the linter's output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
+    },
     /// Run any named command from the app config
-    Run { command: String, app: Option<String> },
+    Run {
+        command: String,
+        app: Option<String>,
+        /// Stream the command's output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
+        /// Open the app's front door in the browser once the command reports a server
+        #[arg(short, long)]
+        open: bool,
+    },
     /// Open an SSH session on a server - host, port, user and key from the catalogs
     Ssh {
         /// Target, server or app name; the app of the current directory when omitted
@@ -145,6 +177,9 @@ pub enum Command {
         /// Upload file by file instead of packing the artifacts into one archive
         #[arg(short = 'A', long)]
         no_archive: bool,
+        /// Stream the build's output in full instead of a loader
+        #[arg(short, long)]
+        verbose: bool,
     },
     /// Back up a target's deploy directory on the server
     Backup {
