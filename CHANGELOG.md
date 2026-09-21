@@ -7,6 +7,17 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.19.0] - 2026-09-21
+
+### Bug Fixes
+- Ignore the dotenv file from the repository, not the app folder
+
+### Documentation
+- Replace the status checklist with what ships today
+- Describe the quiet console and what it keeps
+
+### Features
+- Hide a job's output behind a loader and keep it in a log
 ## [0.18.0] - 2026-09-16
 
 ### Documentation
