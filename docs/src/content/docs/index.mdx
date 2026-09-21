@@ -43,8 +43,10 @@ The running gateway picks this up automatically.
 Stand check: https://staging.example.com responded with 200 OK.
 
 $ cd ~/dev/web/src/components
-$ turnout dev
-[web] pnpm dev
+$ turnout dev --open
+[web] pnpm dev --port 5100
+[web] http://web.localhost -> dev server port 5100
+◇  web ready in 1.4s - http://web.localhost
 ```
 
 Nothing in the project changed - the app still talks to `localhost`, and the [gateway](/turnout/concepts/gateway/) routes it to the stand you picked. Cookies are kept per app **and** stand, so the switch does not log you out.
@@ -72,6 +74,9 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 	</Card>
 	<Card title="Commands from anywhere" icon="setting">
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
+	</Card>
+	<Card title="A quiet console" icon="seti:powershell">
+		A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it is up and speaks again only when something breaks. A failure prints its output on the spot, every job's output is kept in a log file, and `-v` still gives you everything.
 	</Card>
 	<Card title="Deploy" icon="cloud-download">
 		Build, upload over SSH/SFTP, restart the service - with remote backup and restore when a release goes wrong. Artifacts travel as one archive instead of thousands of round trips, to Linux and Windows servers alike.

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c]
+turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [-v]
 ```
 
 Builds the app, uploads the artifacts to the target directory over SFTP and optionally restarts the service - one command, using the same apps, servers, credentials and paths as everything else.
@@ -22,11 +22,12 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 | `-b, --backup` | Archive the remote directory before touching it |
 | `-c, --clear` | Empty the remote directory before uploading |
 | `-A, --no-archive` | Upload file by file instead of packing the artifacts into one archive |
+| `-v, --verbose` | Stream the build's output in full instead of hiding it behind a loader |
 
 ## What happens
 
 1. **Resolve.** `TARGET` is a [target](/turnout/reference/target/) name (`myapp-prod`) or an app name (`myapp`, using that app's target on its current [binding](/turnout/reference/use/)). With no argument, the app comes from the current directory and the server from its binding; if that pair has a target, it is used. If it does not, turnout asks which path to deploy into on a terminal, then offers to save the answer as a target so it is asked once rather than every time. `--server`, `--credential` or `--path` override the resolved target's fields for this run only.
-2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy. The build tool's own output streams through unchanged.
+2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy, printing the output that explains why. While it succeeds the build shows a loader and its elapsed time, the same way [`turnout build`](/turnout/reference/run/) does - see [the quiet console](/turnout/concepts/quiet-console/). `--verbose` streams it instead.
 3. **Plan.** The artifact directory is walked to count files and bytes, so the upload can report a percentage and an ETA. An empty artifact directory aborts the deploy before anything is sent.
 4. **Connect.** SSH to the server's host and port as the credential's user, with the credential's key file or the password stored in the keyring under its name.
 5. **Backup** *(only with `--backup`)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/).
@@ -89,7 +90,7 @@ Once everything lands, the checklist reads as a receipt of what happened:
 └ Deploy of 'myapp' to 'prod' finished
 ```
 
-The build tool's own output streams above the frame, unchanged. When stdout is not a terminal - a pipe, a CI log, a file - the frame, the spinners and the bar are replaced by one plain line per step, so logs stay readable.
+The build runs above the frame under a loader of its own, in the same style - see [the quiet console](/turnout/concepts/quiet-console/); `--verbose` streams it instead. When stdout is not a terminal - a pipe, a CI log, a file - the frame, the spinners and the bar are replaced by one plain line per step, and the build streams, so logs stay readable.
 
 ## Configuration
 

@@ -43,7 +43,7 @@ Both scripts read two environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `TURNOUT_VERSION` | Install this tag (e.g. `v0.10.3`) instead of the newest release |
+| `TURNOUT_VERSION` | Install this tag (e.g. `v0.19.0`) instead of the newest release |
 | `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
 
 ### The `tn` alias
@@ -67,6 +67,8 @@ The wizard shows where turnout will keep its data and creates the directory:
 | Linux | `~/.local/share/lacodda/turnout` |
 
 Set the `TURNOUT_DATA_DIR` environment variable to override the location (useful for tests and scripting). Pass `--yes` to skip prompts.
+
+Besides the catalogs, the directory holds the [action journal](/turnout/concepts/journal/) and a `logs/` folder with the output of every command turnout has run for an app - see [the quiet console](/turnout/concepts/quiet-console/).
 
 Once a day turnout also checks whether a newer release exists and mentions it at the end of a command. The lookup runs in the background, so it never delays anything; `TURNOUT_UPDATE_CHECK=0` switches it off. See [the update check](/turnout/concepts/update-check/).
 

@@ -20,3 +20,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0014](0014-key-setup-is-its-own-command.md) | Key setup is its own command, switching the credential last | accepted |
 | [0015](0015-the-wizard-is-a-list-of-fields.md) | The app wizard is a list of fields, not a run of prompts | accepted |
 | [0016](0016-turnout-assigns-the-gateway-port.md) | turnout assigns the gateway port, and assigns it early | accepted |
+| [0017](0017-jobs-are-captured-not-passed-through.md) | A job's output is captured, not passed through | accepted |
