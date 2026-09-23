@@ -7,6 +7,13 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.20.0] - 2026-09-23
+
+### Documentation
+- Describe background jobs, ps, logs and stop
+
+### Features
+- Run jobs in the background and keep a registry of them
 ## [0.19.0] - 2026-09-21
 
 ### Bug Fixes
@@ -15,6 +22,7 @@ and nothing is missing - the number is simply unused.
 ### Documentation
 - Replace the status checklist with what ships today
 - Describe the quiet console and what it keeps
+- V0.19.0
 
 ### Features
 - Hide a job's output behind a loader and keep it in a log
