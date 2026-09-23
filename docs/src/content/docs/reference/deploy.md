@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [-v]
+turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [-v | -d]
 ```
 
 Builds the app, uploads the artifacts to the target directory over SFTP and optionally restarts the service - one command, using the same apps, servers, credentials and paths as everything else.
@@ -23,6 +23,7 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 | `-c, --clear` | Empty the remote directory before uploading |
 | `-A, --no-archive` | Upload file by file instead of packing the artifacts into one archive |
 | `-v, --verbose` | Stream the build's output in full instead of hiding it behind a loader |
+| `-d, --detach` | Deploy in the background and give the terminal back at once - see [In the background](#in-the-background) |
 
 ## What happens
 
@@ -126,3 +127,15 @@ turnout deploy myapp-prod --no-build         # upload what is already built
 turnout deploy myapp-prod -p staging-root    # this run only: a different path
 turnout deploy myapp-prod -C root            # this run only: a different login
 ```
+
+## In the background
+
+`--detach` runs the whole deploy - build, upload, restart - as a [background job](/turnout/concepts/background-jobs/) and returns at once. Everything a picker would ask is settled first, in your terminal; the background then deploys exactly that target, by name, even if the app's binding changes meanwhile.
+
+```bash
+turnout deploy web-prod --detach
+turnout ps                  # web deploy  running (bg)
+turnout logs web deploy -f  # the checklist, one plain line per step
+```
+
+A background deploy has nobody to type a password to: give the credential a stored secret, a key or the SSH agent first. How it ended is in `ps` (`done`, or `failed (exit 1)`) and the reason in `logs`.

@@ -19,6 +19,12 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 5: the gateway is a job
+
+**v0.20.0** gave every job turnout runs a record in the [job registry](/turnout/concepts/background-jobs/#the-registry), and the gateway became the first of them. Its record moves out of `state.json` into `jobs/gateway.json`.
+
+A gateway that is running through the upgrade keeps running and is known by the new version - but only if it still is one: its process alive **and** its first port answering. A record left behind by a gateway that died long ago may name a pid the system has handed to another program since, and carrying that over would hand the program to the next `gateway stop`. Such a record is dropped with a note, and the next `gateway start` begins clean.
+
 ## Schema 4: every app has a gateway port
 
 **v0.18.0** made the gateway port turnout's to hand out rather than yours to type, so an app without one is no longer a state you can reach by pressing enter. Migrating to schema 4 gives every app that has none a port from `7100-7199`.

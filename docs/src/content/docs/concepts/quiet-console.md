@@ -22,7 +22,7 @@ When one fails, the output appears immediately - the end of it on the terminal, 
 [myapp] pnpm build
 ■  Building myapp failed after 3.2s
 src/app.ts:14:8 - error TS2304: Cannot find name 'wat'.
-full output: C:\Users\me\AppData\Local\lacodda\turnout\logs\myapp-build.log
+full output: C:\Users\me\AppData\Local\lacodda\turnout\logs\myapp.build.log
 ```
 
 ## Commands that keep running
@@ -50,14 +50,16 @@ turnout build myapp | tee out.log   # streams, no loader, nothing to strip
 
 ## The log file
 
-Every job writes both of its streams to `logs/` in the [data directory](/turnout/getting-started/), one file per app and command:
+Every job writes both of its streams to `logs/` in the [data directory](/turnout/getting-started/), one file per app and command - or to wherever `TURNOUT_LOG_DIR` points:
 
 ```
-logs/myapp-build.log
-logs/myapp-dev.log
-logs/myapp-test-e2e.log
+logs/myapp.build.log
+logs/myapp.dev.log
+logs/myapp.test%3Ae2e.log
 ```
 
-The next run of the same command replaces the file rather than growing it - the question a log answers is "what did the last one say". A command name that is not a file name (`test:e2e`) is made into one.
+The next run of the same command replaces the file rather than growing it - the question a log answers is "what did the last one say". A command name that is not a file name (`test:e2e`) is escaped rather than squashed, so `test-e2e` keeps a file of its own. [`turnout logs`](/turnout/reference/logs/) prints them, `-f` follows one as it grows.
+
+A job started with `--detach` has no console at all: its log is all of its output. See [background jobs](/turnout/concepts/background-jobs/).
 
 The log is written whatever the console does, including under `-v`. Hiding output is only acceptable when none of it is lost.

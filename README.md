@@ -79,7 +79,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.19.0
+turnout 0.20.0
 Data directory: ~/.local/share/lacodda/turnout
 Apps:    2 (api, web)
 Servers: 2 (prod-eu, staging)
@@ -93,6 +93,7 @@ Bindings:
 Gateway: running (pid 24180)
 Front:   http://localhost - http://NAME.localhost
 Spare:   web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL
+Jobs:    2 running (api dev, web dev) - see `turnout ps`
 Recent:
   2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
   2026-08-09T01:12:44Z  use            web -> prod-eu
@@ -110,6 +111,7 @@ Recent:
 - **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand that credential reaches. Copy it to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
 - **Commands from any directory.** `dev`, `build`, `test`, `lint` and any custom command run in the right project folder. Commands are taken from your actual `package.json` scripts, so a project whose dev script is `serve` still answers to `turnout dev`.
 - **A quiet console.** A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it reports itself and speaks again only when something breaks. A failure prints its output on the spot - no re-run to see what went wrong - and every job's output is kept in a log file whatever the terminal showed. `-v` gives you all of it, and so does any pipe, so scripts and CI logs are unchanged.
+- **Jobs in the background.** `turnout dev --detach` gives the terminal back and the server keeps running; so do `build`, `run` and `deploy`. `turnout ps` shows everything turnout runs - the gateway included - with ports, addresses and uptime, `logs -f` follows any of it, and `stop` takes a job down with every process it started.
 - **A hand on the server.** `turnout ssh web-prod` opens a session with host, port, user and key from the catalogs, in the deploy directory, the password already on the clipboard; `turnout exec web-prod -- docker compose ps` runs one command there and hands back its exit code.
 - **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong. Artifacts travel as a single archive instead of thousands of round trips, falling back to file-by-file when the server cannot unpack one. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
 - **Portable settings.** `export` writes your apps, servers, credentials, paths, targets and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
@@ -176,9 +178,10 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.19.0, in daily use. Everything above works today: stands and switching
-between them, the gateway, secrets in the OS keyring, the quiet console, and
-build and deploy from any directory. What landed in each version:
+v0.20.0, in daily use. Everything above works today: stands and switching
+between them, the gateway, secrets in the OS keyring, the quiet console, jobs
+in the background with `ps`, `logs` and `stop`, and build and deploy from any
+directory. What landed in each version:
 [the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation

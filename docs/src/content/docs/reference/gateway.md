@@ -29,9 +29,9 @@ Front door: http://localhost
   api: http://api.localhost
 ```
 
-`start` launches the gateway detached and returns once its first port answers; only then is the pid recorded, so `status` never reports a gateway that died on the way up. Two things are refused before anything is spawned, each naming the port and the app: a port already taken by another process, and a port two apps share (`app add` and `app edit` no longer let that happen, a hand-edited catalog still can). Bindings changed with `turnout use` are picked up automatically - the gateway re-reads them on every request.
+`start` launches the gateway detached and returns once its first port answers. The gateway is the first [job](/turnout/concepts/background-jobs/): it records itself once its ports are bound - so `status` never reports a gateway that died on the way up - and shows in [`turnout ps`](/turnout/reference/ps/) like any other. Its output goes to a log, `turnout logs gateway`; when it cannot start, the end of that log is printed with the error. Two things are refused before anything is spawned, each naming the port and the app: a port already taken by another process, and a port two apps share (`app add` and `app edit` no longer let that happen, a hand-edited catalog still can). Bindings changed with `turnout use` are picked up automatically - the gateway re-reads them on every request.
 
-`stop` kills the recorded process. If that process is already gone - killed from outside, or died on its own - the stale record is cleared and the command succeeds, rather than failing on a pid that no longer exists.
+`stop` ends the recorded process - the same as [`turnout stop gateway`](/turnout/reference/stop/). If that process is already gone - killed from outside, died on its own, or the machine rebooted - the stale record is cleared and the command succeeds; a pid the system has since given to another program is recognised as not the gateway and left alone.
 
 ## run
 
@@ -39,7 +39,7 @@ Front door: http://localhost
 turnout gateway run     # foreground, Ctrl+C to stop
 ```
 
-The same server in the foreground - handy for watching it work. `start` spawns exactly this.
+The same server in the foreground - handy for watching it work. `start` spawns exactly this. A foreground gateway is recorded too, so `dev`, `open` and `ps` know its door; its output stays in the terminal.
 
 ## The front door
 

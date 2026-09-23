@@ -3,7 +3,7 @@ title: The action journal
 description: What turnout did, one JSON line per action - and what it deliberately never records.
 ---
 
-Every action that changes state appends a line to `journal.jsonl` in the [data directory](/turnout/getting-started/): switching a binding, adding or removing an app or server, deploying, backing up, restoring, starting or stopping the gateway.
+Every action that changes state appends a line to `journal.jsonl` in the [data directory](/turnout/getting-started/): switching a binding, adding or removing an app or server, deploying, backing up, restoring, starting or stopping the gateway, sending a job to the background (`job.detach`) and stopping one (`job.stop`).
 
 ```json
 {"at":"2026-08-08T22:06:55Z","action":"use","app":"web","server":"staging"}
