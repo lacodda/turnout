@@ -190,10 +190,7 @@ fn show(name: &str) -> Result<()> {
     }
     // The front door first, the port second: the name is the address to use
     // and to share, the port is the way in when the door is shut.
-    let door = store::load_state()?
-        .gateway
-        .and_then(|gateway| gateway.front_port)
-        .unwrap_or(crate::front::PORT);
+    let door = crate::registry::gateway()?.and_then(|gateway| gateway.front_port).unwrap_or(crate::front::PORT);
     match app.dev_port {
         Some(port) => println!("  Address:  {} (dev server port {port})", crate::front::address(&app.name, door)),
         None => println!(

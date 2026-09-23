@@ -83,6 +83,9 @@ pub enum Command {
         /// Stream the server's output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
         /// Open the app's front door in the browser once the server is up
         #[arg(short, long)]
         open: bool,
@@ -95,6 +98,9 @@ pub enum Command {
         /// Stream the build's output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
     },
     /// Run the app's `test` command
     Test {
@@ -102,6 +108,9 @@ pub enum Command {
         /// Stream the test output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
     },
     /// Run the app's `lint` command
     Lint {
@@ -109,6 +118,9 @@ pub enum Command {
         /// Stream the linter's output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
     },
     /// Run any named command from the app config
     Run {
@@ -117,9 +129,65 @@ pub enum Command {
         /// Stream the command's output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
         /// Open the app's front door in the browser once the command reports a server
         #[arg(short, long)]
         open: bool,
+    },
+    /// Show the jobs turnout runs: dev servers, builds, deploys and the gateway
+    Ps {
+        /// Keep the table on screen and refresh it every second
+        #[arg(short, long)]
+        watch: bool,
+    },
+    /// Print a job's output (the app of the current directory when omitted)
+    Logs {
+        /// App name, or `gateway`
+        name: Option<String>,
+        /// Which of the app's commands (defaults to its running job, else its latest)
+        command: Option<String>,
+        /// Keep printing as the job writes, until it ends
+        #[arg(short, long)]
+        follow: bool,
+        /// Only the last N lines
+        #[arg(short = 'n', long, value_name = "N")]
+        lines: Option<usize>,
+    },
+    /// Stop a job: every running job of an app, one command of it, or the gateway
+    Stop {
+        /// App name, or `gateway`
+        name: Option<String>,
+        /// Only this command of the app
+        command: Option<String>,
+    },
+    /// Run a detached job and keep its record (internal, what `--detach` spawns)
+    #[command(name = "job-run", hide = true)]
+    JobRun {
+        #[arg(long)]
+        app: String,
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        label: String,
+        /// Watch for the server to come up
+        #[arg(long)]
+        ready: bool,
+        /// The address to report when the server names none
+        #[arg(long)]
+        own: Option<String>,
+        /// Open the front door once the server is up
+        #[arg(long)]
+        open: bool,
+        /// The program is turnout itself, with these arguments
+        #[arg(long = "self")]
+        itself: bool,
+        /// The command line, or turnout's arguments with `--self`
+        #[arg(last = true, required = true, num_args = 1..)]
+        program: Vec<String>,
     },
     /// Open an SSH session on a server - host, port, user and key from the catalogs
     Ssh {
@@ -180,6 +248,9 @@ pub enum Command {
         /// Stream the build's output in full instead of a loader
         #[arg(short, long)]
         verbose: bool,
+        /// Deploy in the background and return at once; see `turnout ps`, `logs`, `stop`
+        #[arg(short, long, conflicts_with = "verbose")]
+        detach: bool,
     },
     /// Back up a target's deploy directory on the server
     Backup {
@@ -320,8 +391,11 @@ pub enum GatewayCommand {
         /// Port for the front door; picked (80, then 7000) when omitted
         #[arg(long, hide = true)]
         front_port: Option<u16>,
+        /// The log file `start` sends the output to; marks the run as detached
+        #[arg(long, hide = true)]
+        log: Option<PathBuf>,
     },
-    /// Stop the background gateway
+    /// Stop the gateway - the same as `turnout stop gateway`
     Stop,
 }
 

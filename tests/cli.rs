@@ -315,8 +315,7 @@ fn gateway_start_refuses_a_port_another_process_holds() {
         .assert()
         .failure()
         .stderr(predicate::str::contains(format!("port {port} is already in use by another process")).and(predicate::str::contains("app edit myapp --port")));
-    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
-    assert!(!state.contains("\"gateway\""), "a dead gateway was recorded: {state}");
+    assert!(!dir.path().join("jobs").join("gateway.json").exists(), "a dead gateway was recorded");
 }
 
 #[test]
@@ -356,6 +355,18 @@ fn gateway_start_and_stop_roundtrip() {
     // The dotenv file was already written by `app add`; `start` finds it in step.
     let env = std::fs::read_to_string(project.join(".env.development.local")).unwrap();
     assert!(env.contains(&format!("TURNOUT_GATEWAY_URL=http://localhost:{port}")), "{env}");
+    // The gateway is the first job of the registry: `ps` lists it with its
+    // door, and its output is a log like any job's.
+    turnout(dir.path()).arg("ps").assert().success().stdout(
+        predicate::str::is_match(r"gateway\s+running \(bg\)")
+            .unwrap()
+            .and(predicate::str::contains(format!("http://localhost:{front}"))),
+    );
+    turnout(dir.path())
+        .args(["logs", "gateway"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("myapp: listening on http://localhost:{port}")));
     turnout(dir.path())
         .args(["gateway", "stop"])
         .assert()
@@ -379,15 +390,26 @@ fn gateway_stop_forgets_a_record_whose_process_is_gone() {
     // it, and it stays a positive number in every tool that reads it. The
     // first version of this test used u32::MAX, which `kill` reads as -1 -
     // "signal everything I own" - and the CI runner shut itself down.
-    let state = format!("{{\"bindings\":{{}},\"gateway\":{{\"pid\":2147483647,\"ports\":{{\"{port}\":\"myapp\"}}}}}}");
-    std::fs::write(dir.path().join("state.json"), state).unwrap();
+    let record = dir.path().join("jobs").join("gateway.json");
+    std::fs::create_dir_all(record.parent().unwrap()).unwrap();
+    let entry = format!("{{\"work\":{{\"gateway\":{{\"ports\":{{\"{port}\":\"myapp\"}}}}}},\"pid\":2147483647,\"birth\":1,\"started\":1,\"detached\":true}}");
+    std::fs::write(&record, entry).unwrap();
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("no longer running"));
+    turnout(dir.path())
+        .arg("ps")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_match(r"gateway\s+gone").unwrap());
     turnout(dir.path())
         .args(["gateway", "stop"])
         .assert()
         .success()
         .stdout(predicate::str::contains("was no longer running"));
-    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap_or_default();
-    assert!(!state.contains("\"gateway\""), "the stale record survived: {state}");
+    assert!(!record.exists(), "the stale record survived");
     turnout(dir.path())
         .args(["gateway", "stop"])
         .assert()
@@ -1452,7 +1474,7 @@ fn every_job_leaves_its_output_in_a_log_file() {
         .assert()
         .success();
 
-    let log = dir.path().join("logs").join("myapp-hello.log");
+    let log = dir.path().join("logs").join("myapp.hello.log");
     turnout(dir.path()).args(["run", "hello", "myapp"]).assert().success();
     assert!(log.is_file(), "no log at {}", log.display());
     assert!(std::fs::read_to_string(&log).unwrap().contains("out-line"));
@@ -1460,7 +1482,7 @@ fn every_job_leaves_its_output_in_a_log_file() {
     // Both streams land in the one file: a failure reads back the way it
     // looked on screen, not stdout only.
     turnout(dir.path()).args(["run", "both", "myapp"]).assert().success();
-    let both = std::fs::read_to_string(dir.path().join("logs").join("myapp-both.log")).unwrap();
+    let both = std::fs::read_to_string(dir.path().join("logs").join("myapp.both.log")).unwrap();
     assert!(both.contains("out-line") && both.contains("err-line"), "{both}");
 
     // The next run of the same command replaces the file rather than growing it.
@@ -1472,7 +1494,8 @@ fn every_job_leaves_its_output_in_a_log_file() {
 /// A command whose name is not a file name still gets a log.
 ///
 /// `test:e2e` is an ordinary npm script; a colon is an alternate data stream
-/// on Windows, so the name has to be made safe before it reaches the disk.
+/// on Windows, so the name has to be made safe before it reaches the disk -
+/// escaped rather than squashed, so `test-e2e` does not share its file.
 #[test]
 fn a_command_named_like_an_npm_script_still_gets_a_log() {
     let (dir, project) = workspace();
@@ -1483,7 +1506,7 @@ fn a_command_named_like_an_npm_script_still_gets_a_log() {
         .assert()
         .success();
     turnout(dir.path()).args(["run", "test:e2e", "myapp"]).assert().success();
-    let log = dir.path().join("logs").join("myapp-test-e2e.log");
+    let log = dir.path().join("logs").join("myapp.test%3Ae2e.log");
     assert!(log.is_file(), "no log at {}", log.display());
     assert!(std::fs::read_to_string(&log).unwrap().contains("e2e ran"));
 }
@@ -1571,7 +1594,7 @@ fn a_quiet_command_hides_its_output_until_it_fails() {
         .stderr(predicate::str::contains("full output:"));
 
     // Hidden or not, the output is on disk either way.
-    let log = dir.path().join("logs").join("myapp-build.log");
+    let log = dir.path().join("logs").join("myapp.build.log");
     assert!(std::fs::read_to_string(&log).unwrap().contains("compiling module two"));
 }
 
@@ -1604,7 +1627,7 @@ fn a_dev_server_goes_quiet_once_it_is_ready() {
         .stdout(predicate::str::contains("Error: failed to resolve import"));
 
     // Everything, chatter included, is still in the log.
-    let log = std::fs::read_to_string(dir.path().join("logs").join("myapp-dev.log")).unwrap();
+    let log = std::fs::read_to_string(dir.path().join("logs").join("myapp.dev.log")).unwrap();
     assert!(log.contains("hmr update /src/App.vue"), "{log}");
 }
 
@@ -2732,4 +2755,264 @@ fn key_setup_writes_no_key_when_it_cannot_sign_in() {
         "the public half was left behind: {}",
         would_write.display()
     );
+}
+
+// --- background jobs (v0.20.0) ----------------------------------------------
+
+/// A shell snippet that pauses for about `seconds`, in the shell turnout runs
+/// app commands through.
+fn pause_for(seconds: u32) -> String {
+    if cfg!(windows) {
+        format!("ping -n {} 127.0.0.1 >nul", seconds + 1)
+    } else {
+        format!("sleep {seconds}")
+    }
+}
+
+/// Poll until `check` holds, or fail after `seconds` with what was last seen.
+fn eventually(seconds: u64, what: &str, mut check: impl FnMut() -> Result<(), String>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    loop {
+        match check() {
+            Ok(()) => return,
+            Err(seen) if std::time::Instant::now() > deadline => panic!("{what} did not happen within {seconds}s; last seen:\n{seen}"),
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(100)),
+        }
+    }
+}
+
+fn stdout_of(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = turnout(dir).args(args).output().unwrap();
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+/// The point of v0.20.0: `--detach` returns at once, the job runs on without
+/// the turnout that started it, the console over it works - and `stop` takes
+/// the whole tree down, not only the process it recorded.
+#[test]
+fn a_detached_job_outlives_turnout_and_stops_with_its_tree() {
+    let (dir, project) = workspace();
+    // Writes the marker only if it is still alive after the pause: a stop that
+    // killed the shell and left its children would let it through.
+    let serve = format!("echo started-line && {} && echo late> marker.txt", pause_for(4));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("serve={serve}")])
+        .assert()
+        .success();
+
+    turnout(dir.path())
+        .args(["run", "serve", "myapp", "--detach"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp serve runs in the background").and(predicate::str::contains("turnout stop myapp serve")));
+    let ps = stdout_of(dir.path(), &["ps"]);
+    assert!(predicate::str::is_match(r"myapp serve\s+running \(bg\)").unwrap().eval(&ps), "{ps}");
+    eventually(10, "the job's first line in its log", || {
+        let out = stdout_of(dir.path(), &["logs", "myapp", "serve"]);
+        if out.contains("started-line") { Ok(()) } else { Err(out) }
+    });
+
+    // One copy of a job at a time: the second would truncate the first one's log.
+    turnout(dir.path())
+        .args(["run", "serve", "myapp", "-d"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("myapp serve is already running"));
+    turnout(dir.path())
+        .args(["run", "serve", "myapp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("myapp serve is already running"));
+
+    turnout(dir.path())
+        .args(["stop", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped myapp serve"));
+    assert!(!stdout_of(dir.path(), &["ps"]).contains("myapp serve"));
+    turnout(dir.path())
+        .args(["stop", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Nothing of myapp is running"));
+    // Past the pause: nothing of the tree survived to write the marker.
+    std::thread::sleep(std::time::Duration::from_secs(6));
+    assert!(!project.join("marker.txt").exists(), "a child of the stopped job lived on");
+}
+
+/// A job that dies at once is not reported as running in the background: the
+/// output and the exit code come back to the terminal that asked.
+#[test]
+fn a_detached_job_that_fails_at_once_says_so() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "boom=echo about to fail && exit 3", "--command", "quick=echo quick-out"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["run", "boom", "myapp", "--detach"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("about to fail").and(predicate::str::contains("myapp boom failed at once (exit 3)")));
+    turnout(dir.path())
+        .args(["run", "quick", "myapp", "--detach"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp quick finished at once"));
+    let ps = stdout_of(dir.path(), &["ps"]);
+    assert!(predicate::str::is_match(r"myapp boom\s+failed \(exit 3\)").unwrap().eval(&ps), "{ps}");
+    assert!(predicate::str::is_match(r"myapp quick\s+done").unwrap().eval(&ps), "{ps}");
+    turnout(dir.path())
+        .args(["logs", "myapp", "quick"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("quick-out"));
+}
+
+/// `logs -f` prints as the job writes and returns when the job ends - a
+/// follow that outlived its job would be one more Ctrl+C for nothing.
+#[test]
+fn following_a_log_ends_with_the_job() {
+    let (dir, project) = workspace();
+    let tick = format!("echo first-tick && {} && echo last-tick", pause_for(2));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("tick={tick}")])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "tick", "myapp", "-d"]).assert().success();
+    turnout(dir.path())
+        .args(["logs", "myapp", "tick", "--follow"])
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("first-tick").and(predicate::str::contains("last-tick")));
+    // `-n` keeps the end.
+    let last = stdout_of(dir.path(), &["logs", "myapp", "tick", "-n", "1"]);
+    assert!(last.contains("last-tick") && !last.contains("first-tick"), "{last}");
+}
+
+/// A job started in another terminal is a job too: `ps` lists it, and `stop`
+/// ends it the way Ctrl+C in that terminal would.
+#[test]
+fn a_foreground_job_is_listed_and_can_be_stopped_from_elsewhere() {
+    let (dir, project) = workspace();
+    let long = format!("echo fg-start && {} && echo never> marker.txt", pause_for(10));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("long={long}")])
+        .assert()
+        .success();
+    let mut foreground = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"));
+    foreground
+        .env("TURNOUT_DATA_DIR", dir.path())
+        .env("TURNOUT_UPDATE_CHECK", "0")
+        .args(["run", "long", "myapp"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    // A shell with job control gives every command a process group of its own;
+    // the test harness does not, so the test does what the shell would.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut foreground, 0);
+    let mut child = foreground.spawn().unwrap();
+    eventually(10, "the foreground job in ps", || {
+        let ps = stdout_of(dir.path(), &["ps"]);
+        // Running, and not marked as a background job.
+        if predicate::str::is_match(r"myapp long\s+running\s+\d").unwrap().eval(&ps) {
+            Ok(())
+        } else {
+            Err(ps)
+        }
+    });
+    turnout(dir.path())
+        .args(["stop", "myapp", "long"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped myapp long"));
+    let status = child.wait().unwrap();
+    assert!(!status.success(), "the stopped turnout exited cleanly: {status}");
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert!(!stdout_of(dir.path(), &["ps"]).contains("myapp long"));
+}
+
+/// Logs go where `TURNOUT_LOG_DIR` says, and `logs` finds them there.
+#[test]
+fn logs_go_where_the_log_directory_says() {
+    let (dir, project) = workspace();
+    let elsewhere = dir.path().join("elsewhere");
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "hello=echo moved-out"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_LOG_DIR", &elsewhere)
+        .args(["run", "hello", "myapp"])
+        .assert()
+        .success();
+    assert!(elsewhere.join("myapp.hello.log").is_file());
+    assert!(!dir.path().join("logs").join("myapp.hello.log").exists());
+    // The record knows where the log went, so `logs` needs no setting to find it.
+    turnout(dir.path())
+        .args(["logs", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("moved-out"));
+}
+
+/// `ps --watch` redraws a terminal; without one it says so instead of
+/// printing the same table into a pipe forever.
+#[test]
+fn watching_needs_a_terminal() {
+    let (dir, _project) = workspace();
+    turnout(dir.path())
+        .args(["ps", "--watch"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--watch redraws a table on a terminal"));
+    turnout(dir.path()).arg("ps").assert().success().stdout(predicate::str::contains("No jobs"));
+}
+
+/// Schema 4 kept the gateway in `state.json`. A gateway running through the
+/// upgrade is carried over into the registry - only when it still is one: a
+/// pid alone may by now belong to some other program.
+#[test]
+fn the_migration_carries_a_live_gateway_into_the_registry() {
+    let (dir, _project) = workspace();
+    let wind_back = |state: serde_json::Value| {
+        std::fs::write(dir.path().join("meta.json"), r#"{"schema_version":4}"#).unwrap();
+        std::fs::write(dir.path().join("state.json"), state.to_string()).unwrap();
+    };
+    // The test process stands in for a live gateway: its pid is alive and it
+    // holds the port. It is never signalled - nothing here stops it.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let pid = std::process::id();
+    wind_back(serde_json::json!({"bindings": {}, "gateway": {"pid": pid, "ports": {port.to_string(): "myapp"}}}));
+    turnout(dir.path()).arg("status").assert().success();
+    let record = dir.path().join("jobs").join("gateway.json");
+    let entry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    assert_eq!(entry["pid"], serde_json::json!(pid));
+    assert_eq!(entry["work"]["gateway"]["ports"][port.to_string()], serde_json::json!("myapp"));
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap();
+    assert!(!state.contains("gateway"), "the old record stayed behind: {state}");
+    std::fs::remove_file(&record).unwrap();
+
+    // Alive but not answering on its port: not a gateway, whatever the pid is.
+    drop(listener);
+    wind_back(serde_json::json!({"bindings": {}, "gateway": {"pid": pid, "ports": {port.to_string(): "myapp"}}}));
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("no longer running"))
+        .stdout(predicate::str::contains("Gateway: not running"));
+    assert!(!record.exists(), "a dead gateway was carried over");
 }

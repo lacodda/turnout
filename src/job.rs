@@ -18,10 +18,13 @@
 //!   because silence from a spinner is worse than noise.
 //! * [`Mode::Stream`] - `-v`, and everything off a terminal: the old
 //!   behaviour, byte for byte.
+//! * [`Mode::Log`] - a detached job: nothing reaches a terminal, because
+//!   there is none; the log is the whole of its output.
 //!
-//! The log file is not a debugging aid bolted on: it is the half of the
-//! background mode (v0.20) that has to exist before a job can be detached at
-//! all. `turnout logs` will read exactly these files.
+//! Every run is also a [`Job`]: a record in the registry ([`crate::registry`])
+//! that says who runs it, since when, whether the server came up and how it
+//! ended. That is what `turnout ps`, `logs` and `stop` read, and what refuses
+//! a second copy of a job that is already running.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -29,9 +32,10 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{Sender, channel};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::progress::{self, Step, human_duration};
+use crate::registry::{self, Entry, Work};
 
 /// How much of the output a failure replays on the terminal.
 ///
@@ -49,6 +53,8 @@ pub enum Mode {
     UntilReady,
     /// Everything, as it arrives.
     Stream,
+    /// Nothing on a terminal: the log file only. What a detached job runs in.
+    Log,
 }
 
 /// Forces the console mode regardless of the terminal: `quiet`, `ready` or
@@ -100,83 +106,135 @@ struct Line {
     is_err: bool,
 }
 
-/// Where a job's output is kept, and how it is read back.
+/// A job this process runs: its slot in the registry and its log file.
 ///
-/// One file per app and command rather than one per run: the question a
+/// One log per app and command rather than one per run: the question a
 /// developer asks is "what did the last build say", and a directory of
 /// timestamped files answers a question nobody asked while growing without
 /// bound. A run truncates the file it writes.
-pub struct Log {
-    path: PathBuf,
+pub struct Job {
+    key: String,
+    log_path: PathBuf,
     file: Option<std::fs::File>,
 }
 
-impl Log {
-    /// Open (and truncate) the log for `app`'s `command`.
+impl Job {
+    /// Claim the slot of `app`'s `command` for this process, and open (and
+    /// truncate) its log.
     ///
-    /// A log that cannot be opened is a note, not a failure: the command the
-    /// user asked for still runs, and it prints where the log would have gone.
-    /// Losing a build over a read-only data directory would be absurd.
-    pub fn open(app: &str, command: &str) -> Self {
-        match Self::try_open(app, command) {
-            Ok(log) => log,
+    /// Refused while another process runs the same job: two runs would
+    /// truncate each other's log, and two dev servers of one app fight over
+    /// its port. A log that cannot be opened is only a note - the command the
+    /// user asked for still runs; losing a build over a read-only log
+    /// directory would be absurd.
+    pub fn claim(app: &str, command: &str, detached: bool) -> Result<Self> {
+        let key = registry::command_key(app, command);
+        ensure_free(&key)?;
+        let (log_path, file) = match open_log(&key) {
+            Ok((path, file)) => (path, Some(file)),
             Err(err) => {
                 progress::warn(&format!("cannot write the job log: {err:#}"));
-                Self {
-                    path: PathBuf::new(),
-                    file: None,
-                }
+                (PathBuf::new(), None)
             }
-        }
-    }
-
-    fn try_open(app: &str, command: &str) -> Result<Self> {
-        let dir = logs_dir()?;
-        std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-        let path = dir.join(format!("{}-{}.log", slug(app), slug(command)));
-        let file = std::fs::File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
-        Ok(Self { path, file: Some(file) })
+        };
+        let work = Work::Command {
+            app: app.to_string(),
+            command: command.to_string(),
+        };
+        registry::save(&Entry::own(work, detached, file.as_ref().map(|_| log_path.clone())))?;
+        Ok(Self { key, log_path, file })
     }
 
     /// Where the log lives, for the note under a failure.
-    pub fn path(&self) -> Option<&Path> {
-        self.file.as_ref().map(|_| self.path.as_path())
+    pub fn log_path(&self) -> Option<&Path> {
+        self.file.as_ref().map(|_| self.log_path.as_path())
     }
 
     fn write_line(&mut self, line: &str) {
         if let Some(file) = &mut self.file {
             // A log that starts failing mid-run stops being a log: dropping the
-            // handle keeps `path()` honest instead of advertising half a file.
+            // handle keeps `log_path()` honest instead of advertising half a file.
             if writeln!(file, "{line}").is_err() {
                 self.file = None;
             }
         }
     }
+
+    /// The server said it is up: `ps` shows it ready, at this address.
+    ///
+    /// Best-effort, like everything a job writes about itself while it runs -
+    /// a registry that cannot be written must not take a working dev server
+    /// down with it.
+    fn mark_ready(&self, url: Option<String>) {
+        let _ = registry::update_own(&self.key, |entry| entry.ready = Some(registry::Ready { at: registry::now(), url }));
+    }
+
+    fn finish(&self, code: Option<i32>) {
+        let _ = registry::update_own(&self.key, |entry| entry.ended = Some(registry::Ended { at: registry::now(), code }));
+    }
 }
 
-/// The directory holding every job log.
-pub fn logs_dir() -> Result<PathBuf> {
-    Ok(crate::paths::data_dir()?.join("logs"))
+/// Refuse to start the job under `key` while it is running.
+pub fn ensure_free(key: &str) -> Result<()> {
+    if let Some(entry) = registry::load(key)?
+        && entry.is_running()
+    {
+        bail!(
+            "{} is already running (pid {}) - see `turnout ps`, stop it with `turnout stop {}`",
+            entry.title(),
+            entry.pid,
+            entry.title()
+        );
+    }
+    Ok(())
 }
 
-/// A name safe for a file on every platform turnout runs on.
-///
-/// App and command names come from the catalog, where nothing stops a command
-/// being called `test:e2e` - a colon is a valid file name on Unix and an
-/// alternate data stream on Windows.
-fn slug(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
-                c
-            } else {
-                '-'
+fn open_log(key: &str) -> Result<(PathBuf, std::fs::File)> {
+    let path = registry::log_path(key)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let file = std::fs::File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
+    Ok((path, file))
+}
+
+/// What a job runs.
+pub enum Program<'a> {
+    /// A command line from the app's catalog, through the platform shell.
+    Shell(&'a str),
+    /// turnout itself with these arguments - a detached `deploy` is this.
+    Turnout(&'a [String]),
+}
+
+impl Program<'_> {
+    fn command(&self) -> Result<Command> {
+        Ok(match self {
+            #[cfg(windows)]
+            Program::Shell(line) => {
+                let mut command = Command::new("cmd");
+                command.args(["/C", line]);
+                command
+            }
+            #[cfg(not(windows))]
+            Program::Shell(line) => {
+                let mut command = Command::new("sh");
+                command.args(["-c", line]);
+                command
+            }
+            Program::Turnout(args) => {
+                let mut command = Command::new(std::env::current_exe().context("cannot locate the turnout binary")?);
+                command.args(*args);
+                command
             }
         })
-        .collect();
-    let cleaned = cleaned.trim_matches('-').to_string();
-    if cleaned.is_empty() { "job".to_string() } else { cleaned }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Program::Shell(line) => (*line).to_string(),
+            Program::Turnout(args) => format!("turnout {}", args.join(" ")),
+        }
+    }
 }
 
 /// What a finished job leaves behind.
@@ -184,30 +242,27 @@ pub struct Outcome {
     pub status: std::process::ExitStatus,
 }
 
-/// Run a shell command line in a directory under the chosen console mode.
+/// Run a job's program in a directory under the chosen console mode.
 ///
 /// `label` names the job for the spinner ("Building myapp"); `ready` is the
 /// detector a [`Mode::UntilReady`] job uses to decide the server is up, and
 /// what to print when it is.
-pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, label: &str, log: &mut Log, mut ready: Option<Ready<'_>>) -> Result<Outcome> {
-    #[cfg(windows)]
-    let mut command = {
-        let mut command = Command::new("cmd");
-        command.args(["/C", command_line]);
-        command
-    };
-    #[cfg(not(windows))]
-    let mut command = {
-        let mut command = Command::new("sh");
-        command.args(["-c", command_line]);
-        command
-    };
+pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode, label: &str, job: &mut Job, mut ready: Option<Ready<'_>>) -> Result<Outcome> {
+    let command_line = program.describe();
+    let mut command = program.command()?;
     command.current_dir(dir);
     for (name, value) in env {
         command.env(name, value);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = command.spawn().with_context(|| format!("cannot run '{command_line}'"))?;
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            // The record must not go on claiming a run that never started.
+            job.finish(None);
+            return Err(err).with_context(|| format!("cannot run '{command_line}'"));
+        }
+    };
     crate::term::confine(&child);
     crate::term::child_begin();
 
@@ -225,7 +280,7 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
     let mut tail: Vec<String> = Vec::new();
     let mut shown_any = false;
     let mut step = match mode {
-        Mode::Stream => None,
+        Mode::Stream | Mode::Log => None,
         Mode::Quiet | Mode::UntilReady => Some(Step::start(format!("{label} ..."))),
     };
 
@@ -240,7 +295,7 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
     loop {
         match receiver.recv_timeout(Duration::from_millis(200)) {
             Ok(line) => {
-                log.write_line(&line.text);
+                job.write_line(&line.text);
                 remember(&mut tail, &line.text);
                 let mut settled = false;
                 if watching
@@ -249,6 +304,7 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
                 {
                     watching = false;
                     settled = true;
+                    job.mark_ready(detector.address(address.clone()));
                     if let Some(step) = step.take() {
                         step.done(detector.settled(address, started.elapsed()));
                     }
@@ -281,7 +337,7 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
                     && started.elapsed() >= detector.patience
                 {
                     watching = false;
-                    if !streaming {
+                    if !streaming && mode != Mode::Log {
                         streaming = true;
                         if let Some(step) = step.take() {
                             step.clear();
@@ -304,6 +360,7 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
     let _ = err_thread.join();
     let status = status.with_context(|| format!("cannot run '{command_line}'"))?;
     let elapsed = started.elapsed();
+    job.finish(status.code());
 
     match step {
         Some(step) if status.success() => step.done(format!("{label} finished in {}", human_duration(elapsed))),
@@ -315,9 +372,9 @@ pub fn run(command_line: &str, dir: &Path, env: &[(&str, String)], mode: Mode, l
     }
     // The point of hiding the output is that a failure gets to show it. Only
     // what was not already on screen: a streamed run has printed it once.
-    if !status.success() && !shown_any {
+    if !status.success() && !shown_any && mode != Mode::Log {
         replay(&tail);
-        if let Some(path) = log.path() {
+        if let Some(path) = job.log_path() {
             eprintln!("full output: {}", path.display());
         }
     }
@@ -428,6 +485,11 @@ impl Ready<'_> {
         ready(line)
     }
 
+    /// Where the server can be reached: the door, what it said, or its port.
+    fn address(&self, seen: Option<String>) -> Option<String> {
+        self.door.clone().or(seen).or_else(|| self.own.clone())
+    }
+
     /// The line that replaces the spinner.
     ///
     /// The front door first - it is the address turnout wants people using,
@@ -436,8 +498,7 @@ impl Ready<'_> {
     /// out. A line that says "ready" and nothing else has hidden the one
     /// thing the reader was waiting for.
     fn settled(&self, address: Option<String>, elapsed: Duration) -> String {
-        let where_to = self.door.clone().or(address).or_else(|| self.own.clone());
-        match where_to {
+        match self.address(address) {
             Some(url) => format!("{} ready in {} - {url}", self.app, human_duration(elapsed)),
             None => format!("{} ready in {}", self.app, human_duration(elapsed)),
         }
@@ -617,17 +678,6 @@ mod tests {
         );
         // Nothing known anywhere: say so rather than invent an address.
         assert_eq!(detector(None, None).settled(None, at), "myapp ready in 0.8s");
-    }
-
-    /// A command name is not a file name until this says it is.
-    #[test]
-    fn log_names_survive_a_command_called_test_e2e() {
-        assert_eq!(slug("myapp"), "myapp");
-        assert_eq!(slug("test:e2e"), "test-e2e");
-        assert_eq!(slug("../etc/passwd"), "..-etc-passwd");
-        assert_eq!(slug("a b"), "a-b");
-        assert_eq!(slug("--"), "job");
-        assert_eq!(slug(""), "job");
     }
 
     /// Verbose and a pipe both mean "stream"; the wanted mode only survives on

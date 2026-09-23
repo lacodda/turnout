@@ -29,7 +29,7 @@ exclude = [
 winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -43,6 +43,8 @@ chacha20poly1305 = "0.11.0"
 clap = { version = "4.6", features = ["derive"] }
 clap_complete = "4.6.11"
 cliclack = "0.5.6"
+# Rides along with cliclack anyway; used directly to clear the screen for `ps --watch`.
+console = "0.16"
 dialoguer = "0.12"
 directories = "6"
 dunce = "1"

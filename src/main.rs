@@ -14,7 +14,9 @@ mod model;
 mod paths;
 mod pick;
 mod portable;
+mod process;
 mod progress;
+mod registry;
 mod remote;
 mod secrets;
 mod shell;
@@ -39,7 +41,7 @@ fn main() {
     // versions, and the cached notice would contradict what it did.
     let announces = !matches!(
         cli.command,
-        cli::Command::CheckUpdate | cli::Command::Complete { .. } | cli::Command::SelfUpdate { .. }
+        cli::Command::CheckUpdate | cli::Command::Complete { .. } | cli::Command::SelfUpdate { .. } | cli::Command::JobRun { .. }
     );
     let result = match cli.command {
         cli::Command::Setup { assume_yes } => commands::setup::run(assume_yes),
@@ -57,12 +59,42 @@ fn main() {
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
-        cli::Command::Dev { app, verbose, open } => commands::exec::run("dev", app, commands::exec::Options { verbose, open }),
+        cli::Command::Dev { app, verbose, detach, open } => commands::exec::run("dev", app, commands::exec::Options { verbose, open, detach }),
         cli::Command::Open { app } => commands::open::run(app),
-        cli::Command::Build { app, verbose } => commands::exec::run("build", app, commands::exec::Options { verbose, open: false }),
-        cli::Command::Test { app, verbose } => commands::exec::run("test", app, commands::exec::Options { verbose, open: false }),
-        cli::Command::Lint { app, verbose } => commands::exec::run("lint", app, commands::exec::Options { verbose, open: false }),
-        cli::Command::Run { command, app, verbose, open } => commands::exec::run(&command, app, commands::exec::Options { verbose, open }),
+        cli::Command::Build { app, verbose, detach } => commands::exec::run("build", app, commands::exec::Options { verbose, open: false, detach }),
+        cli::Command::Test { app, verbose, detach } => commands::exec::run("test", app, commands::exec::Options { verbose, open: false, detach }),
+        cli::Command::Lint { app, verbose, detach } => commands::exec::run("lint", app, commands::exec::Options { verbose, open: false, detach }),
+        cli::Command::Run {
+            command,
+            app,
+            verbose,
+            detach,
+            open,
+        } => commands::exec::run(&command, app, commands::exec::Options { verbose, open, detach }),
+        cli::Command::Ps { watch } => commands::jobs::ps(watch),
+        cli::Command::Logs { name, command, follow, lines } => commands::jobs::logs(name, command, follow, lines),
+        cli::Command::Stop { name, command } => commands::jobs::stop(name, command),
+        cli::Command::JobRun {
+            app,
+            command,
+            dir,
+            label,
+            ready,
+            own,
+            open,
+            itself,
+            program,
+        } => commands::jobs::supervise(commands::jobs::Supervised {
+            app,
+            command,
+            dir,
+            label,
+            ready,
+            own,
+            open,
+            itself,
+            program,
+        }),
         cli::Command::Ssh { name, credential } => commands::ssh::run(name, credential),
         cli::Command::Exec {
             name,
@@ -81,14 +113,18 @@ fn main() {
             clear,
             no_archive,
             verbose,
+            detach,
         } => commands::deploy::run(
             target,
             remote::Overrides { server, credential, path },
-            no_build,
-            backup,
-            clear,
-            no_archive,
-            verbose,
+            commands::deploy::Flags {
+                no_build,
+                backup,
+                clear,
+                no_archive,
+                verbose,
+                detach,
+            },
         ),
         cli::Command::Backup {
             target,

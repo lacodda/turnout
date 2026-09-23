@@ -30,6 +30,11 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
+/// 5 since v0.20.0: the gateway's record left `state.json` for the job
+/// registry (`jobs/gateway.json`), where every other job turnout runs is
+/// recorded too. A gateway running through the upgrade keeps running and is
+/// known by the new build.
+///
 /// 4 since v0.18.0: every app has a gateway port, because turnout hands them
 /// out itself and no longer asks. Nothing changed shape - an app that already
 /// had a port keeps exactly the number it had; the migration only fills the
@@ -38,7 +43,7 @@ use anyhow::{Context, Result, bail};
 /// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
 /// the server's own `deploy` map - which held the app-to-path relationship - is
 /// gone (ADR 0013).
-pub const CURRENT_VERSION: u32 = 4;
+pub const CURRENT_VERSION: u32 = 5;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -76,6 +81,12 @@ const STEPS: &[Step] = &[
         from: 3,
         describes: "apps without a gateway port were given one - turnout assigns them now",
         apply: gateway_ports_for_every_app,
+        rewrites: true,
+    },
+    Step {
+        from: 4,
+        describes: "the gateway's record moved into the job registry, next to every other job",
+        apply: gateway_into_the_job_registry,
         rewrites: true,
     },
 ];
@@ -235,6 +246,73 @@ fn gateway_ports_for_every_app(dir: &Path) -> Result<()> {
         // something they run by hand.
         eprintln!("    gateway port: {}", given.join(", "));
     }
+    Ok(())
+}
+
+/// Schema 4 -> 5: the gateway record in `state.json` becomes `jobs/gateway.json`.
+///
+/// A running gateway is carried over only when it still is one: its pid alive
+/// *and* its first port answering. The pid alone is not enough - a record
+/// left by a gateway that died long ago may name a pid the OS has handed to
+/// some other program since, and adopting that program as the gateway would
+/// hand it to the next `turnout gateway stop`. Anything short of that is
+/// dropped: the next `gateway start` begins clean.
+fn gateway_into_the_job_registry(dir: &Path) -> Result<()> {
+    #[derive(serde::Deserialize)]
+    struct Recorded {
+        pid: u32,
+        ports: std::collections::BTreeMap<u16, String>,
+        #[serde(default)]
+        front_port: Option<u16>,
+    }
+
+    let state_file = dir.join("state.json");
+    if !state_file.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(&state_file).with_context(|| format!("cannot read {}", state_file.display()))?;
+    let mut state: serde_json::Value = serde_json::from_str(&text).with_context(|| format!("cannot parse {}", state_file.display()))?;
+    let Some(recorded) = state.as_object_mut().and_then(|state| state.remove("gateway")) else {
+        return Ok(());
+    };
+    write_json(&state_file, &state)?;
+
+    let Ok(recorded) = serde_json::from_value::<Recorded>(recorded) else {
+        return Ok(());
+    };
+    let answers = recorded.ports.keys().next().is_some_and(|port| {
+        let address = std::net::SocketAddr::from(([127, 0, 0, 1], *port));
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).is_ok()
+    });
+    let birth = crate::process::birth(recorded.pid).filter(|_| answers);
+    let Some(birth) = birth else {
+        eprintln!(
+            "    gateway: the recorded process (pid {}) is no longer running - its record was dropped",
+            recorded.pid
+        );
+        return Ok(());
+    };
+    let entry = crate::registry::Entry {
+        work: crate::registry::Work::Gateway {
+            ports: recorded.ports,
+            front_port: recorded.front_port,
+        },
+        pid: recorded.pid,
+        birth,
+        // Started before gateways led a process group of their own: `stop`
+        // signals the pid alone, which is all the gateway ever was.
+        group: None,
+        // Not recorded before; the upgrade is the earliest moment known.
+        started: crate::registry::now(),
+        detached: true,
+        log: None,
+        ready: None,
+        ended: None,
+    };
+    let jobs = dir.join("jobs");
+    std::fs::create_dir_all(&jobs).with_context(|| format!("cannot create {}", jobs.display()))?;
+    write_json(&jobs.join(format!("{}.json", crate::registry::GATEWAY)), &entry)?;
+    eprintln!("    gateway: pid {} carried over - `turnout ps` lists it", recorded.pid);
     Ok(())
 }
 

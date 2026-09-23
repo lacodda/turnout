@@ -75,8 +75,8 @@ pub fn run(name: Option<String>, server_name: Option<String>, no_check: bool) ->
         }
     }
 
-    match &state.gateway {
-        Some(gateway) if crate::commands::gateway::probe(gateway) => {
+    match crate::registry::gateway()? {
+        Some(gateway) if crate::commands::gateway::probe(&gateway) => {
             println!("The running gateway picks this up automatically.");
         }
         _ => {

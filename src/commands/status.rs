@@ -55,8 +55,10 @@ pub fn run() -> Result<()> {
             println!("  {app} -> {server}");
         }
     }
-    match &state.gateway {
-        Some(gateway) if crate::commands::gateway::probe(gateway) => {
+    let gateway = crate::registry::load(crate::registry::GATEWAY)?;
+    let running = gateway.clone().filter(crate::registry::Entry::is_running).and_then(crate::registry::as_gateway);
+    match (&gateway, &running) {
+        (_, Some(gateway)) if crate::commands::gateway::probe(gateway) => {
             println!("Gateway: running (pid {})", gateway.pid);
             match gateway.front_port {
                 Some(front) => println!("Front:   {} - {}", crate::front::door(front), crate::front::address("NAME", front)),
@@ -76,8 +78,21 @@ pub fn run() -> Result<()> {
                 println!("Spare:   {}", spares.join(", "));
             }
         }
-        Some(gateway) => println!("Gateway: recorded (pid {}) but not responding - try `turnout gateway stop`", gateway.pid),
-        None => println!("Gateway: not running"),
+        (_, Some(gateway)) => println!("Gateway: running (pid {}) but not answering - try `turnout gateway stop`", gateway.pid),
+        (Some(entry), None) if entry.ended.is_none() => println!(
+            "Gateway: recorded (pid {}) but no longer running - `turnout gateway stop` clears the record",
+            entry.pid
+        ),
+        _ => println!("Gateway: not running"),
+    }
+    // The gateway has its line above; everything else turnout runs is a job.
+    let jobs: Vec<String> = crate::registry::list()?
+        .into_iter()
+        .filter(|entry| entry.app().is_some() && entry.is_running())
+        .map(|entry| entry.title())
+        .collect();
+    if !jobs.is_empty() {
+        println!("Jobs:    {} running ({}) - see `turnout ps`", jobs.len(), jobs.join(", "));
     }
     let recent = crate::journal::tail(5);
     if !recent.is_empty() {

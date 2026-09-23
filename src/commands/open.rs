@@ -6,8 +6,7 @@ use crate::{front, store};
 pub fn run(app: Option<String>) -> Result<()> {
     let apps = store::load_apps()?;
     let app = crate::commands::exec::resolve(&apps, app)?;
-    let state = store::load_state()?;
-    let Some(gateway) = state.gateway.as_ref().filter(|gateway| crate::commands::gateway::probe(gateway)) else {
+    let Some(gateway) = crate::registry::gateway()?.filter(crate::commands::gateway::probe) else {
         bail!(
             "the gateway is not running - start it with `turnout gateway start`, then `turnout open {}`",
             app.name

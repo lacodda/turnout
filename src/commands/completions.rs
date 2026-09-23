@@ -52,6 +52,10 @@ _turnout_dynamic() {
         dev|build|test|lint|deploy-setup)
             [[ ${COMP_CWORD} -eq 2 ]] && kind="apps"
             ;;
+        logs|stop)
+            # `logs|stop [APP] [COMMAND]`: an app (or `gateway`), then one of its commands.
+            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="apps"; elif [[ ${COMP_CWORD} -eq 3 ]]; then kind="commands"; fi
+            ;;
         deploy|backup|restore)
             # A named deploy target, or an app to use its target on the bound server.
             [[ ${COMP_CWORD} -eq 2 ]] && kind="targets"

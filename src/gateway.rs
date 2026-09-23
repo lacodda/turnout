@@ -57,8 +57,14 @@ pub fn listening_ports(apps: &[App]) -> Result<BTreeMap<u16, String>> {
 
 /// Run listeners for every app with a gateway port, in the foreground, plus
 /// the front door on `front_port` (picked when `None`).
-pub fn run(front_port: Option<u16>) -> Result<()> {
-    let apps: Vec<(String, u16)> = listening_ports(&store::load_apps()?)?.into_iter().map(|(port, app)| (app, port)).collect();
+///
+/// Once everything that is going to listen does, the gateway records itself
+/// in the job registry - the same whether a terminal runs it or `gateway
+/// start` does, with `log` naming the file `start` sends its output to - and
+/// takes the record away again when it stops.
+pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<()> {
+    let ports = listening_ports(&store::load_apps()?)?;
+    let apps: Vec<(String, u16)> = ports.iter().map(|(port, app)| (app.clone(), *port)).collect();
     let front_port = front_port.or_else(crate::front::pick_port);
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -81,7 +87,7 @@ pub fn run(front_port: Option<u16>) -> Result<()> {
         // The door is the second thing to open and the one thing allowed to
         // fail: the stand proxies above are the daily flow, the door is on
         // top of it.
-        match front_port {
+        let door = match front_port {
             Some(port) => match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
                 Ok(listener) => {
                     println!(
@@ -90,17 +96,28 @@ pub fn run(front_port: Option<u16>) -> Result<()> {
                         crate::front::address("NAME", port)
                     );
                     tokio::spawn(crate::front::serve(listener, port));
+                    Some(port)
                 }
-                Err(err) => eprintln!("front door: cannot listen on 127.0.0.1:{port} ({err}) - apps are reachable by port only"),
+                Err(err) => {
+                    eprintln!("front door: cannot listen on 127.0.0.1:{port} ({err}) - apps are reachable by port only");
+                    None
+                }
             },
-            None => eprintln!(
-                "front door: ports {} and {} are both taken - apps are reachable by port only; set {} to open the door elsewhere",
-                crate::front::PORT,
-                crate::front::FALLBACK_PORT,
-                crate::front::ENV_PORT
-            ),
-        }
+            None => {
+                eprintln!(
+                    "front door: ports {} and {} are both taken - apps are reachable by port only; set {} to open the door elsewhere",
+                    crate::front::PORT,
+                    crate::front::FALLBACK_PORT,
+                    crate::front::ENV_PORT
+                );
+                None
+            }
+        };
+        // The door that actually opened, not the one that was asked for: the
+        // record is what `open`, `status` and `dev` print addresses from.
+        crate::commands::gateway::record(ports, door, log)?;
         tokio::signal::ctrl_c().await?;
+        let _ = crate::registry::remove_own(crate::registry::GATEWAY);
         println!("Gateway stopped.");
         Ok(())
     })

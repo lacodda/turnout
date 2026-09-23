@@ -23,7 +23,7 @@ const READY_PATIENCE: Duration = Duration::from_secs(90);
 /// run. Undocumented in the CLI, for the same reason as [`job::MODE_ENV`].
 const PATIENCE_ENV: &str = "TURNOUT_READY_PATIENCE_MS";
 
-fn ready_patience() -> Duration {
+pub(crate) fn ready_patience() -> Duration {
     std::env::var(PATIENCE_ENV)
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
@@ -37,6 +37,8 @@ pub struct Options {
     pub verbose: bool,
     /// Open the app's front door once the dev server is up.
     pub open: bool,
+    /// Hand the job to a background supervisor and return at once.
+    pub detach: bool,
 }
 
 /// Run a named command of an app in its project directory.
@@ -70,6 +72,9 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     };
     let dir = crate::utils::project_dir(Path::new(&app.path))?;
     let command_line = crate::envfile::substitute(command_line, app)?;
+    // Before a single line is printed: a job that is already running is the
+    // whole answer, and the port notes below would only bury it.
+    job::ensure_free(&crate::registry::command_key(&app.name, command_name))?;
     // The gateway address rides along as a variable for `dev` and for any
     // custom command - but not for `build`, `test` or `lint`. A variable in
     // the process environment overrides every dotenv file whatever the mode,
@@ -91,7 +96,7 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     // Under a loader it is the one line that says what is being run at all.
     eprintln!("[{}] {command_line}", app.name);
-    let door = store::load_state()?.gateway.and_then(|gateway| gateway.front_port);
+    let door = crate::registry::gateway()?.and_then(|gateway| gateway.front_port);
     if command_name == "dev"
         && let Some(port) = app.dev_port
     {
@@ -117,31 +122,36 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     }
 
     let label = label_for(command_name, &app.name);
+    let own = app.dev_port.map(|port| format!("http://localhost:{port}"));
+    if options.detach {
+        return crate::commands::jobs::detach(crate::commands::jobs::Detach {
+            app: &app.name,
+            command: command_name,
+            dir: &dir,
+            env: &env,
+            label: &label,
+            ready: long_running,
+            own,
+            open: options.open && long_running,
+            itself: false,
+            program: vec![command_line],
+        });
+    }
     let front_door = door.map(|front| crate::front::address(&app.name, front));
     let ready = long_running.then(|| job::Ready {
         app: &app.name,
         door: front_door.clone(),
-        own: app.dev_port.map(|port| format!("http://localhost:{port}")),
+        own,
         patience: ready_patience(),
         // The browser opens the moment the server answers, not a poll later:
         // the detector is the only thing in the process that knows when that
         // is. Every long-running command gets this, not `dev` alone - a
         // custom `storybook` command is as much a server as `dev` is, and
         // that is exactly why `run` carries the flag too.
-        on_ready: options.open.then(|| {
-            let url = front_door;
-            Box::new(move || match &url {
-                Some(url) => {
-                    if let Err(err) = crate::front::open_in_browser(url) {
-                        eprintln!("note: cannot open {url}: {err:#}");
-                    }
-                }
-                None => eprintln!("note: --open needs the gateway's front door - start it with `turnout gateway start`"),
-            }) as Box<dyn Fn() + Send>
-        }),
+        on_ready: options.open.then(|| opener(front_door)),
     });
-    let mut log = job::Log::open(&app.name, command_name);
-    let outcome = job::run(&command_line, &dir, &env, mode, &label, &mut log, ready)?;
+    let mut job = job::Job::claim(&app.name, command_name, false)?;
+    let outcome = job::run(job::Program::Shell(&command_line), &dir, &env, mode, &label, &mut job, ready)?;
 
     // 130 is the conventional "interrupted" exit; the raw Windows status for
     // Ctrl+C is a negative NTSTATUS nobody's scripts check for.
@@ -151,6 +161,19 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
         outcome.status.code().unwrap_or(1)
     };
     std::process::exit(code);
+}
+
+/// What `--open` does once the server answers: open its front door, or say
+/// why there is none to open.
+pub(crate) fn opener(front_door: Option<String>) -> Box<dyn Fn() + Send> {
+    Box::new(move || match &front_door {
+        Some(url) => {
+            if let Err(err) = crate::front::open_in_browser(url) {
+                eprintln!("note: cannot open {url}: {err:#}");
+            }
+        }
+        None => eprintln!("note: --open needs the gateway's front door - start it with `turnout gateway start`"),
+    })
 }
 
 /// What the loader calls the job: an action in progress, named after the
@@ -176,19 +199,7 @@ pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
             .find(|a| a.name == name)
             .ok_or_else(|| anyhow::anyhow!("no app named '{name}' - see `turnout app list`")),
         None => {
-            let cwd = std::env::current_dir()?;
-            // Canonicalize both sides: on macOS temp paths reach the app through
-            // symlinks (/var -> /private/var), so raw prefix comparison lies.
-            let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-            let here = apps
-                .iter()
-                .filter(|a| {
-                    let path = Path::new(&a.path);
-                    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-                    cwd.starts_with(&path)
-                })
-                .max_by_key(|a| a.path.len());
-            if let Some(app) = here {
+            if let Some(app) = app_here(apps)? {
                 return Ok(app);
             }
             crate::pick::ensure_interactive("not inside a known app directory - pass the app name or see `turnout app list`")?;
@@ -196,6 +207,22 @@ pub(crate) fn resolve(apps: &[App], name: Option<String>) -> Result<&App> {
             apps.iter().find(|a| a.name == picked).ok_or_else(|| anyhow::anyhow!("no app named '{picked}'"))
         }
     }
+}
+
+/// The app whose directory holds the current one (deepest match), if any.
+pub(crate) fn app_here(apps: &[App]) -> Result<Option<&App>> {
+    let cwd = std::env::current_dir()?;
+    // Canonicalize both sides: on macOS temp paths reach the app through
+    // symlinks (/var -> /private/var), so raw prefix comparison lies.
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    Ok(apps
+        .iter()
+        .filter(|a| {
+            let path = Path::new(&a.path);
+            let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+            cwd.starts_with(&path)
+        })
+        .max_by_key(|a| a.path.len()))
 }
 
 #[cfg(test)]

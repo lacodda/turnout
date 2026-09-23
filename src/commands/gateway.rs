@@ -5,40 +5,46 @@ use anyhow::{Context, Result, bail};
 
 use crate::cli::GatewayCommand;
 use crate::model::Gateway;
-use crate::{gateway, store};
+use crate::registry::{self, Work};
+use crate::{gateway, process, store};
 
 pub fn run(command: GatewayCommand) -> Result<()> {
     match command {
         GatewayCommand::Start => start(),
-        GatewayCommand::Run { front_port } => {
+        GatewayCommand::Run { front_port, log } => {
             // Same guard as `start`: a raw bind error (os error 10048) is cryptic.
-            if let Some(running) = &store::load_state()?.gateway
-                && probe(running)
+            if let Some(running) = registry::gateway()?
+                && probe(&running)
             {
                 bail!("the gateway is already running (pid {}) - stop it with `turnout gateway stop`", running.pid);
             }
-            gateway::run(front_port)
+            gateway::run(front_port, log)
         }
-        GatewayCommand::Stop => stop(),
+        GatewayCommand::Stop => crate::commands::jobs::stop(Some(registry::GATEWAY.to_string()), None),
     }
 }
 
-/// How long a freshly spawned gateway gets to answer on its first port.
-/// A local bind takes milliseconds; the margin is for a cold start on a
-/// busy machine, not for a gateway that is actually stuck.
+/// How long a freshly spawned gateway gets to record itself and answer on its
+/// first port. A local bind takes milliseconds; the margin is for a cold start
+/// on a busy machine, not for a gateway that is actually stuck.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How much of the gateway's log a failed start replays.
+const TAIL_LINES: usize = 20;
+
+/// `gateway start`: `gateway run` as a background job.
+///
+/// The gateway writes its own record once its ports are bound (see
+/// [`gateway::run`]), so a record is a gateway that got as far as listening -
+/// never one that died on its first bind.
 fn start() -> Result<()> {
     let apps = store::load_apps()?;
     let ports = gateway::listening_ports(&apps)?;
-    let mut state = store::load_state()?;
-    if let Some(running) = &state.gateway
-        && probe(running)
-    {
+    if let Some(running) = registry::gateway()? {
         bail!("the gateway is already running (pid {})", running.pid);
     }
 
-    // Ports answering now belong to something else: the record above says no
+    // Ports answering now belong to something else: the registry says no
     // gateway of ours is alive. Refusing here names the port and the app; the
     // child would only fail its bind and exit with nothing to show for it.
     for (port, app) in &ports {
@@ -47,62 +53,59 @@ fn start() -> Result<()> {
         }
     }
 
-    // The door's port is decided here and handed to the child, so the record
-    // below can name it without waiting for the child to say.
+    // The door's port is decided here and handed to the child, so the same
+    // pick is not made twice with two different answers.
     let front_port = crate::front::pick_port();
+    let log = registry::log_path(registry::GATEWAY)?;
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let output = std::fs::File::create(&log).with_context(|| format!("cannot write {}", log.display()))?;
     let exe = std::env::current_exe().context("cannot locate the turnout binary")?;
     let mut command = Command::new(exe);
     command.args(["gateway", "run"]);
     if let Some(port) = front_port {
         command.args(["--front-port", &port.to_string()]);
     }
-    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-    }
+    command.arg("--log").arg(&log);
+    command
+        .stdin(Stdio::null())
+        .stdout(output.try_clone().context("cannot share the gateway log")?)
+        .stderr(output);
+    process::detach(&mut command);
     crate::utils::stop_inheriting_stdio();
     let mut child = command.spawn().context("cannot start the gateway process")?;
 
-    // Do not take the spawn for the start. The child binds its ports after
-    // this returns; when one is taken it exits at once, and recording its pid
-    // would leave `status` calling a dead process alive and `stop` failing
-    // on it. Wait for the first port to answer, or for the child to give up.
-    let gateway = Gateway {
-        pid: child.id(),
-        ports: ports.clone(),
-        front_port,
-    };
     let started = Instant::now();
-    loop {
+    let gateway = loop {
         if let Some(status) = child.try_wait().context("cannot check on the gateway process")? {
-            bail!("the gateway exited right after starting ({status}) - run `turnout gateway run` in the foreground to see why");
+            replay(&log);
+            bail!("the gateway exited right after starting ({status}) - its output is above, and in `turnout logs gateway`");
         }
-        if probe(&gateway) {
-            break;
+        if let Some(gateway) = registry::gateway()?.filter(|gateway| gateway.pid == child.id())
+            && probe(&gateway)
+        {
+            break gateway;
         }
         if started.elapsed() > START_TIMEOUT {
-            let _ = kill(child.id());
+            let _ = process::end(child.id(), None, process::Ending::Kill);
+            let _ = registry::remove(registry::GATEWAY);
+            replay(&log);
             bail!(
                 "the gateway did not answer on port {} within {}s - run `turnout gateway run` in the foreground to see why",
-                gateway.ports.keys().next().copied().unwrap_or_default(),
+                ports.keys().next().copied().unwrap_or_default(),
                 START_TIMEOUT.as_secs()
             );
         }
         std::thread::sleep(Duration::from_millis(50));
-    }
+    };
 
-    state.gateway = Some(gateway);
-    store::save_state(&state)?;
-    crate::journal::record("gateway.start", None, None, Some(&format!("{} apps", ports.len())));
-    println!("Gateway started (pid {}).", child.id());
-    for (port, app) in ports {
+    crate::journal::record("gateway.start", None, None, Some(&format!("{} apps", gateway.ports.len())));
+    println!("Gateway started (pid {}).", gateway.pid);
+    for (port, app) in &gateway.ports {
         println!("  {app}: http://localhost:{port}");
     }
-    match front_port {
+    match gateway.front_port {
         Some(front) => {
             println!("Front door: {}", crate::front::door(front));
             for app in &apps {
@@ -128,27 +131,19 @@ fn start() -> Result<()> {
     Ok(())
 }
 
-fn stop() -> Result<()> {
-    let mut state = store::load_state()?;
-    let Some(running) = state.gateway.take() else {
-        println!("The gateway is not running.");
-        return Ok(());
-    };
-    // A record whose process is gone (killed from outside, or died on its
-    // own) is stale, not an error: forget it rather than fail on the kill and
-    // leave the record to fail the same way next time.
-    if let Err(error) = kill(running.pid) {
-        if probe(&running) {
-            return Err(error);
-        }
-        store::save_state(&state)?;
-        println!("The gateway (pid {}) was no longer running - cleared the stale record.", running.pid);
-        return Ok(());
+/// Put what the gateway said on the way down in front of the error about it.
+fn replay(log: &std::path::Path) {
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    for line in &lines[lines.len().saturating_sub(TAIL_LINES)..] {
+        eprintln!("{line}");
     }
-    store::save_state(&state)?;
-    crate::journal::record("gateway.stop", None, None, None);
-    println!("Gateway stopped (pid {}).", running.pid);
-    Ok(())
+}
+
+/// The record `gateway run` writes about itself once it listens.
+pub fn record(ports: std::collections::BTreeMap<u16, String>, front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<()> {
+    let detached = log.is_some();
+    registry::save(&registry::Entry::own(Work::Gateway { ports, front_port }, detached, log))
 }
 
 /// Quick liveness check: can we open one of the recorded ports?
@@ -159,54 +154,4 @@ pub fn probe(gateway: &Gateway) -> bool {
 fn port_answers(port: u16) -> bool {
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     std::net::TcpStream::connect_timeout(&address, Duration::from_millis(300)).is_ok()
-}
-
-/// Signal the recorded gateway process.
-///
-/// The pid comes from `state.json`, which a hand edit or a corrupt write can
-/// turn into anything. Numbers that cannot name a process are refused before
-/// they reach a tool that would read them differently: `kill` parses the pid
-/// into a C `int`, so 4294967295 arrives as -1, and `kill -1` signals every
-/// process the user owns. That is how the whole CI runner died once.
-fn kill(pid: u32) -> Result<()> {
-    if pid <= 1 || pid > i32::MAX as u32 {
-        bail!("refusing to signal pid {pid}: not a process id");
-    }
-    kill_process(pid)
-}
-
-#[cfg(windows)]
-fn kill_process(pid: u32) -> Result<()> {
-    let output = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .output()
-        .context("cannot run taskkill")?;
-    if !output.status.success() {
-        bail!("taskkill failed: {}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn kill_process(pid: u32) -> Result<()> {
-    let output = Command::new("kill").arg(pid.to_string()).output().context("cannot run kill")?;
-    if !output.status.success() {
-        bail!("kill failed: {}", String::from_utf8_lossy(&output.stderr).trim());
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Numbers that cannot name a process never reach the OS tool; the
-    /// message says so rather than reporting whatever the tool made of them.
-    #[test]
-    fn kill_refuses_a_number_that_is_not_a_pid() {
-        for pid in [0, 1, u32::MAX, i32::MAX as u32 + 1] {
-            let error = kill(pid).unwrap_err().to_string();
-            assert!(error.contains("not a process id"), "pid {pid}: {error}");
-        }
-    }
 }

@@ -7,6 +7,7 @@ use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
 use crate::remote::{self, Resolved};
 use crate::shell::Dialect;
 use crate::ssh::Session;
+use crate::store;
 
 /// Below this, packing is not worth the extra round trips: a handful of files
 /// go over SFTP faster than tar + upload + untar can set itself up.
@@ -53,15 +54,25 @@ impl Reached {
     }
 }
 
-pub fn run(
-    target_name: Option<String>,
-    overrides: remote::Overrides,
-    no_build: bool,
-    backup: bool,
-    clear: bool,
-    no_archive: bool,
-    verbose: bool,
-) -> Result<()> {
+/// The switches of one deploy.
+pub struct Flags {
+    pub no_build: bool,
+    pub backup: bool,
+    pub clear: bool,
+    pub no_archive: bool,
+    pub verbose: bool,
+    pub detach: bool,
+}
+
+pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Flags) -> Result<()> {
+    let Flags {
+        no_build,
+        backup,
+        clear,
+        no_archive,
+        verbose,
+        detach,
+    } = flags;
     let target = remote::resolve(target_name, overrides)?;
     let (app, server) = (&target.app, &target.server);
     let Some(dist) = &app.dist_dir else {
@@ -69,6 +80,9 @@ pub fn run(
     };
 
     let project = crate::utils::project_dir(Path::new(&app.path))?;
+    if detach {
+        return in_background(&target, &project, &flags_for(no_build, backup, clear, no_archive));
+    }
     if !no_build && let Some(build) = app.commands.get("build") {
         eprintln!("[{}] {build}", app.name);
         // Same quiet console as `turnout build`: a loader with the elapsed
@@ -76,8 +90,16 @@ pub fn run(
         // checklist below this, and a build tool's own scrollback between the
         // two made the whole command look like two unrelated programs.
         let mode = job::Mode::resolve(job::Mode::Quiet, verbose);
-        let mut log = job::Log::open(&app.name, "build");
-        let outcome = job::run(build, &project, &[], mode, &format!("Building {}", app.name), &mut log, None)?;
+        let mut job = job::Job::claim(&app.name, "build", false)?;
+        let outcome = job::run(
+            job::Program::Shell(build),
+            &project,
+            &[],
+            mode,
+            &format!("Building {}", app.name),
+            &mut job,
+            None,
+        )?;
         if !outcome.status.success() {
             bail!("build failed with {} - nothing uploaded", outcome.status);
         }
@@ -123,6 +145,61 @@ pub fn run(
             }
         }
     }
+}
+
+/// Hand the deploy to a background supervisor, as `turnout deploy` again.
+///
+/// Everything a picker would ask is settled here, in the terminal, and passed
+/// on by name: the background has nobody to ask. A named target travels as
+/// its name; anything else as the app plus every field spelled out, so the
+/// supervisor's deploy resolves to exactly this tuple and not to whatever the
+/// binding says by the time it runs.
+fn in_background(target: &Resolved, project: &Path, flags: &[&str]) -> Result<()> {
+    let app = &target.app;
+    let mut args = vec!["deploy".to_string()];
+    match &target.target {
+        Some(name) => args.push(name.clone()),
+        None => {
+            // `deploy NAME` reads NAME as a target first, so an app that shares
+            // its name with some target cannot be passed by name at all.
+            if store::load_targets()?.iter().any(|t| t.name == app.name) {
+                bail!(
+                    "a target is also named '{0}', so the background deploy cannot name the app - deploy a target by name, or without --detach",
+                    app.name
+                );
+            }
+            args.extend([
+                app.name.clone(),
+                "--server".into(),
+                target.server.name.clone(),
+                "--credential".into(),
+                target.credential.name.clone(),
+                "--path".into(),
+                target.path.name.clone(),
+            ]);
+        }
+    }
+    args.extend(flags.iter().map(|flag| flag.to_string()));
+    crate::commands::jobs::detach(crate::commands::jobs::Detach {
+        app: &app.name,
+        command: "deploy",
+        dir: project,
+        env: &[],
+        label: &format!("Deploying {}", app.name),
+        ready: false,
+        own: None,
+        open: false,
+        itself: true,
+        program: args,
+    })
+}
+
+/// The deploy switches, spelled the way the CLI reads them.
+fn flags_for(no_build: bool, backup: bool, clear: bool, no_archive: bool) -> Vec<&'static str> {
+    [(no_build, "--no-build"), (backup, "--backup"), (clear, "--clear"), (no_archive, "--no-archive")]
+        .into_iter()
+        .filter_map(|(on, flag)| on.then_some(flag))
+        .collect()
 }
 
 /// Offer to save an unnamed tuple as a target, so the next deploy is one word.

@@ -260,18 +260,16 @@ pub struct State {
     /// Which server each app currently uses for development.
     #[serde(default)]
     pub bindings: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub gateway: Option<Gateway>,
 }
 
-/// Recorded facts about the background gateway process.
-#[derive(Serialize, Deserialize, Clone)]
+/// The running gateway, read from its record in the job registry
+/// ([`crate::registry::gateway`]). Until v0.20 this lived in `state.json`.
+#[derive(Clone)]
 pub struct Gateway {
     pub pid: u32,
     /// Listening port per app at the moment the gateway started.
     pub ports: BTreeMap<u16, String>,
     /// Where the front door opened, when it did.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub front_port: Option<u16>,
 }
 
