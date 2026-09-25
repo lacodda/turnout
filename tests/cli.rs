@@ -9,7 +9,23 @@ fn turnout(data_dir: &std::path::Path) -> Command {
     // a background lookup from every single `setup`. The few tests that do
     // exercise the check turn it back on via `with_update_check`.
     cmd.env("TURNOUT_UPDATE_CHECK", "0");
+    // Nor pop a notification on the desktop of whoever runs the suite: every
+    // toast goes to a file in the data directory, where tests read it back.
+    cmd.env("TURNOUT_TOASTS", toast_file(data_dir));
     cmd
+}
+
+fn toast_file(data_dir: &std::path::Path) -> std::path::PathBuf {
+    data_dir.join("toasts.jsonl")
+}
+
+/// The notifications turnout has sent in this data directory, oldest first.
+fn toasts(data_dir: &std::path::Path) -> Vec<serde_json::Value> {
+    match std::fs::read_to_string(toast_file(data_dir)) {
+        Ok(text) => text.lines().map(|line| serde_json::from_str(line).unwrap()).collect(),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(err) => panic!("cannot read the toasts: {err}"),
+    }
 }
 
 #[test]
@@ -2965,6 +2981,202 @@ fn logs_go_where_the_log_directory_says() {
         .assert()
         .success()
         .stdout(predicate::str::contains("moved-out"));
+}
+
+// --- notifications and kept failures (v0.21.0) ------------------------------
+
+/// Wait until `count` notifications have been sent, and return them.
+fn toasts_eventually(dir: &std::path::Path, count: usize) -> Vec<serde_json::Value> {
+    eventually(15, &format!("{count} notification(s)"), || {
+        let sent = toasts(dir);
+        if sent.len() >= count { Ok(()) } else { Err(format!("{sent:#?}")) }
+    });
+    toasts(dir)
+}
+
+/// The point of v0.21.0: a background job says how it went, once, and a
+/// failure's output outlives the next run - the toast pointed at it, and the
+/// retry must not erase what it pointed at.
+#[test]
+fn a_background_failure_is_one_notification_and_its_log_is_kept() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args([
+            "--command",
+            "boom=echo compiling && echo error: expected a semicolon && echo npm error code 3 && exit 3",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "boom", "myapp", "--detach"]).assert().code(3);
+
+    let sent = toasts_eventually(dir.path(), 1);
+    assert_eq!(sent.len(), 1, "{sent:#?}");
+    let toast = &sent[0];
+    assert_eq!(toast["title"], "myapp boom failed");
+    // The compiler's line, not the package manager's closing words.
+    assert_eq!(toast["body"], "error: expected a semicolon");
+    let note = toast["note"].as_str().unwrap();
+    assert!(note.starts_with("exit 3 after") && note.ends_with("turnout logs myapp boom --failed"), "{note}");
+    assert_eq!(toast["failure"], true);
+    let kept = dir.path().join("logs").join("failed").join("myapp.boom.log");
+    let open = toast["open"].as_str().unwrap();
+    assert!(open.starts_with("file://") && open.ends_with("/logs/failed/myapp.boom.log"), "{open}");
+    assert!(std::fs::read_to_string(&kept).unwrap().contains("compiling"));
+
+    // The next run succeeds: its own log is fresh, the failure is still there.
+    turnout(dir.path())
+        .args(["app", "edit", "myapp", "--command", "boom=echo fixed-now"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "boom", "myapp", "-d"]).assert().success();
+    let sent = toasts_eventually(dir.path(), 2);
+    assert_eq!(sent[1]["title"], "myapp boom finished", "{sent:#?}");
+    assert_eq!(sent[1]["failure"], false);
+    let latest = stdout_of(dir.path(), &["logs", "myapp", "boom"]);
+    assert!(latest.contains("fixed-now") && !latest.contains("compiling"), "{latest}");
+    let failure = stdout_of(dir.path(), &["logs", "myapp", "boom", "--failed"]);
+    assert!(failure.contains("error: expected a semicolon"), "{failure}");
+}
+
+/// A server's notification leads to the server; a stopped job says nothing
+/// more - whoever stopped it knows.
+#[test]
+fn a_background_server_says_where_it_answers_and_stop_is_silent() {
+    let (dir, project) = workspace();
+    let serve = format!("echo Server listening on http://localhost:5555 && {}", pause_for(20));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("serve={serve}")])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "serve", "myapp", "--detach"]).assert().success();
+    let sent = toasts_eventually(dir.path(), 1);
+    assert_eq!(sent[0]["title"], "myapp serve is ready", "{sent:#?}");
+    assert_eq!(sent[0]["open"], "http://localhost:5555");
+    assert_eq!(sent[0]["buttons"][0]["label"], "Open in browser");
+
+    turnout(dir.path()).args(["stop", "myapp", "serve"]).assert().success();
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert_eq!(toasts(dir.path()).len(), 1, "a stopped job sent more: {:#?}", toasts(dir.path()));
+}
+
+/// A job in a terminal speaks there: no notification, whatever its outcome -
+/// but its failure is kept all the same.
+#[test]
+fn a_foreground_job_sends_no_notification() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", "boom=echo in-the-terminal && exit 4", "--command", "fine=echo ok"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["run", "boom", "myapp"]).assert().code(4);
+    turnout(dir.path()).args(["run", "fine", "myapp"]).assert().success();
+    assert!(toasts(dir.path()).is_empty(), "{:#?}", toasts(dir.path()));
+    turnout(dir.path())
+        .args(["logs", "myapp", "boom", "--failed"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("in-the-terminal"));
+    turnout(dir.path())
+        .args(["logs", "myapp", "fine", "--failed"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("myapp fine has no failure on record"));
+}
+
+/// When the supervisor itself cannot run the job, nobody is reading its
+/// stderr: the reason goes into the job's log, and the notification says it.
+#[test]
+fn a_job_that_cannot_start_leaves_the_reason_in_its_log() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    let gone = project.join("no-such-dir");
+    turnout(dir.path())
+        .args(["job-run", "--app", "myapp", "--command", "ghost", "--label", "Running ghost", "--dir"])
+        .arg(&gone)
+        .args(["--", "echo", "never"])
+        .assert()
+        .code(1);
+    let log = std::fs::read_to_string(dir.path().join("logs").join("myapp.ghost.log")).unwrap();
+    assert!(log.contains("turnout: cannot run 'echo never'"), "{log}");
+    let kept = std::fs::read_to_string(dir.path().join("logs").join("failed").join("myapp.ghost.log")).unwrap();
+    assert!(kept.contains("cannot run"), "{kept}");
+    let sent = toasts(dir.path());
+    assert_eq!(sent.len(), 1, "{sent:#?}");
+    assert_eq!(sent[0]["title"], "myapp ghost failed");
+    assert!(sent[0]["body"].as_str().unwrap().contains("cannot run 'echo never'"), "{sent:#?}");
+    assert!(sent[0]["note"].as_str().unwrap().starts_with("did not start"), "{sent:#?}");
+}
+
+/// `TURNOUT_DETACH` sends the commands it names to the background - on a
+/// quiet console only: `--foreground`, `-v` and a pipe keep the job here.
+#[test]
+fn the_background_preference_covers_what_it_names_and_yields_to_the_flags() {
+    let (dir, project) = workspace();
+    let slow = format!("echo slow-start && {}", pause_for(2));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("slow={slow}"), "--command", "quick=echo quick-here"])
+        .assert()
+        .success();
+    let preferring = |value: &str| {
+        let mut cmd = turnout(dir.path());
+        cmd.env("TURNOUT_DETACH", value).env("TURNOUT_CONSOLE", "quiet");
+        cmd
+    };
+
+    preferring("slow")
+        .args(["run", "slow", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp slow runs in the background").and(predicate::str::contains("TURNOUT_DETACH covers 'slow'")));
+    turnout(dir.path())
+        .args(["logs", "myapp", "slow", "--follow"])
+        .timeout(std::time::Duration::from_secs(30))
+        .assert()
+        .success();
+
+    // Not named: here, as ever.
+    preferring("slow")
+        .args(["run", "quick", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("runs in the background").not());
+    // Named, and kept here on request. The slow command, because a quick one
+    // sent to the background anyway would come back "finished at once" and
+    // prove nothing by the missing line.
+    for keep in [&["--foreground"][..], &["-v"][..]] {
+        preferring("all").args(["run", "slow", "myapp"]).args(keep).assert().success().stdout(
+            predicate::str::contains("in the background")
+                .not()
+                .and(predicate::str::contains("at once").not()),
+        );
+    }
+    // A pipe gets the job in line even when everything prefers the background.
+    turnout(dir.path())
+        .env("TURNOUT_DETACH", "all")
+        .args(["run", "quick", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("quick-here"));
+    // A name nothing has is reported rather than silently matching nothing.
+    preferring("slwo")
+        .args(["run", "quick", "myapp"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("TURNOUT_DETACH names 'slwo'"));
+    // `--foreground` and `--detach` contradict each other.
+    turnout(dir.path())
+        .args(["run", "quick", "myapp", "--detach", "--foreground"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 /// `ps --watch` redraws a terminal; without one it says so instead of

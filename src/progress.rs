@@ -191,6 +191,18 @@ pub fn human_bytes(bytes: u64) -> String {
 /// Sub-second precision only where it is informative - below ten seconds a
 /// digit after the point is the difference between fast and instant; above a
 /// minute nobody reads tenths.
+/// A span of whole seconds the way a person reads it at a glance: `59s`,
+/// `12m`, `5h 07m`, `2d 03h`. Coarser than [`human_duration`] - it is for
+/// how long something has been running, not for how long a step took.
+pub fn human_span(seconds: u64) -> String {
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3600 => format!("{}m", seconds / 60),
+        3600..86400 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
+        _ => format!("{}d {:02}h", seconds / 86400, seconds % 86400 / 3600),
+    }
+}
+
 pub fn human_duration(elapsed: Duration) -> String {
     let secs = elapsed.as_secs_f64();
     if secs < 10.0 {

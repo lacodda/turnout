@@ -282,6 +282,12 @@ mod tests {
         assert!(!filled, "apple-touch-icon.png is the filled S tile at 180px");
         let docs_copy = std::fs::read(repo_root().join("docs/public/apple-touch-icon.png")).expect("docs copy is missing");
         assert_eq!(touch, docs_copy, "docs/public/apple-touch-icon.png drifted from assets/");
+        // The notification icon is drawn at 16 DIP in a toast's header: S,
+        // whatever the pixel size of the file that covers display scaling.
+        let toast = std::fs::read(repo_root().join("assets/toast-icon.png")).expect("assets/toast-icon.png is missing");
+        let (filled, width) = is_filled_tile(&toast);
+        assert_eq!(width, 64);
+        assert!(filled, "toast-icon.png is not the filled S tile; a toast header draws it at 16 DIP");
     }
 
     /// Largest first: Windows picks by closest size and ignores order, but

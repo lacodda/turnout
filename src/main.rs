@@ -11,6 +11,7 @@ mod journal;
 mod keysetup;
 mod migrate;
 mod model;
+mod notify;
 mod paths;
 mod pick;
 mod portable;
@@ -59,20 +60,20 @@ fn main() {
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
-        cli::Command::Dev { app, verbose, detach, open } => commands::exec::run("dev", app, commands::exec::Options { verbose, open, detach }),
+        cli::Command::Dev { app, console, open } => commands::exec::run("dev", app, commands::exec::Options { console, open }),
         cli::Command::Open { app } => commands::open::run(app),
-        cli::Command::Build { app, verbose, detach } => commands::exec::run("build", app, commands::exec::Options { verbose, open: false, detach }),
-        cli::Command::Test { app, verbose, detach } => commands::exec::run("test", app, commands::exec::Options { verbose, open: false, detach }),
-        cli::Command::Lint { app, verbose, detach } => commands::exec::run("lint", app, commands::exec::Options { verbose, open: false, detach }),
-        cli::Command::Run {
-            command,
-            app,
-            verbose,
-            detach,
-            open,
-        } => commands::exec::run(&command, app, commands::exec::Options { verbose, open, detach }),
+        cli::Command::Build { app, console } => commands::exec::run("build", app, commands::exec::Options { console, open: false }),
+        cli::Command::Test { app, console } => commands::exec::run("test", app, commands::exec::Options { console, open: false }),
+        cli::Command::Lint { app, console } => commands::exec::run("lint", app, commands::exec::Options { console, open: false }),
+        cli::Command::Run { command, app, console, open } => commands::exec::run(&command, app, commands::exec::Options { console, open }),
         cli::Command::Ps { watch } => commands::jobs::ps(watch),
-        cli::Command::Logs { name, command, follow, lines } => commands::jobs::logs(name, command, follow, lines),
+        cli::Command::Logs {
+            name,
+            command,
+            follow,
+            lines,
+            failed,
+        } => commands::jobs::logs(name, command, follow, lines, failed),
         cli::Command::Stop { name, command } => commands::jobs::stop(name, command),
         cli::Command::JobRun {
             app,
@@ -83,6 +84,7 @@ fn main() {
             own,
             open,
             itself,
+            link,
             program,
         } => commands::jobs::supervise(commands::jobs::Supervised {
             app,
@@ -94,6 +96,7 @@ fn main() {
             open,
             itself,
             program,
+            link,
         }),
         cli::Command::Ssh { name, credential } => commands::ssh::run(name, credential),
         cli::Command::Exec {
@@ -112,8 +115,7 @@ fn main() {
             backup,
             clear,
             no_archive,
-            verbose,
-            detach,
+            console,
         } => commands::deploy::run(
             target,
             remote::Overrides { server, credential, path },
@@ -122,8 +124,7 @@ fn main() {
                 backup,
                 clear,
                 no_archive,
-                verbose,
-                detach,
+                console,
             },
         ),
         cli::Command::Backup {

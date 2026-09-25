@@ -25,6 +25,11 @@
 //! that says who runs it, since when, whether the server came up and how it
 //! ended. That is what `turnout ps`, `logs` and `stop` read, and what refuses
 //! a second copy of a job that is already running.
+//!
+//! A run that fails leaves a copy of its log in `failed/` beside it
+//! ([`crate::registry::failed_log`]). The next run of the same job truncates
+//! the log, and the output of a failure must outlive the retry that followed
+//! it - a background job's failure is usually read after the fact.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
@@ -150,6 +155,35 @@ impl Job {
         self.file.as_ref().map(|_| self.log_path.as_path())
     }
 
+    /// A line of turnout's own in the job's log: why a job could not start,
+    /// why its notification did not go out.
+    ///
+    /// Nobody reads a supervisor's stderr - it has none - so the log is the one
+    /// place its own troubles can be found afterwards.
+    pub fn note(&mut self, line: &str) {
+        self.write_line(&format!("turnout: {line}"));
+    }
+
+    /// Keep a copy of the log aside, as the output of a failure; returns where.
+    ///
+    /// A copy rather than a move: `logs -f` may be reading the log this very
+    /// moment, and it must reach the end of it rather than a missing file.
+    pub fn keep(&mut self) -> Option<PathBuf> {
+        self.file.as_ref()?;
+        let kept = registry::failed_log(&self.log_path);
+        let copied = kept
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|()| std::fs::copy(&self.log_path, &kept));
+        match copied {
+            Ok(_) => Some(kept),
+            Err(err) => {
+                self.note(&format!("cannot keep a copy of this log in {}: {err}", kept.display()));
+                None
+            }
+        }
+    }
+
     fn write_line(&mut self, line: &str) {
         if let Some(file) = &mut self.file {
             // A log that starts failing mid-run stops being a log: dropping the
@@ -240,6 +274,19 @@ impl Program<'_> {
 /// What a finished job leaves behind.
 pub struct Outcome {
     pub status: std::process::ExitStatus,
+    pub elapsed: Duration,
+    /// The last lines of its output, for a failure to be summed up by.
+    pub tail: Vec<String>,
+    /// The copy of the log a failure left in `failed/`, when it failed.
+    pub kept: Option<PathBuf>,
+}
+
+impl Outcome {
+    /// Failed by itself - not stopped with Ctrl+C, which is somebody's choice
+    /// and not a failure of the job.
+    pub fn failed(&self) -> bool {
+        !self.status.success() && !crate::term::interrupted()
+    }
 }
 
 /// Run a job's program in a directory under the chosen console mode.
@@ -304,12 +351,13 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
                 {
                     watching = false;
                     settled = true;
-                    job.mark_ready(detector.address(address.clone()));
+                    let reached = detector.address(address.clone());
+                    job.mark_ready(reached.clone());
                     if let Some(step) = step.take() {
                         step.done(detector.settled(address, started.elapsed()));
                     }
-                    if let Some(open) = detector.on_ready.take() {
-                        open();
+                    if let Some(on_ready) = detector.on_ready.take() {
+                        on_ready(reached, started.elapsed());
                     }
                 }
                 if streaming {
@@ -361,6 +409,15 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
     let status = status.with_context(|| format!("cannot run '{command_line}'"))?;
     let elapsed = started.elapsed();
     job.finish(status.code());
+    let mut outcome = Outcome {
+        status,
+        elapsed,
+        tail,
+        kept: None,
+    };
+    if outcome.failed() {
+        outcome.kept = job.keep();
+    }
 
     match step {
         Some(step) if status.success() => step.done(format!("{label} finished in {}", human_duration(elapsed))),
@@ -373,12 +430,13 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
     // The point of hiding the output is that a failure gets to show it. Only
     // what was not already on screen: a streamed run has printed it once.
     if !status.success() && !shown_any && mode != Mode::Log {
-        replay(&tail);
-        if let Some(path) = job.log_path() {
+        replay(&outcome.tail);
+        // The kept copy: it still says this after the next run.
+        if let Some(path) = outcome.kept.as_deref().or(job.log_path()) {
             eprintln!("full output: {}", path.display());
         }
     }
-    Ok(Outcome { status })
+    Ok(outcome)
 }
 
 /// Print a captured line on the stream it came from.
@@ -456,6 +514,10 @@ fn spawn_reader(pipe: impl Read + Send + 'static, sender: Sender<Line>, is_err: 
     })
 }
 
+/// What runs once a server is up: given its address, when one is known, and
+/// how long it took to come up.
+pub type OnReady = Box<dyn FnOnce(Option<String>, Duration) + Send>;
+
 /// The detector that decides a dev server is up, and says so.
 pub struct Ready<'a> {
     /// What the app is called, for the line the detector settles on.
@@ -474,9 +536,10 @@ pub struct Ready<'a> {
     /// How long to wait for a signal before giving up and streaming.
     pub patience: Duration,
     /// What to do the moment the server answers - `--open` hangs its browser
-    /// here. Runs once, from the reader loop, so nothing has to poll a port to
-    /// guess when the page would load.
-    pub on_ready: Option<Box<dyn Fn() + Send>>,
+    /// here, a background job its notification. Runs once, from the reader
+    /// loop, so nothing has to poll a port to guess when the page would load;
+    /// it is told the address the job settled on and how long it took.
+    pub on_ready: Option<OnReady>,
 }
 
 impl Ready<'_> {
@@ -550,7 +613,7 @@ fn url_in(text: &str) -> Option<String> {
 /// Vite writes `ready in` with the number in green; matching on the raw bytes
 /// would work for that one and break on the next tool that colours the word
 /// itself. Only CSI sequences - the only kind that appears in this output.
-fn strip_ansi(line: &str) -> String {
+pub(crate) fn strip_ansi(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(c) = chars.next() {

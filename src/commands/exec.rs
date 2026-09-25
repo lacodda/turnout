@@ -33,12 +33,10 @@ pub(crate) fn ready_patience() -> Duration {
 /// What the caller wants from the console.
 #[derive(Clone, Copy, Default)]
 pub struct Options {
-    /// Stream the command's output in full instead of hiding it behind a loader.
-    pub verbose: bool,
+    /// Streaming, the background, or this terminal whatever the preference.
+    pub console: crate::cli::Console,
     /// Open the app's front door once the dev server is up.
     pub open: bool,
-    /// Hand the job to a background supervisor and return at once.
-    pub detach: bool,
 }
 
 /// Run a named command of an app in its project directory.
@@ -91,7 +89,9 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     // ready signal that never comes costs nothing but the patience above,
     // after which it streams like the old pass-through did.
     let long_running = !matches!(command_name, "build" | "test" | "lint");
-    let mode = Mode::resolve(if long_running { Mode::UntilReady } else { Mode::Quiet }, options.verbose);
+    let mode = Mode::resolve(if long_running { Mode::UntilReady } else { Mode::Quiet }, options.console.verbose);
+    let is_command = |name: &str| apps.iter().any(|app| app.commands.contains_key(name));
+    let placement = crate::commands::jobs::placement(command_name, options.console, mode, &is_command);
 
     // Status goes to stderr so the command's own stdout stays clean for pipes.
     // Under a loader it is the one line that says what is being run at all.
@@ -123,7 +123,7 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
 
     let label = label_for(command_name, &app.name);
     let own = app.dev_port.map(|port| format!("http://localhost:{port}"));
-    if options.detach {
+    if placement.detached() {
         return crate::commands::jobs::detach(crate::commands::jobs::Detach {
             app: &app.name,
             command: command_name,
@@ -135,6 +135,8 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
             open: options.open && long_running,
             itself: false,
             program: vec![command_line],
+            link: None,
+            preferred: placement == crate::commands::jobs::Placement::Preferred,
         });
     }
     let front_door = door.map(|front| crate::front::address(&app.name, front));
@@ -165,8 +167,8 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
 
 /// What `--open` does once the server answers: open its front door, or say
 /// why there is none to open.
-pub(crate) fn opener(front_door: Option<String>) -> Box<dyn Fn() + Send> {
-    Box::new(move || match &front_door {
+pub(crate) fn opener(front_door: Option<String>) -> job::OnReady {
+    Box::new(move |_, _| match &front_door {
         Some(url) => {
             if let Err(err) = crate::front::open_in_browser(url) {
                 eprintln!("note: cannot open {url}: {err:#}");

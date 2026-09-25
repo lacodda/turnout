@@ -12,12 +12,16 @@
 use std::io::{BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
 use crate::job::{self, Mode, Program};
+use crate::notify;
 use crate::process::{self, Ending};
+use crate::progress::{human_duration, human_span};
 use crate::registry::{self, Entry, Status, Work};
 use crate::store;
 
@@ -40,6 +44,100 @@ const STOP_PATIENCE: Duration = Duration::from_secs(5);
 /// How many lines a job that failed at once replays.
 const TAIL_LINES: usize = 40;
 
+/// Sends commands to the background without `--detach`: `all`, or their names.
+pub const PREFER_ENV: &str = "TURNOUT_DETACH";
+
+/// The commands turnout runs under these names whatever the apps call theirs.
+pub const BUILT_IN: [&str; 5] = ["dev", "build", "test", "lint", "deploy"];
+
+/// Where a job runs, and why there.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Placement {
+    /// In this terminal.
+    Here,
+    /// In the background, because `--detach` said so.
+    Asked,
+    /// In the background, because [`PREFER_ENV`] covers the command.
+    Preferred,
+}
+
+impl Placement {
+    pub fn detached(self) -> bool {
+        self != Placement::Here
+    }
+}
+
+/// Where a job runs.
+///
+/// `--detach` decides when given, and `--foreground` and `-v` keep the job
+/// here - streaming its output in full means being where it streams to.
+/// Otherwise the preference does, but only where the console would have been
+/// quiet anyway: on a terminal. A pipe, a CI job and a script reading the output
+/// get the job in line as they always did, because a preference for the
+/// background must not turn `turnout build && turnout deploy` in a script into
+/// a race between the two. `is_command` says whether any app has a command by
+/// that name, so a misspelt preference is reported instead of never matching.
+pub fn placement(command: &str, flags: crate::cli::Console, console: Mode, is_command: &dyn Fn(&str) -> bool) -> Placement {
+    if flags.detach {
+        return Placement::Asked;
+    }
+    if flags.foreground || flags.verbose || console == Mode::Stream {
+        return Placement::Here;
+    }
+    let preference = Preference::parse(&std::env::var(PREFER_ENV).unwrap_or_default());
+    for name in preference.unknown(is_command) {
+        crate::progress::warn(&format!(
+            "{PREFER_ENV} names '{name}', which is not a command turnout runs or any app has - it is ignored"
+        ));
+    }
+    if preference.covers(command) { Placement::Preferred } else { Placement::Here }
+}
+
+/// What [`PREFER_ENV`] asks for.
+#[derive(Debug, PartialEq, Eq)]
+struct Preference {
+    all: bool,
+    names: Vec<String>,
+}
+
+impl Preference {
+    /// `all` (or `1`, `true`, `yes`, `on`) for every command; nothing for an
+    /// empty value or `0`, `false`, `no`, `off`, `none` - the words
+    /// `TURNOUT_UPDATE_CHECK` takes; otherwise command names, separated by
+    /// commas or spaces. Names keep their case: npm scripts are case-sensitive.
+    fn parse(value: &str) -> Self {
+        let words: Vec<&str> = value.split(|c: char| c == ',' || c.is_whitespace()).filter(|word| !word.is_empty()).collect();
+        let is = |word: &str, set: &[&str]| set.contains(&word.to_ascii_lowercase().as_str());
+        if let [word] = words.as_slice() {
+            if is(word, &["all", "1", "true", "yes", "on"]) {
+                return Self { all: true, names: Vec::new() };
+            }
+            if is(word, &["0", "false", "no", "off", "none"]) {
+                return Self { all: false, names: Vec::new() };
+            }
+        }
+        Self {
+            all: words.iter().any(|word| word.eq_ignore_ascii_case("all")),
+            names: words
+                .iter()
+                .filter(|word| !word.eq_ignore_ascii_case("all"))
+                .map(|word| word.to_string())
+                .collect(),
+        }
+    }
+
+    fn covers(&self, command: &str) -> bool {
+        self.all || self.names.iter().any(|name| name == command)
+    }
+
+    fn unknown<'a>(&'a self, is_command: &'a dyn Fn(&str) -> bool) -> impl Iterator<Item = &'a str> {
+        self.names
+            .iter()
+            .map(String::as_str)
+            .filter(move |name| !BUILT_IN.contains(name) && !is_command(name))
+    }
+}
+
 /// A job to hand to a supervisor.
 pub struct Detach<'a> {
     pub app: &'a str,
@@ -56,6 +154,12 @@ pub struct Detach<'a> {
     /// `program` is turnout's own arguments rather than a command line.
     pub itself: bool,
     pub program: Vec<String>,
+    /// Where the job's result can be seen once it succeeded: the stand a
+    /// deploy went to. The notification leads there.
+    pub link: Option<String>,
+    /// Sent to the background by the preference rather than by `--detach`,
+    /// which the message has to say - nobody typed the flag.
+    pub preferred: bool,
 }
 
 /// Start a job in the background and return once it is running.
@@ -79,6 +183,9 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
     }
     if spec.itself {
         command.arg("--self");
+    }
+    if let Some(link) = &spec.link {
+        command.args(["--link", link]);
     }
     command.arg("--").args(&spec.program);
     // Set on the supervisor, inherited by the job: the same variables a
@@ -121,7 +228,11 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
             return Ok(());
         }
         // The output is what a failure is for; the whole point of watching.
+        // Read from the copy kept aside: it is the one that will still say
+        // this after the next run.
         if let Some(log) = &entry.log {
+            let kept = registry::failed_log(log);
+            let log = if kept.is_file() { &kept } else { log };
             let mut stderr = std::io::stderr().lock();
             for line in tail(log, TAIL_LINES)? {
                 let _ = writeln!(stderr, "{line}");
@@ -133,7 +244,15 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
     }
 
     crate::journal::record("job.detach", Some(spec.app), None, Some(spec.command));
-    println!("{title} runs in the background (pid {})", child.id());
+    if spec.preferred {
+        println!(
+            "{title} runs in the background (pid {}) - {PREFER_ENV} covers '{}'; --foreground keeps it here",
+            child.id(),
+            spec.command
+        );
+    } else {
+        println!("{title} runs in the background (pid {})", child.id());
+    }
     println!("  output: turnout logs {title} -f");
     println!("  stop:   turnout stop {title}");
     Ok(())
@@ -150,25 +269,57 @@ pub struct Supervised {
     pub open: bool,
     pub itself: bool,
     pub program: Vec<String>,
+    pub link: Option<String>,
 }
 
 /// The supervisor: `turnout job-run`, what [`detach`] spawns.
 ///
-/// Exits with the job's exit code - nobody reads it, but a supervisor that
-/// always said 0 would be one more place where a failure goes quiet.
+/// Says how the job went the one way a background job can: a notification
+/// when a server comes up, and one when the job ends by itself - it finished,
+/// it failed, it could not start at all. A job ended by `stop` says nothing:
+/// the supervisor goes down with it, and the person who stopped it knows.
+///
+/// Its own troubles go into the job's log, since it has no stderr anybody
+/// reads. Exits with the job's exit code - nobody reads that either, but a
+/// supervisor that always said 0 would be one more place a failure goes quiet.
 pub fn supervise(spec: Supervised) -> Result<()> {
     let mut job = job::Job::claim(&spec.app, &spec.command, true)?;
+    let log = job.log_path().map(Path::to_path_buf);
     // The door as it is now: a gateway started later is picked up by `ps`,
     // which works the address out again when it shows it.
     let front_door = registry::gateway()?
         .and_then(|gateway| gateway.front_port)
         .map(|front| crate::front::address(&spec.app, front));
-    let ready = spec.ready.then(|| job::Ready {
-        app: &spec.app,
-        door: front_door.clone(),
-        own: spec.own.clone(),
-        patience: crate::commands::exec::ready_patience(),
-        on_ready: spec.open.then(|| crate::commands::exec::opener(front_door.clone())),
+    // Filled by the ready callback, which runs while the job holds the log.
+    let troubles: Arc<Mutex<Vec<String>>> = Arc::default();
+    let was_ready = Arc::new(AtomicBool::new(false));
+    let ready = spec.ready.then(|| {
+        let open = spec.open.then(|| crate::commands::exec::opener(front_door.clone()));
+        let (app, command, dir, log) = (spec.app.clone(), spec.command.clone(), spec.dir.clone(), log.clone());
+        let (troubles, was_ready) = (Arc::clone(&troubles), Arc::clone(&was_ready));
+        let on_ready: job::OnReady = Box::new(move |address, elapsed| {
+            was_ready.store(true, Ordering::SeqCst);
+            if let Some(open) = open {
+                open(address.clone(), elapsed);
+            }
+            let places = notify::Places {
+                log: log.as_deref(),
+                dir: &dir,
+            };
+            if let Err(err) = notify::show(&notify::ready(&app, &command, address.as_deref(), elapsed, &places)) {
+                troubles
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .push(format!("cannot show the notification: {err:#}"));
+            }
+        });
+        job::Ready {
+            app: &spec.app,
+            door: front_door.clone(),
+            own: spec.own.clone(),
+            patience: crate::commands::exec::ready_patience(),
+            on_ready: Some(on_ready),
+        }
     });
     let line = spec.program.join(" ");
     let program = if spec.itself {
@@ -176,8 +327,53 @@ pub fn supervise(spec: Supervised) -> Result<()> {
     } else {
         Program::Shell(&line)
     };
-    let outcome = job::run(program, &spec.dir, &[], Mode::Log, &spec.label, &mut job, ready)?;
-    std::process::exit(outcome.status.code().unwrap_or(1));
+    let result = job::run(program, &spec.dir, &[], Mode::Log, &spec.label, &mut job, ready);
+    for trouble in troubles.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain(..) {
+        job.note(&trouble);
+    }
+    let (toast, code) = match result {
+        Ok(outcome) => {
+            let places = notify::Places {
+                log: outcome.kept.as_deref().or(log.as_deref()),
+                dir: &spec.dir,
+            };
+            let toast = if !outcome.failed() {
+                ended_well(&spec, outcome.elapsed, was_ready.load(Ordering::SeqCst), &places)
+            } else {
+                let how = format!("{} after {}", describe_code(outcome.status.code()), human_duration(outcome.elapsed));
+                notify::failed(&spec.app, &spec.command, &how, notify::reason(&outcome.tail).as_deref(), &places)
+            };
+            (toast, outcome.status.code().unwrap_or(1))
+        }
+        // The job never ran: the reason is turnout's own, and it goes where
+        // the job's output would have been.
+        Err(err) => {
+            job.note(&format!("{err:#}"));
+            let kept = job.keep();
+            let places = notify::Places {
+                log: kept.as_deref().or(log.as_deref()),
+                dir: &spec.dir,
+            };
+            (notify::failed(&spec.app, &spec.command, "did not start", Some(&format!("{err:#}")), &places), 1)
+        }
+    };
+    if let Err(err) = notify::show(&toast) {
+        job.note(&format!("cannot show the notification: {err:#}"));
+    }
+    notify::settle();
+    std::process::exit(code);
+}
+
+/// The notification for a job that ended with exit code 0.
+///
+/// A server that had come up and then ended by itself has *stopped* - the
+/// news is that it no longer answers; anything else has *finished*.
+fn ended_well(spec: &Supervised, elapsed: Duration, was_ready: bool, places: &notify::Places<'_>) -> notify::Toast {
+    if was_ready {
+        notify::stopped(&spec.app, &spec.command, &human_span(elapsed.as_secs()), places)
+    } else {
+        notify::finished(&spec.app, &spec.command, elapsed, spec.link.as_deref(), places)
+    }
 }
 
 /// `turnout ps`.
@@ -220,8 +416,8 @@ fn table() -> Result<String> {
             (None, None)
         };
         let time = match (&entry.ended, status) {
-            (_, Status::Running) => uptime(now.saturating_sub(entry.started)),
-            (Some(ended), _) => format!("{} ago", uptime(now.saturating_sub(ended.at))),
+            (_, Status::Running) => human_span(now.saturating_sub(entry.started)),
+            (Some(ended), _) => format!("{} ago", human_span(now.saturating_sub(ended.at))),
             (None, _) => "-".to_string(),
         };
         let mut state = state_of(entry, status);
@@ -298,16 +494,6 @@ fn port_of(url: &str) -> Option<u16> {
     authority.rsplit_once(':')?.1.parse().ok()
 }
 
-/// A span of seconds the way a person reads it at a glance.
-fn uptime(seconds: u64) -> String {
-    match seconds {
-        0..60 => format!("{seconds}s"),
-        60..3600 => format!("{}m", seconds / 60),
-        3600..86400 => format!("{}h {:02}m", seconds / 3600, seconds % 3600 / 60),
-        _ => format!("{}d {:02}h", seconds / 86400, seconds % 86400 / 3600),
-    }
-}
-
 /// The records a name (and a command) points at.
 ///
 /// `gateway` alone is the gateway, even when an app has that name too - its
@@ -336,8 +522,15 @@ fn select(name: Option<String>, command: Option<String>) -> Result<(String, Vec<
 }
 
 /// `turnout logs`.
-pub fn logs(name: Option<String>, command: Option<String>, follow: bool, lines: Option<usize>) -> Result<()> {
+///
+/// `failed` reads the copy the last failure left aside instead of the latest
+/// run's log - the output a notification about a failure pointed at, still
+/// there after the job ran again.
+pub fn logs(name: Option<String>, command: Option<String>, follow: bool, lines: Option<usize>, failed: bool) -> Result<()> {
     let (what, entries) = select(name, command)?;
+    if failed {
+        return failed_log(&what, &entries, lines);
+    }
     // The running job, when there is one - that is whose output is wanted -
     // otherwise the one that ran last.
     let Some(entry) = entries.into_iter().max_by_key(|entry| (entry.is_running(), entry.started)) else {
@@ -376,6 +569,33 @@ pub fn logs(name: Option<String>, command: Option<String>, follow: bool, lines: 
         }
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// `turnout logs --failed`: the output of the last failure.
+///
+/// Of the jobs a name selects, the one whose failure is the latest - that is
+/// the one somebody who just saw a failure means.
+fn failed_log(what: &str, entries: &[Entry], lines: Option<usize>) -> Result<()> {
+    let latest = entries
+        .iter()
+        .filter_map(|entry| entry.log.as_deref().map(registry::failed_log))
+        .filter_map(|kept| std::fs::metadata(&kept).and_then(|meta| meta.modified()).ok().map(|at| (at, kept)))
+        .max_by_key(|(at, _)| *at);
+    let Some((_, kept)) = latest else {
+        bail!("{what} has no failure on record - a failed run keeps its log in failed/ beside the others");
+    };
+    let mut stdout = std::io::stdout().lock();
+    match lines {
+        Some(count) => {
+            for line in tail(&kept, count)? {
+                writeln!(stdout, "{line}")?;
+            }
+        }
+        None => {
+            copy_from(&kept, 0, &mut stdout)?;
+        }
+    }
+    Ok(())
 }
 
 /// Copy a file from `position` to the end; returns the new position.
@@ -522,13 +742,71 @@ mod tests {
 
     #[test]
     fn a_span_reads_at_a_glance() {
-        assert_eq!(uptime(0), "0s");
-        assert_eq!(uptime(59), "59s");
-        assert_eq!(uptime(60), "1m");
-        assert_eq!(uptime(3599), "59m");
-        assert_eq!(uptime(3600), "1h 00m");
-        assert_eq!(uptime(3600 * 5 + 60 * 7), "5h 07m");
-        assert_eq!(uptime(86400 * 2 + 3600 * 3), "2d 03h");
+        assert_eq!(human_span(0), "0s");
+        assert_eq!(human_span(59), "59s");
+        assert_eq!(human_span(60), "1m");
+        assert_eq!(human_span(3599), "59m");
+        assert_eq!(human_span(3600), "1h 00m");
+        assert_eq!(human_span(3600 * 5 + 60 * 7), "5h 07m");
+        assert_eq!(human_span(86400 * 2 + 3600 * 3), "2d 03h");
+    }
+
+    /// The preference reads the words `TURNOUT_UPDATE_CHECK` reads for all or
+    /// nothing, and command names otherwise - with their case, because npm
+    /// scripts have one.
+    #[test]
+    fn the_preference_reads_all_nothing_or_names() {
+        let names = |value: &str| Preference::parse(value);
+        for all in ["all", "ALL", "1", "true", "yes", "on", " all "] {
+            assert!(names(all).all, "{all}");
+            assert!(names(all).covers("dev") && names(all).covers("storybook"), "{all}");
+        }
+        for none in ["", "  ", "0", "false", "no", "off", "none"] {
+            assert!(!names(none).covers("dev") && !names(none).covers("build"), "{none:?}");
+        }
+        let some = names("build, deploy storybook");
+        assert!(some.covers("build") && some.covers("deploy") && some.covers("storybook"));
+        assert!(!some.covers("dev"));
+        assert!(!names("Build").covers("build"), "names keep their case");
+        // `all` among names is still all.
+        assert!(names("dev,all").covers("lint"));
+    }
+
+    /// A name no app has is reported, so a typo does not silently match
+    /// nothing; the built-in commands are always known.
+    #[test]
+    fn a_misspelt_preference_is_reported() {
+        let preference = Preference::parse("biuld,deploy,storybook,dev");
+        let has = |name: &str| name == "storybook";
+        assert_eq!(preference.unknown(&has).collect::<Vec<_>>(), ["biuld"]);
+    }
+
+    /// `--detach` and `--foreground` decide; the preference only fills in on
+    /// a quiet console, never in front of a pipe or `-v`.
+    ///
+    /// Reads the environment, so the preference itself is not set here: the
+    /// integration suite exercises it in a child process.
+    #[test]
+    fn the_flags_decide_before_the_preference() {
+        use crate::cli::Console;
+        let any = |_: &str| false;
+        let detach = Console {
+            detach: true,
+            ..Console::default()
+        };
+        let foreground = Console {
+            foreground: true,
+            ..Console::default()
+        };
+        let verbose = Console {
+            verbose: true,
+            ..Console::default()
+        };
+        assert_eq!(placement("build", detach, Mode::Stream, &any), Placement::Asked);
+        assert_eq!(placement("build", foreground, Mode::Quiet, &any), Placement::Here);
+        // Forced quiet (`TURNOUT_CONSOLE`) still yields to `-v`.
+        assert_eq!(placement("build", verbose, Mode::Quiet, &any), Placement::Here);
+        assert_eq!(placement("build", Console::default(), Mode::Stream, &any), Placement::Here);
     }
 
     #[test]

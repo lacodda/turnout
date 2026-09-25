@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 /// Point local apps at any backend stand, keep servers and secrets at hand,
 /// build and deploy - from any directory.
@@ -9,6 +9,26 @@ use clap::{Parser, Subcommand};
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
+}
+
+/// Where a job's output goes: the flags every job-running command shares.
+///
+/// One definition flattened into `dev`, `build`, `test`, `lint`, `run` and
+/// `deploy`, so the six cannot drift apart - and so clap builds these
+/// arguments in a function of their own. The derive builds every subcommand's
+/// arguments in one function, and in a debug build each argument keeps its
+/// own slot of that function's stack frame.
+#[derive(Args, Clone, Copy, Default)]
+pub struct Console {
+    /// Stream the output in full instead of a loader
+    #[arg(short, long)]
+    pub verbose: bool,
+    /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
+    #[arg(short, long, conflicts_with = "verbose")]
+    pub detach: bool,
+    /// Stay in this terminal even when TURNOUT_DETACH sends the command to the background
+    #[arg(long, conflicts_with = "detach")]
+    pub foreground: bool,
 }
 
 #[derive(Subcommand)]
@@ -80,12 +100,8 @@ pub enum Command {
     /// Run the app's `dev` command (app resolved from the current directory if omitted)
     Dev {
         app: Option<String>,
-        /// Stream the server's output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
         /// Open the app's front door in the browser once the server is up
         #[arg(short, long)]
         open: bool,
@@ -95,43 +111,27 @@ pub enum Command {
     /// Run the app's `build` command
     Build {
         app: Option<String>,
-        /// Stream the build's output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
     },
     /// Run the app's `test` command
     Test {
         app: Option<String>,
-        /// Stream the test output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
     },
     /// Run the app's `lint` command
     Lint {
         app: Option<String>,
-        /// Stream the linter's output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
     },
     /// Run any named command from the app config
     Run {
         command: String,
         app: Option<String>,
-        /// Stream the command's output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Run in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
         /// Open the app's front door in the browser once the command reports a server
         #[arg(short, long)]
         open: bool,
@@ -154,6 +154,9 @@ pub enum Command {
         /// Only the last N lines
         #[arg(short = 'n', long, value_name = "N")]
         lines: Option<usize>,
+        /// The output of the last failure, kept even after the job ran again
+        #[arg(long, conflicts_with = "follow")]
+        failed: bool,
     },
     /// Stop a job: every running job of an app, one command of it, or the gateway
     Stop {
@@ -185,6 +188,9 @@ pub enum Command {
         /// The program is turnout itself, with these arguments
         #[arg(long = "self")]
         itself: bool,
+        /// Where the notification of a success leads (a deploy's stand)
+        #[arg(long)]
+        link: Option<String>,
         /// The command line, or turnout's arguments with `--self`
         #[arg(last = true, required = true, num_args = 1..)]
         program: Vec<String>,
@@ -245,12 +251,8 @@ pub enum Command {
         /// Upload file by file instead of packing the artifacts into one archive
         #[arg(short = 'A', long)]
         no_archive: bool,
-        /// Stream the build's output in full instead of a loader
-        #[arg(short, long)]
-        verbose: bool,
-        /// Deploy in the background and return at once; see `turnout ps`, `logs`, `stop`
-        #[arg(short, long, conflicts_with = "verbose")]
-        detach: bool,
+        #[command(flatten)]
+        console: Console,
     },
     /// Back up a target's deploy directory on the server
     Backup {

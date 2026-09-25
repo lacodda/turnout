@@ -215,6 +215,17 @@ pub fn log_path(key: &str) -> Result<PathBuf> {
     Ok(logs_dir()?.join(format!("{key}.log")))
 }
 
+/// Where the copy of a failed run's log is kept: `failed/` beside the log.
+///
+/// A directory rather than a suffix: command names may hold dots, and
+/// `myapp.build.failed.log` is also the log of a command called
+/// `build.failed`. Beside the log rather than under [`logs_dir`], so a log
+/// written before `TURNOUT_LOG_DIR` changed keeps its failure next to it.
+pub fn failed_log(log: &Path) -> PathBuf {
+    let name = log.file_name().map(std::ffi::OsStr::to_os_string).unwrap_or_default();
+    log.parent().unwrap_or(Path::new("")).join("failed").join(name)
+}
+
 fn record_path(dir: &Path, key: &str) -> PathBuf {
     dir.join(format!("{key}.json"))
 }

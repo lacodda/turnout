@@ -2,7 +2,7 @@
 name = "turnout"
 version = "0.20.0"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory"
 license = "MIT"
 repository = "https://github.com/lacodda/turnout"
@@ -29,10 +29,18 @@ exclude = [
 winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
+# Toasts go through WinRT directly: only a toast of our own XML can carry
+# protocol activation, which opens the log or the page after turnout exited.
+# The same crate russh's pageant already builds.
+windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# Desktop notifications on Linux (D-Bus) and macOS.
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4.18"
 
 [dependencies]
 anyhow = "1"

@@ -60,8 +60,7 @@ pub struct Flags {
     pub backup: bool,
     pub clear: bool,
     pub no_archive: bool,
-    pub verbose: bool,
-    pub detach: bool,
+    pub console: crate::cli::Console,
 }
 
 pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Flags) -> Result<()> {
@@ -70,9 +69,9 @@ pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Fla
         backup,
         clear,
         no_archive,
-        verbose,
-        detach,
+        console: flags_given,
     } = flags;
+    let verbose = flags_given.verbose;
     let target = remote::resolve(target_name, overrides)?;
     let (app, server) = (&target.app, &target.server);
     let Some(dist) = &app.dist_dir else {
@@ -80,8 +79,13 @@ pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Fla
     };
 
     let project = crate::utils::project_dir(Path::new(&app.path))?;
-    if detach {
-        return in_background(&target, &project, &flags_for(no_build, backup, clear, no_archive));
+    let console = job::Mode::resolve(job::Mode::Quiet, verbose);
+    let apps = store::load_apps()?;
+    let is_command = |name: &str| apps.iter().any(|app| app.commands.contains_key(name));
+    let placement = crate::commands::jobs::placement("deploy", flags_given, console, &is_command);
+    if placement.detached() {
+        let preferred = placement == crate::commands::jobs::Placement::Preferred;
+        return in_background(&target, &project, &flags_for(no_build, backup, clear, no_archive), preferred);
     }
     if !no_build && let Some(build) = app.commands.get("build") {
         eprintln!("[{}] {build}", app.name);
@@ -89,13 +93,12 @@ pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Fla
         // time, the output only when it fails. A deploy already renders a
         // checklist below this, and a build tool's own scrollback between the
         // two made the whole command look like two unrelated programs.
-        let mode = job::Mode::resolve(job::Mode::Quiet, verbose);
         let mut job = job::Job::claim(&app.name, "build", false)?;
         let outcome = job::run(
             job::Program::Shell(build),
             &project,
             &[],
-            mode,
+            console,
             &format!("Building {}", app.name),
             &mut job,
             None,
@@ -154,7 +157,10 @@ pub fn run(target_name: Option<String>, overrides: remote::Overrides, flags: Fla
 /// its name; anything else as the app plus every field spelled out, so the
 /// supervisor's deploy resolves to exactly this tuple and not to whatever the
 /// binding says by the time it runs.
-fn in_background(target: &Resolved, project: &Path, flags: &[&str]) -> Result<()> {
+///
+/// The stand's address travels too: a deploy that went out says so with a
+/// notification that opens the stand.
+fn in_background(target: &Resolved, project: &Path, flags: &[&str], preferred: bool) -> Result<()> {
     let app = &target.app;
     let mut args = vec!["deploy".to_string()];
     match &target.target {
@@ -191,6 +197,8 @@ fn in_background(target: &Resolved, project: &Path, flags: &[&str]) -> Result<()
         open: false,
         itself: true,
         program: args,
+        link: Some(target.server.url.clone()),
+        preferred,
     })
 }
 

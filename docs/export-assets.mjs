@@ -74,6 +74,10 @@ console.log("wrote icon.ico");
 await png(S, 32, path.join(ASSETS, "favicon-32.png"));
 await png(levelFor(180), 180, path.join(ASSETS, "apple-touch-icon.png"));
 await png(levelFor(512), 512, path.join(ASSETS, "logo-512.png"));
+// The notification icon is drawn at 16 DIP in a toast's header, so it takes
+// the level of that size, not of its pixels: 64px only covers display
+// scaling up to 400%. Compiled into the binary (src/notify.rs).
+await png(levelFor(16), 64, path.join(ASSETS, "toast-icon.png"));
 console.log("wrote pngs");
 
 // GitHub social preview: 1280x640. Two adjustments to the banner: its plate
