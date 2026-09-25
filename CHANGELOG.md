@@ -7,6 +7,22 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.21.0] - 2026-09-25
+
+### Bug Fixes
+- Build the toast XML only for Windows and the tests
+
+### Build
+- Give the Windows main thread the 8 MiB stack other platforms have
+- Keep the changelog's own commit out and space its releases
+
+### Documentation
+- Add the 404 page and i18n collection the build warned about
+- Describe notifications, kept failures and the background default
+
+### Features
+- Notify when a background job is done, keep failed logs
+
 ## [0.20.0] - 2026-09-23
 
 ### Documentation
@@ -14,6 +30,7 @@ and nothing is missing - the number is simply unused.
 
 ### Features
 - Run jobs in the background and keep a registry of them
+
 ## [0.19.0] - 2026-09-21
 
 ### Bug Fixes
@@ -22,10 +39,10 @@ and nothing is missing - the number is simply unused.
 ### Documentation
 - Replace the status checklist with what ships today
 - Describe the quiet console and what it keeps
-- V0.19.0
 
 ### Features
 - Hide a job's output behind a loader and keep it in a log
+
 ## [0.18.0] - 2026-09-16
 
 ### Documentation
@@ -34,6 +51,7 @@ and nothing is missing - the number is simply unused.
 ### Features
 - Hand out the gateway port instead of asking for it
 - Lead with the front door and call the port a spare
+
 ## [0.17.0] - 2026-09-09
 
 ### Documentation
@@ -42,6 +60,7 @@ and nothing is missing - the number is simply unused.
 
 ### Features
 - Walk every field of an app in one form
+
 ## [0.16.1] - 2026-09-08
 
 ### Bug Fixes
@@ -49,18 +68,22 @@ and nothing is missing - the number is simply unused.
 
 ### Features
 - Vue and react demos that show the gateway at work
+
 ## [0.16.0] - 2026-09-08
 
 ### Features
 - A hand on the server with ssh and exec
+
 ## [0.15.0] - 2026-09-08
 
 ### Features
 - One address per app behind a front door
+
 ## [0.14.0] - 2026-09-08
 
 ### Features
 - Hand the app the gateway address instead of the port
+
 ## [0.13.1] - 2026-09-07
 
 ### Bug Fixes
@@ -68,6 +91,7 @@ and nothing is missing - the number is simply unused.
 - Build the icon from the level that reads at each size
 - Keep the user PATH type on Windows
 - Refuse to signal a pid that cannot be a process
+
 ## [0.13.0] - 2026-09-02
 
 ### Bug Fixes
@@ -76,14 +100,17 @@ and nothing is missing - the number is simply unused.
 
 ### Features
 - Sign in with a key held by the SSH agent
+
 ## [0.12.1] - 2026-08-31
 
 ### Bug Fixes
 - Keep both names working when the update runs as tn
+
 ## [0.12.0] - 2026-08-31
 
 ### Features
 - Set up SSH key access with one command
+
 ## [0.11.0] - 2026-08-30
 
 ### Breaking Changes
@@ -105,6 +132,7 @@ same generator the interactive prompt uses. ADR 0013.
 
 ### Features
 - Address a deploy by a named target instead of a field on the server
+
 ## [0.10.4] - 2026-08-27
 
 ### Bug Fixes
@@ -112,19 +140,19 @@ same generator the interactive prompt uses. ADR 0013.
 
 ### Testing
 - Assert each platform's paths on that platform
+
 ## [0.10.3] - 2026-08-19
 
 ### Bug Fixes
 - Point Windows shells at the PowerShell installer
-## [0.10.2] - 2026-08-19
 
-### Documentation
-- Include the flake fix in 0.10.2
+## [0.10.2] - 2026-08-19
 
 ### Testing
 - Cover the transport against an in-process russh server
 - Pin the v0.10.1 fixes the patch shipped without
 - Retry ETXTBSY when running the freshly copied binary
+
 ## [0.10.1] - 2026-08-15
 
 ### Bug Fixes
@@ -135,6 +163,7 @@ same generator the interactive prompt uses. ADR 0013.
 
 ### Refactoring
 - Dedupe the shared helpers grown apart since v0.9
+
 ## [0.10.0] - 2026-08-14
 
 ### Breaking Changes
@@ -148,10 +177,12 @@ set explicitly (`turnout credential edit NAME --key PATH`). See ADR 0011.
 
 ### Features
 - Move the SSH transport to russh, unify TLS on rustls
+
 ## [0.9.1] - 2026-08-14
 
 ### Bug Fixes
 - Clear the way out of a data directory this build refuses
+
 ## [0.9.0] - 2026-08-14
 
 ### Breaking Changes
@@ -167,6 +198,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 
 ### Features
 - Split servers into servers, credentials and paths
+
 ## [0.8.0] - 2026-08-13
 
 ### Bug Fixes
@@ -177,6 +209,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 
 ### Testing
 - Hold port reservations until handoff
+
 ## [0.7.1] - 2026-08-13
 
 ### Documentation
@@ -184,6 +217,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 
 ### Features
 - Render progress as a clack-style checklist
+
 ## [0.7.0] - 2026-08-12
 
 ### Documentation
@@ -191,6 +225,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 
 ### Features
 - Speak the server's own shell dialect
+
 ## [0.5.0] - 2026-08-11
 
 ### Bug Fixes
@@ -206,10 +241,12 @@ originals are untouched. Exports move to format 2 for the same reason.
 - Export and import a setup between machines
 - Send the artifacts as one archive
 - Migrate the data directory when the schema changes
+
 ## [0.4.1] - 2026-08-11
 
 ### Bug Fixes
 - Resolve the release tag without the GitHub API
+
 ## [0.4.0] - 2026-08-11
 
 ### Bug Fixes
@@ -233,6 +270,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 ### Testing
 - Add a demo app to deploy against a real server
 - Hold the port instead of rebinding its number
+
 ## [0.3.0] - 2026-08-09
 
 ### Bug Fixes
@@ -250,6 +288,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 - Take commands from package.json scripts
 - Add a setup wizard for deploy configuration
 - Record actions to journal.jsonl
+
 ## [0.2.2] - 2026-08-06
 
 ### Bug Fixes
@@ -266,6 +305,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 
 ### Testing
 - Cover drive-letter canonicalization and busy gateway port
+
 ## [0.2.0] - 2026-08-06
 
 ### Documentation
@@ -277,6 +317,7 @@ originals are untouched. Exports move to format 2 for the same reason.
 - Back up and restore the deploy directory on the server
 - App groups switch a whole contour with one use
 - One-line installers and the turnout-cli npm wrapper
+
 ## [0.1.0] - 2026-08-06
 
 ### Bug Fixes
@@ -301,3 +342,4 @@ originals are untouched. Exports move to format 2 for the same reason.
 - Run app commands from any directory
 - Deploy apps over SSH/SFTP with per-app server targets
 - Add shell completion scripts for five shells
+
