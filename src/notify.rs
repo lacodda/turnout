@@ -323,7 +323,9 @@ fn icon() -> Option<std::path::PathBuf> {
 /// The toast as Windows reads it: ToastGeneric XML with protocol activation.
 ///
 /// Built as text rather than through the DOM because it is small and fixed,
-/// and so it can be checked on every platform the tests run on.
+/// and so it can be checked on every platform the tests run on - which is
+/// why it is compiled for tests everywhere, and for the product on Windows.
+#[cfg(any(windows, test))]
 fn windows_xml(toast: &Toast) -> String {
     let mut xml = String::from("<toast");
     if let Some(open) = &toast.open {
@@ -356,6 +358,7 @@ fn windows_xml(toast: &Toast) -> String {
     xml
 }
 
+#[cfg(any(windows, test))]
 fn escape_xml(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
