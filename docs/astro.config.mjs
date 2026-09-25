@@ -9,6 +9,9 @@ export default defineConfig({
 	integrations: [
 		starlight({
 			title: 'turnout',
+			// The 404 page is a content page (src/content/docs/404.md): Starlight's own
+			// route looks for that entry and warns on every build when it is missing.
+			disable404Route: true,
 			description: "A developer's switchyard: point local apps at any backend stand, keep servers and secrets at hand, build and deploy from any directory.",
 			logo: {
 				src: './src/assets/logo.svg',
