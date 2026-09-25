@@ -7,11 +7,11 @@ sidebar:
 ---
 
 ```bash
-turnout dev   [APP] [-v | -d] [-o]
-turnout build [APP] [-v | -d]
-turnout test  [APP] [-v | -d]
-turnout lint  [APP] [-v | -d]
-turnout run COMMAND [APP] [-v | -d] [-o]
+turnout dev   [APP] [-v | -d | --foreground] [-o]
+turnout build [APP] [-v | -d | --foreground]
+turnout test  [APP] [-v | -d | --foreground]
+turnout lint  [APP] [-v | -d | --foreground]
+turnout run COMMAND [APP] [-v | -d | --foreground] [-o]
 ```
 
 Runs the app's named command in its project directory - no `cd` required. `dev`, `build`, `test` and `lint` are shortcuts for the standard commands; `run` executes any command defined in the app config (see [`turnout app`](/turnout/reference/app/)).
@@ -22,6 +22,7 @@ Runs the app's named command in its project directory - no `cd` required. `dev`,
 | --- | --- |
 | `-v, --verbose` | Stream the command's output in full instead of hiding it behind a loader |
 | `-d, --detach` | Run in the background and give the terminal back at once - see [In the background](#in-the-background) |
+| `--foreground` | Stay in this terminal even when `TURNOUT_DETACH` sends the command to the background |
 | `-o, --open` | Open the app's front door in the browser once the server is up (`dev` and `run`) |
 
 ## How it behaves
@@ -47,7 +48,9 @@ turnout dev myapp --detach
 #   stop:   turnout stop myapp dev
 ```
 
-It watches for most of a second first, so a command that fails at once - a typo, a missing `node_modules` - comes back with its output and its exit code instead of a "runs in the background". `--open` still opens the page once the server is up. What runs is in [`turnout ps`](/turnout/reference/ps/), its output in [`turnout logs`](/turnout/reference/logs/), and [`turnout stop`](/turnout/reference/stop/) ends it with everything it started. `-d` and `-v` do not go together: a background job has no console to stream to - `logs -f` is its stream.
+It watches for most of a second first, so a command that fails at once - a typo, a missing `node_modules` - comes back with its output and its exit code instead of a "runs in the background". `--open` still opens the page once the server is up, and a [notification](/turnout/concepts/notifications/) says so too - or says the build finished, or failed and why.
+
+To make the background the default for some commands, name them in `TURNOUT_DETACH` (`build,test`, or `all`); `--foreground` keeps a single run here. See [always in the background](/turnout/concepts/background-jobs/#always-in-the-background). What runs is in [`turnout ps`](/turnout/reference/ps/), its output in [`turnout logs`](/turnout/reference/logs/), and [`turnout stop`](/turnout/reference/stop/) ends it with everything it started. `-d` and `-v` do not go together: a background job has no console to stream to - `logs -f` is its stream.
 
 ## Opening the page
 

@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout logs [APP] [COMMAND] [-f] [-n N]
+turnout logs [APP] [COMMAND] [-f | --failed] [-n N]
 turnout logs gateway [-f]
 ```
 
@@ -18,6 +18,7 @@ Prints the output a [job](/turnout/concepts/background-jobs/) wrote to its log f
 | --- | --- |
 | `-f, --follow` | Keep printing as the job writes; return when the job ends |
 | `-n, --lines <N>` | Only the last `N` lines |
+| `--failed` | The output of the last failure instead of the latest run - kept even after the job ran again |
 
 ## Which job
 
@@ -27,6 +28,17 @@ Prints the output a [job](/turnout/concepts/background-jobs/) wrote to its log f
 - **`gateway`** - the gateway's own output: the ports it listens on, the door, a WebSocket to a stand that failed. An app that happens to be called `gateway` is reached by naming its command as well: `turnout logs gateway dev`.
 
 A gateway started with `turnout gateway run` writes to the terminal it runs in and keeps no log; `logs` says so.
+
+## The last failure
+
+A run that fails keeps a copy of its log aside, and the next run does not touch it. `--failed` prints that copy - the output a failure's [notification](/turnout/concepts/notifications/) points at, whether or not the job has been retried since:
+
+```bash
+turnout logs web build --failed         # why the last failed build failed
+turnout logs web --failed -n 20         # the latest failure of any of web's jobs
+```
+
+With only an app named, it is the latest failure among the app's jobs. A job that never failed says so.
 
 ## Following
 

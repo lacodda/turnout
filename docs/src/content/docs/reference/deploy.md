@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [-v | -d]
+turnout deploy [TARGET] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [-v | -d | --foreground]
 ```
 
 Builds the app, uploads the artifacts to the target directory over SFTP and optionally restarts the service - one command, using the same apps, servers, credentials and paths as everything else.
@@ -24,6 +24,7 @@ Builds the app, uploads the artifacts to the target directory over SFTP and opti
 | `-A, --no-archive` | Upload file by file instead of packing the artifacts into one archive |
 | `-v, --verbose` | Stream the build's output in full instead of hiding it behind a loader |
 | `-d, --detach` | Deploy in the background and give the terminal back at once - see [In the background](#in-the-background) |
+| `--foreground` | Stay in this terminal even when `TURNOUT_DETACH` covers `deploy` |
 
 ## What happens
 
@@ -138,4 +139,6 @@ turnout ps                  # web deploy  running (bg)
 turnout logs web deploy -f  # the checklist, one plain line per step
 ```
 
-A background deploy has nobody to type a password to: give the credential a stored secret, a key or the SSH agent first. How it ended is in `ps` (`done`, or `failed (exit 1)`) and the reason in `logs`.
+A background deploy has nobody to type a password to: give the credential a stored secret, a key or the SSH agent first. When it ends, a [notification](/turnout/concepts/notifications/) says so: `web deployed`, and a click opens the stand - or `web deploy failed`, with the reason, and a click opens the log. How it ended is in `ps` too (`done`, or `failed (exit 1)`), and a failure's output in `turnout logs web deploy --failed`.
+
+`TURNOUT_DETACH=deploy` sends every deploy to the background without `-d`; `--foreground` keeps one here.

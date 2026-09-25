@@ -21,3 +21,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0015](0015-the-wizard-is-a-list-of-fields.md) | The app wizard is a list of fields, not a run of prompts | accepted |
 | [0016](0016-turnout-assigns-the-gateway-port.md) | turnout assigns the gateway port, and assigns it early | accepted |
 | [0017](0017-jobs-are-captured-not-passed-through.md) | A job's output is captured, not passed through | accepted |
+| [0018](0018-a-registry-of-jobs.md) | A registry of jobs, one file per job, known by pid and birth | accepted |
+| [0019](0019-a-background-job-reports-once.md) | A background job reports once, keeps its failure, and can be the default | accepted |

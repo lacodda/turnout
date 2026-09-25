@@ -58,7 +58,7 @@ logs/myapp.dev.log
 logs/myapp.test%3Ae2e.log
 ```
 
-The next run of the same command replaces the file rather than growing it - the question a log answers is "what did the last one say". A command name that is not a file name (`test:e2e`) is escaped rather than squashed, so `test-e2e` keeps a file of its own. [`turnout logs`](/turnout/reference/logs/) prints them, `-f` follows one as it grows.
+The next run of the same command replaces the file rather than growing it - the question a log answers is "what did the last one say". A run that failed leaves a copy in `logs/failed/` first, so the output of a failure outlives the retry that followed it - see [a failure is kept](/turnout/concepts/background-jobs/#a-failure-is-kept). A command name that is not a file name (`test:e2e`) is escaped rather than squashed, so `test-e2e` keeps a file of its own. [`turnout logs`](/turnout/reference/logs/) prints them, `-f` follows one as it grows.
 
 A job started with `--detach` has no console at all: its log is all of its output. See [background jobs](/turnout/concepts/background-jobs/).
 

@@ -76,7 +76,7 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
 	</Card>
 	<Card title="Jobs in the background" icon="list-format">
-		`turnout dev --detach` gives the terminal back and the server keeps running. `turnout ps` shows everything turnout runs - dev servers, builds, deploys, the gateway - with ports, addresses and uptime; `logs -f` follows any of them, and `stop` takes a job down with every process it started.
+		`turnout dev --detach` gives the terminal back and the server keeps running. `turnout ps` shows everything turnout runs - dev servers, builds, deploys, the gateway - with ports, addresses and uptime; `logs -f` follows any of them, and `stop` takes a job down with every process it started. When a job is done, a desktop notification says so and opens the page, the stand or the log; `TURNOUT_DETACH` makes the background the default.
 	</Card>
 	<Card title="A quiet console" icon="seti:powershell">
 		A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it is up and speaks again only when something breaks. A failure prints its output on the spot, every job's output is kept in a log file, and `-v` still gives you everything.

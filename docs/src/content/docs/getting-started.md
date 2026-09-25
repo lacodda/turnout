@@ -43,7 +43,7 @@ Both scripts read two environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `TURNOUT_VERSION` | Install this tag (e.g. `v0.20.0`) instead of the newest release |
+| `TURNOUT_VERSION` | Install this tag (e.g. `v0.21.0`) instead of the newest release |
 | `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
 
 ### The `tn` alias
