@@ -7,6 +7,14 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.22.0] - 2026-10-04
+
+### Documentation
+- Describe status, the prompt line, JSON output, gateway signals and cookies
+
+### Features
+- Status in sections and a prompt line, --json, use -, gateway signals, cookie set
+
 ## [0.21.0] - 2026-09-25
 
 ### Bug Fixes
