@@ -1,15 +1,17 @@
 use anyhow::{Result, bail};
 use dialoguer::{Input, MultiSelect};
 
-use crate::cli::GroupCommand;
+use serde::Serialize;
+
+use crate::cli::{Format, GroupCommand};
 use crate::model::{Group, validate_name};
-use crate::{pick, store};
+use crate::{output, pick, store};
 
 pub fn run(command: GroupCommand) -> Result<()> {
     match command {
         GroupCommand::Add { name, apps } => add(name, apps),
-        GroupCommand::List => list(),
-        GroupCommand::Show { name } => show(&resolve(name, "Show group")?),
+        GroupCommand::List { format } => list(format),
+        GroupCommand::Show { name, format } => show(&resolve(name, "Show group")?, format),
         GroupCommand::Edit { name, add_apps, rm_apps } => {
             let name = resolve(name, "Edit group")?;
             edit(&name, add_apps, rm_apps)
@@ -82,31 +84,68 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let groups = store::load_groups()?;
-    if groups.is_empty() {
-        println!("No groups yet - run `turnout group add`.");
-        return Ok(());
-    }
-    let width = groups.iter().map(|g| g.name.len()).max().unwrap_or(0);
-    for group in groups {
-        println!("{:width$}  {}", group.name, group.apps.join(", "));
-    }
-    Ok(())
+/// A group as `group list`, `group show` and `status` report it.
+#[derive(Serialize)]
+pub struct GroupView {
+    pub name: String,
+    pub apps: Vec<Member>,
 }
 
-fn show(name: &str) -> Result<()> {
-    let groups = store::load_groups()?;
-    let group = groups.iter().find(|g| g.name == name).ok_or_else(|| unknown_group(name))?;
+/// One app of a group, and where it points.
+#[derive(Serialize)]
+pub struct Member {
+    pub app: String,
+    pub server: Option<String>,
+}
+
+/// Every group as a view, in catalog order.
+pub fn views() -> Result<Vec<GroupView>> {
     let state = store::load_state()?;
-    println!("{}", group.name);
-    for app in &group.apps {
-        match state.bindings.get(app) {
-            Some(server) => println!("  {app} -> {server}"),
-            None => println!("  {app} (not bound)"),
+    Ok(store::load_groups()?
+        .into_iter()
+        .map(|group| GroupView {
+            apps: group
+                .apps
+                .into_iter()
+                .map(|app| Member {
+                    server: state.bindings.get(&app).cloned(),
+                    app,
+                })
+                .collect(),
+            name: group.name,
+        })
+        .collect())
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |groups| {
+        if groups.is_empty() {
+            return "No groups yet - run `turnout group add`.".to_string();
         }
-    }
-    Ok(())
+        let width = groups.iter().map(|g| g.name.len()).max().unwrap_or(0);
+        let lines: Vec<String> = groups
+            .iter()
+            .map(|group| {
+                let apps: Vec<&str> = group.apps.iter().map(|member| member.app.as_str()).collect();
+                format!("{:width$}  {}", group.name, apps.join(", "))
+            })
+            .collect();
+        lines.join("\n")
+    })
+}
+
+fn show(name: &str, format: Format) -> Result<()> {
+    let group = views()?.into_iter().find(|g| g.name == name).ok_or_else(|| unknown_group(name))?;
+    output::emit(format, &group, |group| {
+        let mut lines = vec![group.name.clone()];
+        for member in &group.apps {
+            lines.push(match &member.server {
+                Some(server) => format!("  {} -> {server}", member.app),
+                None => format!("  {} (not bound)", member.app),
+            });
+        }
+        lines.join("\n")
+    })
 }
 
 fn edit(name: &str, add_apps: Vec<String>, rm_apps: Vec<String>) -> Result<()> {
@@ -146,6 +185,9 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     }
     groups.retain(|g| g.name != name);
     store::save_groups(&groups)?;
+    let mut state = store::load_state()?;
+    state.forget_name(name);
+    store::save_state(&state)?;
     crate::journal::record("group.remove", None, None, Some(name));
     println!("Group '{name}' removed. Its apps are untouched.");
     Ok(())

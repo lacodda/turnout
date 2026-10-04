@@ -1,9 +1,11 @@
 use anyhow::{Result, bail};
 use dialoguer::{Confirm, Input};
 
-use crate::cli::ServerCommand;
+use serde::Serialize;
+
+use crate::cli::{Format, ServerCommand};
 use crate::model::{Server, parse_host, validate_name, validate_url};
-use crate::{pick, store};
+use crate::{output, pick, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
     match command {
@@ -15,8 +17,8 @@ pub fn run(command: ServerCommand) -> Result<()> {
             credential,
             insecure,
         } => add(name, url, label, host, credential, insecure),
-        ServerCommand::List => list(),
-        ServerCommand::Show { name } => show(&resolve(name, "Show server")?),
+        ServerCommand::List { format } => list(format),
+        ServerCommand::Show { name, format } => show(&resolve(name, "Show server")?, format),
         ServerCommand::Edit {
             name,
             url,
@@ -157,68 +159,146 @@ fn add(name: Option<String>, url: Option<String>, label: Option<String>, host: O
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let servers = store::load_servers()?;
-    if servers.is_empty() {
-        println!("No servers yet - run `turnout server add`.");
-        return Ok(());
-    }
-    let width = servers.iter().map(|s| s.name.len()).max().unwrap_or(0);
-    for server in servers {
-        let label = server.label.as_ref().map(|l| format!("  ({l})")).unwrap_or_default();
-        println!("{:width$}  {}{}", server.name, server.url, label);
-    }
-    Ok(())
+/// A server as `server list` and `server show` report it.
+#[derive(Serialize)]
+pub struct ServerView {
+    pub name: String,
+    pub label: Option<String>,
+    pub url: String,
+    /// Where SSH connects, and whether the host is the URL's own.
+    pub ssh_host: String,
+    pub ssh_port: u16,
+    pub ssh_host_from_url: bool,
+    pub credential: Option<String>,
+    /// Self-signed and otherwise invalid certificates are accepted here.
+    pub accept_invalid_certs: bool,
+    /// The deploy targets that land on this server.
+    pub targets: Vec<Landing>,
+    /// Apps whose allow-list names this server.
+    pub allowed_for: Vec<String>,
+    /// Apps bound to this server right now.
+    pub bound: Vec<String>,
 }
 
-fn show(name: &str) -> Result<()> {
-    let servers = store::load_servers()?;
-    let server = servers.iter().find(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
-    println!("{}", server.name);
-    if let Some(label) = &server.label {
-        println!("  Label:      {label}");
-    }
-    println!("  URL:        {}", server.url);
-    // Say when the host is inherited: it is the difference between "nothing is
-    // configured" and "it is the same name as the URL".
-    match &server.host {
-        Some(host) => println!("  SSH:        {host}:{}", server.port),
-        None => println!("  SSH:        {}:{} (from the URL)", server.ssh_host(), server.port),
-    }
-    match &server.credential {
-        Some(credential) => println!("  Credential: {credential}"),
-        None => println!("  Credential: none - set one with `turnout server edit {name} --credential NAME`"),
-    }
-    println!(
-        "  TLS:        {}",
-        if server.accept_invalid_certs {
-            "accept invalid certificates"
-        } else {
-            "verify certificates"
-        }
-    );
-    // Which deploy targets land here. The server used to own this list; since
-    // v0.11.0 the targets do, and this reads it back the other way round.
+/// A deploy target as seen from the server it lands on.
+#[derive(Serialize)]
+pub struct Landing {
+    pub target: String,
+    pub app: String,
+    pub path: String,
+    /// The directory the path names; `null` when the path is gone from the
+    /// catalog - exactly what a deploy would fail on.
+    pub dir: Option<String>,
+}
+
+/// Every server as a view, in catalog order.
+pub fn views() -> Result<Vec<ServerView>> {
     let targets = store::load_targets()?;
-    let landing: Vec<&crate::model::Target> = targets.iter().filter(|t| t.server == name).collect();
-    if !landing.is_empty() {
-        let paths = store::load_paths()?;
-        println!("  Targets:");
-        for target in landing {
-            match paths.iter().find(|p| p.name == target.path) {
-                Some(path) => println!("    {}: {} → {}", target.name, target.app, path.dir),
-                // A name with nothing behind it is worth showing rather than
-                // hiding: it is exactly what a deploy would fail on.
-                None => println!("    {}: {} → {} (missing from the path catalog)", target.name, target.app, target.path),
+    let paths = store::load_paths()?;
+    let apps = store::load_apps()?;
+    let state = store::load_state()?;
+    Ok(store::load_servers()?
+        .iter()
+        .map(|server| ServerView {
+            name: server.name.clone(),
+            label: server.label.clone(),
+            url: server.url.clone(),
+            ssh_host: server.ssh_host(),
+            ssh_port: server.port,
+            ssh_host_from_url: server.host.is_none(),
+            credential: server.credential.clone(),
+            accept_invalid_certs: server.accept_invalid_certs,
+            // Which deploy targets land here. The server used to own this
+            // list; since v0.11.0 the targets do, and this reads it back the
+            // other way round.
+            targets: targets
+                .iter()
+                .filter(|target| target.server == server.name)
+                .map(|target| Landing {
+                    target: target.name.clone(),
+                    app: target.app.clone(),
+                    path: target.path.clone(),
+                    dir: paths.iter().find(|path| path.name == target.path).map(|path| path.dir.clone()),
+                })
+                .collect(),
+            allowed_for: apps
+                .iter()
+                .filter(|app| app.servers.contains(&server.name))
+                .map(|app| app.name.clone())
+                .collect(),
+            bound: state
+                .bindings
+                .iter()
+                .filter(|(_, bound)| **bound == server.name)
+                .map(|(app, _)| app.clone())
+                .collect(),
+        })
+        .collect())
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |servers| {
+        if servers.is_empty() {
+            return "No servers yet - run `turnout server add`.".to_string();
+        }
+        let width = servers.iter().map(|s| s.name.len()).max().unwrap_or(0);
+        let lines: Vec<String> = servers
+            .iter()
+            .map(|server| {
+                let label = server.label.as_ref().map(|l| format!("  ({l})")).unwrap_or_default();
+                format!("{:width$}  {}{}", server.name, server.url, label)
+            })
+            .collect();
+        lines.join("\n")
+    })
+}
+
+fn show(name: &str, format: Format) -> Result<()> {
+    let server = views()?.into_iter().find(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
+    output::emit(format, &server, |server| {
+        let mut lines = vec![server.name.clone()];
+        if let Some(label) = &server.label {
+            lines.push(format!("  Label:      {label}"));
+        }
+        lines.push(format!("  URL:        {}", server.url));
+        // Say when the host is inherited: it is the difference between
+        // "nothing is configured" and "it is the same name as the URL".
+        lines.push(if server.ssh_host_from_url {
+            format!("  SSH:        {}:{} (from the URL)", server.ssh_host, server.ssh_port)
+        } else {
+            format!("  SSH:        {}:{}", server.ssh_host, server.ssh_port)
+        });
+        lines.push(match &server.credential {
+            Some(credential) => format!("  Credential: {credential}"),
+            None => format!("  Credential: none - set one with `turnout server edit {} --credential NAME`", server.name),
+        });
+        lines.push(format!(
+            "  TLS:        {}",
+            if server.accept_invalid_certs {
+                "accept invalid certificates"
+            } else {
+                "verify certificates"
+            }
+        ));
+        if !server.targets.is_empty() {
+            lines.push("  Targets:".to_string());
+            for landing in &server.targets {
+                lines.push(match &landing.dir {
+                    Some(dir) => format!("    {}: {} → {dir}", landing.target, landing.app),
+                    // A name with nothing behind it is worth showing rather
+                    // than hiding: it is exactly what a deploy would fail on.
+                    None => format!("    {}: {} → {} (missing from the path catalog)", landing.target, landing.app, landing.path),
+                });
             }
         }
-    }
-    let apps = store::load_apps()?;
-    let used_by: Vec<&str> = apps.iter().filter(|a| a.servers.iter().any(|s| s == name)).map(|a| a.name.as_str()).collect();
-    if !used_by.is_empty() {
-        println!("  Used by:    {}", used_by.join(", "));
-    }
-    Ok(())
+        if !server.allowed_for.is_empty() {
+            lines.push(format!("  Used by:    {}", server.allowed_for.join(", ")));
+        }
+        if !server.bound.is_empty() {
+            lines.push(format!("  Bound:      {}", server.bound.join(", ")));
+        }
+        lines.join("\n")
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -342,6 +422,14 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     // Credentials and paths outlive the server on purpose: they are shared, and
     // deleting a login because one of the machines it reached went away would
     // take the others down with it.
+    // An app bound to a server that is gone would make the gateway answer
+    // every request with "gone from the catalog"; unbound, `use` says what to do.
+    let mut state = store::load_state()?;
+    let unbound = state.forget_server(name);
+    store::save_state(&state)?;
+    if !unbound.is_empty() {
+        println!("Unbound: {} - point them elsewhere with `turnout use APP SERVER`.", unbound.join(", "));
+    }
     crate::journal::record("server.remove", None, Some(name), None);
     println!("Server '{name}' removed.");
     Ok(())

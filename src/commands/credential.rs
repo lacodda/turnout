@@ -7,9 +7,11 @@
 use anyhow::{Result, bail};
 use dialoguer::{Input, Select};
 
-use crate::cli::CredentialCommand;
+use serde::Serialize;
+
+use crate::cli::{CredentialCommand, Format};
 use crate::model::{Auth, Credential, validate_name};
-use crate::{pick, secrets, store};
+use crate::{output, pick, secrets, store};
 
 /// The auth kinds the wizards offer, and the labels for them.
 ///
@@ -22,8 +24,8 @@ pub const AUTH_LABELS: [&str; 3] = ["a password", "a private key file", "a key f
 pub fn run(command: CredentialCommand) -> Result<()> {
     match command {
         CredentialCommand::Add { name, user, auth, key } => add(name, user, auth, key),
-        CredentialCommand::List => list(),
-        CredentialCommand::Show { name } => show(&resolve(name, "Show credential")?),
+        CredentialCommand::List { format } => list(format),
+        CredentialCommand::Show { name, format } => show(&resolve(name, "Show credential")?, format),
         CredentialCommand::Edit { name, user, auth, key } => {
             let name = resolve(name, "Edit credential")?;
             edit(&name, user, auth, key)
@@ -119,52 +121,84 @@ fn add(name: Option<String>, user: Option<String>, auth: Option<String>, key: Op
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let credentials = store::load_credentials()?;
-    if credentials.is_empty() {
-        println!("No credentials yet - run `turnout credential add`.");
-        return Ok(());
-    }
-    let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    for credential in credentials {
-        println!("{:width$}  {}@  {}", credential.name, credential.user, credential.auth);
-    }
-    Ok(())
+/// A credential as `credential list`, `credential show` and `pass list`
+/// report it. Whether a secret is stored is useful; the secret never is.
+#[derive(Serialize)]
+pub struct CredentialView {
+    pub name: String,
+    pub user: String,
+    pub auth: Auth,
+    /// The private key file, for `key` credentials.
+    pub key: Option<String>,
+    /// Whether the OS keyring holds a secret under this name.
+    pub secret_stored: bool,
+    /// The servers that log in with it by default.
+    pub used_by: Vec<String>,
 }
 
-fn show(name: &str) -> Result<()> {
-    let credentials = store::load_credentials()?;
-    let credential = credentials.iter().find(|c| c.name == name).ok_or_else(|| unknown(name))?;
-    println!("{}", credential.name);
-    println!("  User:     {}", credential.user);
-    println!("  Auth:     {}", credential.auth);
-    if let Some(key) = &credential.key {
-        println!("  Key:      {key}");
-    }
-    // Whether a secret exists is useful; the secret itself never is.
-    let stored = secrets::get(name).is_ok();
-    println!(
-        "  Secret:   {}",
-        match credential.auth {
-            _ if stored => "stored in the OS keyring",
-            Auth::Key => "none (the key file is unprotected)",
-            // An agent credential has no secret here by design: the passphrase
-            // was given to the agent, not to turnout. Telling the user to run
-            // `pass set` would be advice for a problem they do not have.
-            Auth::Agent => "none (the SSH agent holds the key)",
-            Auth::Password => "none - save one with `turnout pass set`",
-        }
-    );
+/// Every credential as a view, in catalog order.
+pub fn views() -> Result<Vec<CredentialView>> {
     let servers = store::load_servers()?;
-    let used_by: Vec<&str> = servers
-        .iter()
-        .filter(|s| s.credential.as_deref() == Some(name))
-        .map(|s| s.name.as_str())
-        .collect();
-    if !used_by.is_empty() {
-        println!("  Used by:  {}", used_by.join(", "));
-    }
-    Ok(())
+    Ok(store::load_credentials()?
+        .into_iter()
+        .map(|credential| CredentialView {
+            secret_stored: secrets::get(&credential.name).is_ok(),
+            used_by: servers
+                .iter()
+                .filter(|server| server.credential.as_deref() == Some(credential.name.as_str()))
+                .map(|server| server.name.clone())
+                .collect(),
+            name: credential.name,
+            user: credential.user,
+            auth: credential.auth,
+            key: credential.key,
+        })
+        .collect())
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |credentials| {
+        if credentials.is_empty() {
+            return "No credentials yet - run `turnout credential add`.".to_string();
+        }
+        let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
+        let lines: Vec<String> = credentials
+            .iter()
+            .map(|credential| format!("{:width$}  {}@  {}", credential.name, credential.user, credential.auth))
+            .collect();
+        lines.join("\n")
+    })
+}
+
+fn show(name: &str, format: Format) -> Result<()> {
+    let credential = views()?.into_iter().find(|c| c.name == name).ok_or_else(|| unknown(name))?;
+    output::emit(format, &credential, |credential| {
+        let mut lines = vec![
+            credential.name.clone(),
+            format!("  User:     {}", credential.user),
+            format!("  Auth:     {}", credential.auth),
+        ];
+        if let Some(key) = &credential.key {
+            lines.push(format!("  Key:      {key}"));
+        }
+        lines.push(format!(
+            "  Secret:   {}",
+            match credential.auth {
+                _ if credential.secret_stored => "stored in the OS keyring",
+                Auth::Key => "none (the key file is unprotected)",
+                // An agent credential has no secret here by design: the
+                // passphrase was given to the agent, not to turnout. Telling
+                // the user to run `pass set` would be advice for a problem
+                // they do not have.
+                Auth::Agent => "none (the SSH agent holds the key)",
+                Auth::Password => "none - save one with `turnout pass set`",
+            }
+        ));
+        if !credential.used_by.is_empty() {
+            lines.push(format!("  Used by:  {}", credential.used_by.join(", ")));
+        }
+        lines.join("\n")
+    })
 }
 
 fn edit(name: &str, user: Option<String>, auth: Option<String>, key: Option<String>) -> Result<()> {

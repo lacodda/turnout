@@ -2,16 +2,19 @@ mod agent;
 mod alias;
 mod cli;
 mod commands;
+mod control;
 mod detect;
 mod envfile;
 mod front;
 mod gateway;
+mod health;
 mod job;
 mod journal;
 mod keysetup;
 mod migrate;
 mod model;
 mod notify;
+mod output;
 mod paths;
 mod pick;
 mod portable;
@@ -21,8 +24,10 @@ mod registry;
 mod remote;
 mod secrets;
 mod shell;
+mod signal;
 mod ssh;
 mod store;
+mod style;
 mod term;
 mod update;
 mod utils;
@@ -39,14 +44,20 @@ fn main() {
     commands::self_update::sweep_backup();
     // The background refresh must not spawn another one: it *is* the check.
     // `self-update` is excluded too - it has just said its piece about
-    // versions, and the cached notice would contradict what it did.
+    // versions, and the cached notice would contradict what it did. And a
+    // prompt runs `status --short` before every line it draws: that is no
+    // place for news, nor for a lookup.
     let announces = !matches!(
         cli.command,
-        cli::Command::CheckUpdate | cli::Command::Complete { .. } | cli::Command::SelfUpdate { .. } | cli::Command::JobRun { .. }
+        cli::Command::CheckUpdate
+            | cli::Command::Complete { .. }
+            | cli::Command::SelfUpdate { .. }
+            | cli::Command::JobRun { .. }
+            | cli::Command::Status { short: true, .. }
     );
     let result = match cli.command {
         cli::Command::Setup { assume_yes } => commands::setup::run(assume_yes),
-        cli::Command::Status => commands::status::run(),
+        cli::Command::Status { format, short } => commands::status::run(format, short),
         cli::Command::App { command } => commands::app::run(command),
         cli::Command::Server { command } => commands::server::run(command),
         cli::Command::Credential { command } => commands::credential::run(command),
@@ -60,13 +71,14 @@ fn main() {
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
+        cli::Command::Cookie { command } => commands::cookie::run(command),
         cli::Command::Dev { app, console, open } => commands::exec::run("dev", app, commands::exec::Options { console, open }),
         cli::Command::Open { app } => commands::open::run(app),
         cli::Command::Build { app, console } => commands::exec::run("build", app, commands::exec::Options { console, open: false }),
         cli::Command::Test { app, console } => commands::exec::run("test", app, commands::exec::Options { console, open: false }),
         cli::Command::Lint { app, console } => commands::exec::run("lint", app, commands::exec::Options { console, open: false }),
         cli::Command::Run { command, app, console, open } => commands::exec::run(&command, app, commands::exec::Options { console, open }),
-        cli::Command::Ps { watch } => commands::jobs::ps(watch),
+        cli::Command::Ps { watch, format } => commands::jobs::ps(watch, format),
         cli::Command::Logs {
             name,
             command,
@@ -140,7 +152,13 @@ fn main() {
             path,
             from,
             list,
-        } => commands::backup::restore(target, remote::Overrides { server, credential, path }, from, list),
+            json,
+        } => commands::backup::restore(
+            target,
+            remote::Overrides { server, credential, path },
+            from,
+            list.then_some(cli::Format { json }),
+        ),
         cli::Command::Completions { shell } => commands::completions::run(shell),
         cli::Command::Complete { what } => commands::complete::run(what),
         cli::Command::Export { output, with_secrets } => commands::transfer::export(output, with_secrets),

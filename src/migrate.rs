@@ -296,6 +296,9 @@ fn gateway_into_the_job_registry(dir: &Path) -> Result<()> {
         work: crate::registry::Work::Gateway {
             ports: recorded.ports,
             front_port: recorded.front_port,
+            // A gateway from before v0.22 has no control channel; `cookie`
+            // asks for a restart.
+            control: None,
         },
         pid: recorded.pid,
         birth,
@@ -308,6 +311,7 @@ fn gateway_into_the_job_registry(dir: &Path) -> Result<()> {
         log: None,
         ready: None,
         ended: None,
+        signals: Vec::new(),
     };
     let jobs = dir.join("jobs");
     std::fs::create_dir_all(&jobs).with_context(|| format!("cannot create {}", jobs.display()))?;

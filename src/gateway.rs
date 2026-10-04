@@ -13,6 +13,7 @@ use tokio_tungstenite::tungstenite::Message as StandMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
 use crate::model::{App, Server};
+use crate::signal::{Board, Kind, Seen, Signal};
 use crate::store;
 
 /// Upper bound for a buffered request body (dev API calls and uploads).
@@ -20,7 +21,7 @@ pub(crate) const MAX_REQUEST_BODY: usize = 256 * 1024 * 1024;
 
 /// Cookies issued by stands, keyed by (app, server) - the browser never sees them.
 /// In-memory by design: restarting the gateway means logging in again (ADR 0002).
-type Jars = Arc<Mutex<HashMap<(String, String), HashMap<String, String>>>>;
+pub(crate) type Jars = Arc<Mutex<HashMap<(String, String), HashMap<String, String>>>>;
 type Clients = Arc<Mutex<HashMap<String, reqwest::Client>>>;
 
 #[derive(Clone)]
@@ -29,6 +30,116 @@ struct Ctx {
     port: u16,
     jars: Jars,
     clients: Clients,
+    watch: Watch,
+}
+
+/// The gateway's eye on the stands: the board of signals, and where a change
+/// on it goes - the gateway's own job record, which `status` reads, and the
+/// desktop.
+///
+/// Both outlets are tasks of their own, fed through channels: a request only
+/// updates the board and moves on, and the record is written in the order the
+/// changes happened even when two requests change it at once.
+#[derive(Clone)]
+pub(crate) struct Watch {
+    board: Arc<Mutex<Board>>,
+    record: tokio::sync::watch::Sender<Vec<Signal>>,
+    toasts: tokio::sync::mpsc::UnboundedSender<Signal>,
+}
+
+impl Watch {
+    /// Start the outlets. `door` and `ports` are where the apps answer, for
+    /// the toast that sends a lapsed session back to its login page.
+    fn start(door: Option<u16>, ports: BTreeMap<u16, String>) -> Self {
+        let (record, mut changed) = tokio::sync::watch::channel(Vec::<Signal>::new());
+        tokio::spawn(async move {
+            while changed.changed().await.is_ok() {
+                let signals = changed.borrow_and_update().clone();
+                let written = tokio::task::spawn_blocking(move || crate::registry::update_own(crate::registry::GATEWAY, |entry| entry.signals = signals)).await;
+                if let Ok(Err(err)) = written {
+                    eprintln!("turnout: cannot record the gateway's signals: {err:#}");
+                }
+            }
+        });
+        let (toasts, mut raised) = tokio::sync::mpsc::unbounded_channel::<Signal>();
+        tokio::spawn(async move {
+            while let Some(signal) = raised.recv().await {
+                let ports = ports.clone();
+                let shown = tokio::task::spawn_blocking(move || crate::notify::show(&toast_for(&signal, door, &ports))).await;
+                if let Ok(Err(err)) = shown {
+                    eprintln!("turnout: cannot show the notification: {err:#}");
+                }
+            }
+        });
+        Self {
+            board: Arc::default(),
+            record,
+            toasts,
+        }
+    }
+
+    /// Take in what one exchange between `app` and `server` showed.
+    fn see(&self, app: &str, server: &str, seen: Seen) {
+        let mut board = self.board.lock().expect("signal board poisoned");
+        let change = board.observe(app, server, seen, crate::registry::now());
+        self.publish(change, board.active());
+    }
+
+    /// The session of `app` on `server` got fresh cookies by hand.
+    pub(crate) fn renewed(&self, app: &str, server: &str) {
+        let mut board = self.board.lock().expect("signal board poisoned");
+        let change = board.renewed(app, server);
+        self.publish(change, board.active());
+    }
+
+    fn publish(&self, change: crate::signal::Change, active: &[Signal]) {
+        if change.is_empty() {
+            return;
+        }
+        // The gateway's output is its log: `turnout logs gateway` tells the
+        // story of an afternoon's outages without anyone asking at the time.
+        for signal in &change.raised {
+            println!("{}", crate::signal::describe(signal));
+        }
+        for signal in &change.cleared {
+            match signal.kind {
+                Kind::StandDown => println!("'{}' answers again", signal.server),
+                Kind::SessionExpired => println!("the '{}' session of '{}' is good again", signal.server, signal.app),
+            }
+        }
+        self.record.send_replace(active.to_vec());
+        for signal in change.toast {
+            let _ = self.toasts.send(signal);
+        }
+    }
+}
+
+/// The notification a signal makes.
+fn toast_for(signal: &Signal, door: Option<u16>, ports: &BTreeMap<u16, String>) -> crate::notify::Toast {
+    match signal.kind {
+        Kind::SessionExpired => {
+            // The app's address behind the door, or its own port when the
+            // door is shut: wherever the login page is reached through the
+            // gateway, so the new session lands in the jar.
+            let login = match door {
+                Some(door) => crate::front::address(&signal.app, door),
+                None => ports
+                    .iter()
+                    .find(|(_, app)| **app == signal.app)
+                    .map(|(port, _)| format!("http://localhost:{port}"))
+                    .unwrap_or_default(),
+            };
+            crate::notify::session_expired(&signal.app, &signal.server, &login)
+        }
+        Kind::StandDown => {
+            let url = store::load_servers()
+                .ok()
+                .and_then(|servers| servers.into_iter().find(|server| server.name == signal.server))
+                .map(|server| server.url)
+                .unwrap_or_default();
+            crate::notify::stand_down(&signal.server, signal.status, &signal.app, &url)
+        }
+    }
 }
 
 /// The port each app is served on, or why the gateway cannot start.
@@ -70,6 +181,7 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
     runtime.block_on(async move {
         let jars: Jars = Arc::default();
         let clients: Clients = Arc::default();
+        let watch = Watch::start(front_port, ports.clone());
         for (app, port) in apps {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
                 .await
@@ -80,6 +192,7 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
                 port,
                 jars: jars.clone(),
                 clients: clients.clone(),
+                watch: watch.clone(),
             };
             let router = axum::Router::new().fallback(proxy).with_state(ctx);
             tokio::spawn(async move { axum::serve(listener, router).await });
@@ -113,14 +226,33 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
                 None
             }
         };
+        // Last to open, and never in the way: without it `cookie` has nobody
+        // to talk to, and that is all.
+        let control = match open_control().await {
+            Ok((port, listener)) => {
+                let token = crate::control::token();
+                tokio::spawn(crate::control::serve(listener, token.clone(), jars.clone(), watch.clone()));
+                Some(crate::registry::Control { port, token })
+            }
+            Err(err) => {
+                eprintln!("control channel: cannot listen on a loopback port ({err}) - `turnout cookie` will not reach this gateway");
+                None
+            }
+        };
         // The door that actually opened, not the one that was asked for: the
         // record is what `open`, `status` and `dev` print addresses from.
-        crate::commands::gateway::record(ports, door, log)?;
+        crate::commands::gateway::record(ports, door, control, log)?;
         tokio::signal::ctrl_c().await?;
         let _ = crate::registry::remove_own(crate::registry::GATEWAY);
         println!("Gateway stopped.");
         Ok(())
     })
+}
+
+/// A loopback port of the system's choosing for the control channel.
+async fn open_control() -> std::io::Result<(u16, tokio::net::TcpListener)> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
+    Ok((listener.local_addr()?.port(), listener))
 }
 
 async fn proxy(State(ctx): State<Ctx>, req: Request) -> Response {
@@ -168,21 +300,32 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
     // Only jar cookies travel to the stand; the browser's localhost cookies stay home.
     headers.remove(COOKIE);
     let jar_key = (ctx.app.clone(), server_name.clone());
-    if let Some(cookie) = stored_cookie_header(&ctx.jars, &jar_key)? {
+    let cookie = stored_cookie_header(&ctx.jars, &jar_key)?;
+    let sent_cookies = cookie.is_some();
+    if let Some(cookie) = cookie {
         headers.insert(COOKIE, cookie);
     }
 
     let body = axum::body::to_bytes(body, MAX_REQUEST_BODY).await.context("request body too large")?;
-    let upstream = client
-        .request(parts.method, &target)
-        .headers(headers)
-        .body(body)
-        .send()
-        .await
-        .map_err(|err| anyhow!("stand '{server_name}' is unreachable: {err}"))?;
+    let upstream = match client.request(parts.method, &target).headers(headers).body(body).send().await {
+        Ok(upstream) => upstream,
+        Err(err) => {
+            ctx.watch.see(&ctx.app, &server_name, Seen::Unreachable);
+            bail!("stand '{server_name}' is unreachable: {err}");
+        }
+    };
 
     let status = upstream.status();
     let mut resp_headers = upstream.headers().clone();
+    ctx.watch.see(
+        &ctx.app,
+        &server_name,
+        Seen::Answered {
+            status: status.as_u16(),
+            sent_cookies,
+            got_cookies: resp_headers.contains_key(SET_COOKIE),
+        },
+    );
     capture_cookies(&ctx.jars, &jar_key, &resp_headers);
     resp_headers.remove(SET_COOKIE);
     strip_hop_headers(&mut resp_headers);
@@ -225,7 +368,9 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
 
     let mut request = target.into_client_request().context("cannot build the upstream websocket request")?;
     let jar_key = (ctx.app.clone(), server_name.clone());
-    if let Some(cookie) = stored_cookie_header(&ctx.jars, &jar_key)? {
+    let cookie = stored_cookie_header(&ctx.jars, &jar_key)?;
+    let sent_cookies = cookie.is_some();
+    if let Some(cookie) = cookie {
         request.headers_mut().insert(COOKIE, cookie);
     }
     if let Some(protocol) = parts.headers.get(SEC_WEBSOCKET_PROTOCOL) {
@@ -244,10 +389,32 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
         None
     };
 
+    let (app, watch) = (ctx.app.clone(), ctx.watch.clone());
     Ok(upgrade.on_upgrade(move |client| async move {
         match tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector).await {
-            Ok((upstream, _response)) => pump(client, upstream).await,
-            Err(err) => eprintln!("turnout gateway: websocket to '{server_name}' failed: {err}"),
+            Ok((upstream, response)) => {
+                let seen = Seen::Answered {
+                    status: response.status().as_u16(),
+                    sent_cookies,
+                    got_cookies: false,
+                };
+                watch.see(&app, &server_name, seen);
+                pump(client, upstream).await;
+            }
+            Err(err) => {
+                // A stand that answered the upgrade with a status said
+                // something; one that did not answer said nothing at all.
+                let seen = match &err {
+                    tokio_tungstenite::tungstenite::Error::Http(response) => Seen::Answered {
+                        status: response.status().as_u16(),
+                        sent_cookies,
+                        got_cookies: response.headers().contains_key(SET_COOKIE),
+                    },
+                    _ => Seen::Unreachable,
+                };
+                watch.see(&app, &server_name, seen);
+                eprintln!("turnout gateway: websocket to '{server_name}' failed: {err}");
+            }
         }
     }))
 }

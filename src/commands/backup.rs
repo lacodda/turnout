@@ -1,7 +1,9 @@
 use anyhow::Result;
+use serde::Serialize;
 
+use crate::cli::Format;
 use crate::progress::Step;
-use crate::remote;
+use crate::{output, remote};
 
 /// The newest backup in a directory listing.
 ///
@@ -38,7 +40,24 @@ pub fn backup(target_name: Option<String>, overrides: remote::Overrides) -> Resu
     Ok(())
 }
 
-pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: Option<String>, list: bool) -> Result<()> {
+/// The backups `restore --list` reports: the archives in a target's backup
+/// directory, newest first.
+#[derive(Serialize)]
+struct Backups {
+    dir: String,
+    backups: Vec<String>,
+}
+
+/// Our archives in a directory listing, newest first; anything else in the
+/// directory is the user's and stays out.
+fn archives(listing: &str) -> Vec<String> {
+    let mut names: Vec<String> = listing.lines().map(str::trim).filter(|line| is_backup_name(line)).map(str::to_string).collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names
+}
+
+/// `restore`; `list` is `Some` with how to print the list when only listing.
+pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: Option<String>, list: Option<Format>) -> Result<()> {
     let target = remote::resolve(target_name, overrides)?;
     let deploy_dir = target.path.dir.clone();
     let backups_raw = remote::backups_dir(&deploy_dir);
@@ -48,14 +67,19 @@ pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: 
     remote::check_quotable(dialect, &[&deploy_dir, &backups_raw])?;
     step.clear();
 
-    if list {
-        let output = remote::exec(&session, &dialect.list_dir(&backups_raw))?;
-        if output.trim().is_empty() {
-            println!("No backups yet in {backups_raw} - create one with `turnout backup {}`.", target.app.name);
-        } else {
-            println!("{}", output.trim_end());
-        }
-        return Ok(());
+    if let Some(format) = list {
+        let listing = remote::exec(&session, &dialect.list_dir(&backups_raw))?;
+        let backups = Backups {
+            backups: archives(&listing),
+            dir: backups_raw,
+        };
+        let app = target.app.name.clone();
+        return output::emit(format, &backups, |backups| {
+            if backups.backups.is_empty() {
+                return format!("No backups yet in {} - create one with `turnout backup {app}`.", backups.dir);
+            }
+            backups.backups.join("\n")
+        });
     }
 
     let name = match from {

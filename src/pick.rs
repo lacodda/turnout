@@ -78,10 +78,26 @@ pub fn server(servers: &[Server], prompt: &str) -> Result<String> {
     if servers.is_empty() {
         bail!("no servers in the catalog yet - run `turnout server add` first");
     }
+    let servers: Vec<&Server> = servers.iter().collect();
+    let index = server_index(&servers, &vec![None; servers.len()], prompt)?;
+    Ok(servers[index].name.clone())
+}
+
+/// Pick one of `servers`, each with its note beside it - how the stand
+/// answered, for `use` - and return its index.
+pub fn server_index(servers: &[&Server], notes: &[Option<String>], prompt: &str) -> Result<usize> {
     ensure_interactive("server name is required")?;
     let width = servers.iter().map(|s| s.name.len()).max().unwrap_or(0);
-    let labels: Vec<String> = servers.iter().map(|s| format!("{:width$}  {}", s.name, s.url)).collect();
-    Ok(servers[select(prompt, &labels)?].name.clone())
+    let url_width = servers.iter().map(|s| s.url.len()).max().unwrap_or(0);
+    let labels: Vec<String> = servers
+        .iter()
+        .zip(notes)
+        .map(|(server, note)| match note {
+            Some(note) => format!("{:width$}  {:url_width$}  {note}", server.name, server.url),
+            None => format!("{:width$}  {}", server.name, server.url),
+        })
+        .collect();
+    select(prompt, &labels)
 }
 
 /// Pick a server the app is allowed to use; unrestricted apps see them all.

@@ -141,9 +141,14 @@ fn replay(log: &std::path::Path) {
 }
 
 /// The record `gateway run` writes about itself once it listens.
-pub fn record(ports: std::collections::BTreeMap<u16, String>, front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<()> {
+pub fn record(
+    ports: std::collections::BTreeMap<u16, String>,
+    front_port: Option<u16>,
+    control: Option<registry::Control>,
+    log: Option<std::path::PathBuf>,
+) -> Result<()> {
     let detached = log.is_some();
-    registry::save(&registry::Entry::own(Work::Gateway { ports, front_port }, detached, log))
+    registry::save(&registry::Entry::own(Work::Gateway { ports, front_port, control }, detached, log))
 }
 
 /// Quick liveness check: can we open one of the recorded ports?

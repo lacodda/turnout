@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
+use serde::Serialize;
 
 use crate::job::{self, Mode, Program};
 use crate::notify;
@@ -376,20 +377,86 @@ fn ended_well(spec: &Supervised, elapsed: Duration, was_ready: bool, places: &no
     }
 }
 
+/// A job as `ps` and `status` report it.
+#[derive(Serialize)]
+pub struct JobView {
+    /// What `ps` calls it: `myapp dev`, `gateway`.
+    pub job: String,
+    /// The app and the command; `null` for the gateway.
+    pub app: Option<String>,
+    pub command: Option<String>,
+    /// `ready` (a server that came up), `running`, `done`, `failed` or `gone`.
+    pub state: &'static str,
+    /// The exit code of a job that ended by itself; `null` while it runs, and
+    /// for one that was killed or vanished.
+    pub exit_code: Option<i32>,
+    pub pid: Option<u32>,
+    pub port: Option<u16>,
+    pub address: Option<String>,
+    /// Started in the background: nobody's terminal is waiting on it.
+    pub background: bool,
+    pub started: String,
+    pub ended: Option<String>,
+    pub log: Option<PathBuf>,
+}
+
+impl JobView {
+    pub fn is_running(&self) -> bool {
+        matches!(self.state, "ready" | "running")
+    }
+}
+
+/// Every job in the registry, running first - that is the question `ps`
+/// answers - then by name.
+pub fn views() -> Result<Vec<JobView>> {
+    let mut entries = registry::list()?;
+    entries.sort_by_key(|entry| (!entry.is_running(), entry.title()));
+    let apps = store::load_apps()?;
+    let gateway = registry::gateway()?;
+    Ok(entries
+        .iter()
+        .map(|entry| {
+            let status = entry.status();
+            let running = status == Status::Running;
+            let (port, address) = if running { reach(entry, &apps, gateway.as_ref()) } else { (None, None) };
+            let (app, command) = match &entry.work {
+                Work::Command { app, command } => (Some(app.clone()), Some(command.clone())),
+                Work::Gateway { .. } => (None, None),
+            };
+            JobView {
+                job: entry.title(),
+                app,
+                command,
+                state: state_word(entry, status),
+                exit_code: match status {
+                    Status::Exited(code) => code,
+                    _ => None,
+                },
+                pid: running.then_some(entry.pid),
+                port,
+                address,
+                background: entry.detached,
+                started: crate::output::iso8601(entry.started),
+                ended: entry.ended.as_ref().map(|ended| crate::output::iso8601(ended.at)),
+                log: entry.log.clone(),
+            }
+        })
+        .collect())
+}
+
 /// `turnout ps`.
-pub fn ps(watch: bool) -> Result<()> {
+pub fn ps(watch: bool, format: crate::cli::Format) -> Result<()> {
     if !watch {
-        print!("{}", table()?);
-        return Ok(());
+        return crate::output::emit(format, &views()?, |jobs| table(jobs));
     }
     if !std::io::stdout().is_terminal() {
         bail!("--watch redraws a table on a terminal - without one, run `turnout ps` whenever you want a look");
     }
     let term = console::Term::stdout();
     loop {
-        let frame = table()?;
+        let frame = table(&views()?);
         let _ = term.clear_screen();
-        print!("{frame}");
+        println!("{frame}");
         println!("\nevery second - Ctrl+C to quit");
         let _ = std::io::stdout().flush();
         std::thread::sleep(Duration::from_secs(1));
@@ -397,69 +464,66 @@ pub fn ps(watch: bool) -> Result<()> {
 }
 
 /// The `ps` table, as text.
-fn table() -> Result<String> {
-    let mut entries = registry::list()?;
-    if entries.is_empty() {
-        return Ok("No jobs. Start one in the background with `turnout dev --detach`.\n".to_string());
+fn table(jobs: &[JobView]) -> String {
+    if jobs.is_empty() {
+        return "No jobs. Start one in the background with `turnout dev --detach`.".to_string();
     }
-    // Running first - that is the question `ps` answers - then by name.
-    entries.sort_by_key(|entry| (!entry.is_running(), entry.title()));
-    let apps = store::load_apps()?;
-    let gateway = registry::gateway()?;
     let now = registry::now();
     let mut rows = vec![["JOB", "STATE", "PID", "PORT", "ADDRESS", "TIME"].map(str::to_string)];
-    for entry in &entries {
-        let status = entry.status();
-        let (port, address) = if status == Status::Running {
-            reach(entry, &apps, gateway.as_ref())
+    for job in jobs {
+        let since = |at: &str| crate::output::parse_iso8601(at).map(|at| human_span(now.saturating_sub(at)));
+        let time = if job.is_running() {
+            since(&job.started).unwrap_or_else(|| "-".to_string())
         } else {
-            (None, None)
+            job.ended
+                .as_deref()
+                .and_then(since)
+                .map_or_else(|| "-".to_string(), |span| format!("{span} ago"))
         };
-        let time = match (&entry.ended, status) {
-            (_, Status::Running) => human_span(now.saturating_sub(entry.started)),
-            (Some(ended), _) => format!("{} ago", human_span(now.saturating_sub(ended.at))),
-            (None, _) => "-".to_string(),
+        let mut state = match (job.state, job.exit_code) {
+            ("failed", code) => format!("failed ({})", describe_code(code)),
+            (word, _) => word.to_string(),
         };
-        let mut state = state_of(entry, status);
-        if entry.detached && status == Status::Running {
+        if job.background && job.is_running() {
             state.push_str(" (bg)");
         }
         rows.push([
-            entry.title(),
+            job.job.clone(),
             state,
-            if status == Status::Running { entry.pid.to_string() } else { "-".to_string() },
-            port.map_or_else(|| "-".to_string(), |port| port.to_string()),
-            address.unwrap_or_else(|| "-".to_string()),
+            job.pid.map_or_else(|| "-".to_string(), |pid| pid.to_string()),
+            job.port.map_or_else(|| "-".to_string(), |port| port.to_string()),
+            job.address.clone().unwrap_or_else(|| "-".to_string()),
             time,
         ]);
     }
     let widths: Vec<usize> = (0..6)
         .map(|column| rows.iter().map(|row| row[column].chars().count()).max().unwrap_or(0))
         .collect();
-    let mut out = String::new();
-    for row in rows {
-        let mut line = String::new();
-        for (column, cell) in row.iter().enumerate() {
-            if column + 1 == row.len() {
-                line.push_str(cell);
-            } else {
-                line.push_str(&format!("{cell:<width$}  ", width = widths[column]));
+    let lines: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            let mut line = String::new();
+            for (column, cell) in row.iter().enumerate() {
+                if column + 1 == row.len() {
+                    line.push_str(cell);
+                } else {
+                    line.push_str(&format!("{cell:<width$}  ", width = widths[column]));
+                }
             }
-        }
-        out.push_str(line.trim_end());
-        out.push('\n');
-    }
-    Ok(out)
+            line.trim_end().to_string()
+        })
+        .collect();
+    lines.join("\n")
 }
 
 /// What the STATE column says.
-fn state_of(entry: &Entry, status: Status) -> String {
+fn state_word(entry: &Entry, status: Status) -> &'static str {
     match status {
-        Status::Running if entry.ready.is_some() => "ready".to_string(),
-        Status::Running => "running".to_string(),
-        Status::Exited(Some(0)) => "done".to_string(),
-        Status::Exited(code) => format!("failed ({})", describe_code(code)),
-        Status::Gone => "gone".to_string(),
+        Status::Running if entry.ready.is_some() => "ready",
+        Status::Running => "running",
+        Status::Exited(Some(0)) => "done",
+        Status::Exited(_) => "failed",
+        Status::Gone => "gone",
     }
 }
 
@@ -474,7 +538,7 @@ fn describe_code(code: Option<i32>) -> String {
 /// through the door once it opens.
 fn reach(entry: &Entry, apps: &[crate::model::App], gateway: Option<&crate::model::Gateway>) -> (Option<u16>, Option<String>) {
     match &entry.work {
-        Work::Gateway { ports, front_port } => (front_port.or_else(|| ports.keys().next().copied()), front_port.map(crate::front::door)),
+        Work::Gateway { ports, front_port, .. } => (front_port.or_else(|| ports.keys().next().copied()), front_port.map(crate::front::door)),
         Work::Command { app, command } => {
             let seen = entry.ready.as_ref().and_then(|ready| ready.url.clone());
             if command == "dev"

@@ -97,7 +97,7 @@ fn setup_clears_the_way_out_of_a_refused_data_directory() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Servers: 1 (pi)"));
+        .stdout(predicate::str::contains("servers      pi"));
 }
 
 /// Declining leaves everything exactly as it was - a user who ran `setup` to
@@ -127,7 +127,7 @@ fn status_after_setup_shows_overview() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Gateway: not running"));
+        .stdout(predicate::str::contains("Gateway  not running").and(predicate::str::contains("none yet - add one with `turnout app add`")));
 }
 
 /// Initialized data dir + a project directory to register as an app.
@@ -347,6 +347,7 @@ fn gateway_start_and_stop_roundtrip() {
         .success();
     drop(reservation);
     drop(front_reservation);
+    let _gateway = StopsGateway(dir.path().to_path_buf());
     turnout(dir.path())
         .env("TURNOUT_FRONT_PORT", front.to_string())
         .args(["gateway", "start"])
@@ -364,7 +365,14 @@ fn gateway_start_and_stop_roundtrip() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains(format!("Front:   http://localhost:{front}")));
+        .stdout(predicate::str::contains(format!("front door  http://localhost:{front}")));
+    let status = status_json(dir.path());
+    assert_eq!(status["gateway"]["state"], "running", "{status}");
+    assert_eq!(status["gateway"]["front_door"], format!("http://localhost:{front}"));
+    assert!(
+        !status.to_string().contains("token"),
+        "the control channel's token must never leave the record: {status}"
+    );
     // `start` returned only once the port answered, so this holds at once.
     let address = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     assert!(std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(500)).is_ok());
@@ -1079,7 +1087,7 @@ fn removing_server_updates_apps() {
         .args(["app", "show", "myapp"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("none allowed yet"));
+        .stdout(predicate::str::contains("Servers:  any - no allow-list"));
 }
 
 /// Pass commands run with the insecure file backend: the OS keyring is
@@ -1142,7 +1150,7 @@ fn pass_set_copy_roundtrip() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Creds:   1 (deploy)"));
+        .stdout(predicate::str::contains("credentials  deploy"));
 }
 
 #[test]
@@ -1304,6 +1312,23 @@ fn wait_for_addr(address: std::net::SocketAddr) {
     panic!("port {port} never came up");
 }
 
+/// Stops a gateway started with `gateway start` even when an assertion
+/// panics: a detached gateway outlives the test, and while it runs it holds
+/// the pipe the harness reads, so `cargo test` would never finish.
+struct StopsGateway(std::path::PathBuf);
+impl Drop for StopsGateway {
+    fn drop(&mut self) {
+        let _ = turnout(&self.0).args(["gateway", "stop"]).output();
+    }
+}
+
+/// `status --json`, parsed.
+fn status_json(data_dir: &std::path::Path) -> serde_json::Value {
+    let output = turnout(data_dir).args(["status", "--json"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap_or_else(|err| panic!("{err}: {}", String::from_utf8_lossy(&output.stdout)))
+}
+
 /// Kills the gateway child even when an assertion panics.
 struct ChildGuard(std::process::Child);
 impl Drop for ChildGuard {
@@ -1332,6 +1357,12 @@ fn spawn_stand(listener: std::net::TcpListener) -> u16 {
                     "/echo-cookie",
                     get(|headers: HeaderMap| async move { headers.get("cookie").and_then(|v| v.to_str().ok()).unwrap_or("none").to_string() }),
                 )
+                .route("/health", get(|| async { "ok" }))
+                // A stand whose session lapsed: it refuses whatever cookie it gets.
+                .route("/expire", get(|| async { (axum::http::StatusCode::UNAUTHORIZED, "log in again") }))
+                // A stand whose application is down behind its proxy.
+                .route("/down", get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "bad gateway") }))
+                .route("/sick/health", get(|| async { (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable") }))
                 .route(
                     "/login",
                     get(move || async move { (axum::http::StatusCode::FOUND, [("location", format!("{base}/after"))]) }),
@@ -2354,7 +2385,7 @@ fn actions_are_journaled_without_secrets() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Recent:").and(predicate::str::contains("web -> staging")));
+        .stdout(predicate::str::contains("Recent\n").and(predicate::str::contains("web -> staging")));
 }
 
 #[test]
@@ -2369,7 +2400,7 @@ fn status_counts_catalogs() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Apps:    1 (myapp)").and(predicate::str::contains("Servers: 1 (staging)")));
+        .stdout(predicate::str::contains("  myapp ").and(predicate::str::contains("servers      staging")));
 }
 
 /// The update check is off under `CI`, which is exactly where these tests run,
@@ -2450,7 +2481,7 @@ fn a_broken_update_check_never_fails_the_command() {
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("Gateway: not running"));
+        .stdout(predicate::str::contains("Gateway  not running"));
 }
 
 /// A binary left over from a previous `self-update` is swept by any later
@@ -3225,6 +3256,441 @@ fn the_migration_carries_a_live_gateway_into_the_registry() {
         .assert()
         .success()
         .stderr(predicate::str::contains("no longer running"))
-        .stdout(predicate::str::contains("Gateway: not running"));
+        .stdout(predicate::str::contains("Gateway  not running"));
     assert!(!record.exists(), "a dead gateway was carried over");
+}
+
+// --- v0.22: status, --json, use -, health, gateway signals, cookies ------------------
+
+/// `--json` prints the same view the text is made from: every reading
+/// command, every key present, and an empty catalog is `[]` rather than a
+/// sentence a script would have to recognise.
+#[test]
+fn reading_commands_print_json() {
+    let (dir, project) = workspace();
+    for command in [
+        &["app", "list"][..],
+        &["server", "list"],
+        &["credential", "list"],
+        &["path", "list"],
+        &["target", "list"],
+        &["group", "list"],
+        &["pass", "list"],
+        &["ps"],
+        &["cookie", "list"],
+    ] {
+        let output = turnout(dir.path()).args(command).arg("--json").output().unwrap();
+        assert!(output.status.success(), "{command:?}: {}", String::from_utf8_lossy(&output.stderr));
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| panic!("{command:?}: {err}"));
+        assert_eq!(value, serde_json::json!([]), "{command:?}");
+    }
+
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["use", "myapp", "staging", "--no-check"]).assert().success();
+    turnout(dir.path()).args(["group", "add", "contour", "--app", "myapp"]).assert().success();
+
+    let output = turnout(dir.path()).args(["app", "show", "myapp", "--json"]).output().unwrap();
+    let app: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(app["name"], "myapp");
+    assert_eq!(app["server"], "staging");
+    assert_eq!(app["address"], "http://myapp.localhost");
+    assert_eq!(app["dist"], serde_json::Value::Null, "an absent value is null, never a missing key");
+    assert!(app["gateway_port"].is_u64(), "{app}");
+
+    let output = turnout(dir.path()).args(["server", "show", "staging", "--json"]).output().unwrap();
+    let server: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(server["url"], "https://staging.example.com");
+    assert_eq!(server["ssh_host"], "staging.example.com");
+    assert_eq!(server["ssh_host_from_url"], true);
+    assert_eq!(server["bound"], serde_json::json!(["myapp"]));
+
+    let output = turnout(dir.path()).args(["group", "show", "contour", "--json"]).output().unwrap();
+    let group: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(group["apps"], serde_json::json!([{"app": "myapp", "server": "staging"}]));
+
+    let status = status_json(dir.path());
+    assert_eq!(status["set_up"], true);
+    assert_eq!(status["apps"][0]["server"], "staging");
+    assert_eq!(status["groups"][0]["name"], "contour");
+    assert_eq!(status["gateway"]["state"], "stopped");
+    assert_eq!(status["catalog"]["servers"], serde_json::json!(["staging"]));
+    let recent = status["recent"].as_array().unwrap();
+    assert!(!recent.is_empty());
+    for key in ["at", "action", "app", "server", "detail"] {
+        assert!(recent[0].get(key).is_some(), "'{key}' missing from {}", recent[0]);
+    }
+
+    // The flag is only where it means something.
+    turnout(dir.path()).args(["deploy", "--json"]).assert().failure();
+    turnout(dir.path()).args(["ps", "--watch", "--json"]).assert().failure();
+}
+
+/// A credential's JSON says whether a secret is stored and never what it is.
+#[test]
+fn credential_json_never_carries_the_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout_secrets(dir.path()).args(["setup", "--yes"]).assert().success();
+    add_credential(dir.path());
+    turnout_secrets(dir.path())
+        .args(["pass", "set", "deploy"])
+        .write_stdin("s3cret-value\n")
+        .assert()
+        .success();
+    for command in [&["credential", "show", "deploy", "--json"][..], &["pass", "list", "--json"]] {
+        let output = turnout_secrets(dir.path()).args(command).output().unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(text.contains(r#""secret_stored": true"#), "{command:?}: {text}");
+        assert!(!text.contains("s3cret-value"), "{command:?} leaked the secret: {text}");
+    }
+}
+
+/// The prompt line: nothing before setup, then where things point.
+#[test]
+fn status_short_is_a_prompt_line() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["status", "--short"]).assert().success().stdout("");
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    turnout(dir.path()).args(["status", "--short"]).assert().success().stdout("");
+
+    let project = dir.path().join("project");
+    std::fs::create_dir(&project).unwrap();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["status", "--short"])
+        .current_dir(&project)
+        .assert()
+        .success()
+        .stdout("myapp unbound\n");
+    turnout(dir.path()).args(["use", "myapp", "staging", "--no-check"]).assert().success();
+    turnout(dir.path()).args(["status", "--short"]).assert().success().stdout("staging · gw off\n");
+    turnout(dir.path()).args(["status", "--short", "--json"]).assert().failure();
+}
+
+/// `use -` is `cd -` for stands: back and forth, for the last switch or for a
+/// named app, and a whole group at once.
+#[test]
+fn use_dash_goes_back_to_the_server_before() {
+    let (dir, project) = workspace();
+    for name in ["dev", "prod"] {
+        turnout(dir.path())
+            .args(["server", "add", name, "--url", &format!("https://{name}.example.com")])
+            .assert()
+            .success();
+    }
+    let other = dir.path().join("other");
+    std::fs::create_dir(&other).unwrap();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["app", "add", "api", "--path"]).arg(&other).assert().success();
+
+    turnout(dir.path())
+        .args(["use", "-", "-n"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to go back to"));
+    turnout(dir.path()).args(["use", "web", "dev", "-n"]).assert().success();
+    turnout(dir.path())
+        .args(["use", "web", "-", "-n"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has not used another server yet"));
+    turnout(dir.path()).args(["use", "web", "prod", "-n"]).assert().success();
+    turnout(dir.path())
+        .args(["use", "-", "-n"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'web' is back on 'dev' (was 'prod')."));
+    // Again: forward, the way `cd -` toggles.
+    turnout(dir.path())
+        .args(["use", "-", "-n"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'web' is back on 'prod' (was 'dev')."));
+    turnout(dir.path())
+        .args(["use", "-", "prod"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("takes no server"));
+
+    // A group goes back member by member; one with no server before stays.
+    turnout(dir.path())
+        .args(["group", "add", "contour", "--app", "web", "--app", "api"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "contour", "dev", "-n"]).assert().success();
+    turnout(dir.path()).args(["use", "contour", "-", "-n"]).assert().success().stdout(
+        predicate::str::contains("'web' is back on 'prod' (was 'dev').").and(predicate::str::contains("Staying where they are, with no server before: api.")),
+    );
+
+    // A server that is removed takes its bindings with it, before and now.
+    turnout(dir.path())
+        .args(["server", "remove", "prod", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Unbound: web"));
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap();
+    assert!(!state.contains("prod"), "{state}");
+}
+
+/// `use` probes the stand's `/health` once, and says what it found - up,
+/// down behind its proxy, or not there at all - without refusing the switch.
+#[test]
+fn use_reports_the_health_of_the_stand() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    spawn_stand(stand_listener);
+    let (dead_port, dead) = reserved_port();
+    drop(dead);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    // On this stand `/sick/health` answers 503: its proxy is up, its
+    // application is not.
+    turnout(dir.path())
+        .args(["server", "add", "sick", "--url", &format!("http://127.0.0.1:{stand_port}/sick")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["server", "add", "gone", "--url", &format!("http://127.0.0.1:{dead_port}")])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["use", "myapp", "stand"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'stand' is up").and(predicate::str::contains("/health answered 200")));
+    turnout(dir.path()).args(["use", "myapp", "sick"]).assert().success().stdout(
+        predicate::str::contains("'myapp' now uses 'sick'").and(predicate::str::contains("'sick' is down - ").and(predicate::str::contains("answered 503"))),
+    );
+    turnout(dir.path())
+        .args(["use", "myapp", "gone"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'myapp' now uses 'gone'").and(predicate::str::contains("'gone' did not answer")));
+    turnout(dir.path())
+        .args(["use", "myapp", "stand", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("is up").not());
+}
+
+/// A `gateway run` child for the signal and cookie tests: the stand proxy on
+/// `gateway_port`, no front door, toasts into the data directory.
+fn run_gateway(dir: &std::path::Path, gateway_reservation: std::net::TcpListener) -> ChildGuard {
+    let gateway_port = gateway_reservation.local_addr().unwrap().port();
+    drop(gateway_reservation);
+    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
+        .env("TURNOUT_DATA_DIR", dir)
+        .env("TURNOUT_FRONT_PORT", "0")
+        .env("TURNOUT_TOASTS", toast_file(dir))
+        .args(["gateway", "run"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let guard = ChildGuard(child);
+    wait_for_port(gateway_port);
+    // The record - with the control channel in it - is written once every
+    // listener is up, a moment after the first port answers.
+    wait_until("the gateway's record", || status_json(dir)["gateway"]["state"] == "running");
+    guard
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    for _ in 0..100 {
+        if done() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    panic!("{what} never happened");
+}
+
+/// The signals the gateway has up, as `status --json` reports them.
+fn signals(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    status_json(dir)["gateway"]["signals"].as_array().cloned().unwrap_or_default()
+}
+
+/// What the gateway sees about a stand reaches `status`, the prompt line and
+/// the desktop - once per episode, however many requests run into it.
+#[test]
+fn the_gateway_says_when_a_stand_is_down_or_a_session_expired() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    spawn_stand(stand_listener);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+    let _gateway = run_gateway(dir.path(), gateway_reservation);
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{gateway_port}{path}");
+        runtime.block_on(async move { reqwest::get(url).await.unwrap().status().as_u16() })
+    };
+
+    // A 401 before any session is the app's business, not a lapsed session.
+    assert_eq!(get("/expire"), 401);
+    assert_eq!(get("/hello"), 200, "logs in: the stand sets a cookie");
+    for _ in 0..3 {
+        assert_eq!(get("/expire"), 401);
+    }
+    wait_until("the session signal", || signals(dir.path()).len() == 1);
+    let lapsed = &signals(dir.path())[0];
+    assert_eq!(lapsed["kind"], "session_expired");
+    assert_eq!(lapsed["app"], "myapp");
+    assert_eq!(lapsed["status"], 401);
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the 'stand' session of 'myapp' expired"));
+    turnout(dir.path())
+        .args(["status", "--short"])
+        .assert()
+        .success()
+        .stdout("stand login · gw ok\n");
+
+    for _ in 0..3 {
+        assert_eq!(get("/down"), 502);
+    }
+    wait_until("the stand signal", || signals(dir.path()).len() == 2);
+    turnout(dir.path()).args(["status", "--short"]).assert().success().stdout("stand 502 · gw ok\n");
+    // The stand answers again: that signal goes, the session one stays.
+    assert_eq!(get("/echo-cookie"), 200);
+    wait_until("the stand to be back", || signals(dir.path()).len() == 1);
+
+    wait_until("two toasts", || toasts(dir.path()).len() >= 2);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let toasts = toasts(dir.path());
+    assert_eq!(toasts.len(), 2, "one per episode, not one per request: {toasts:?}");
+    assert_eq!(toasts[0]["title"], "myapp: the stand session expired");
+    assert_eq!(toasts[0]["note"], "turnout cookie set myapp");
+    assert_eq!(toasts[1]["title"], "stand answers 502");
+    assert_eq!(toasts[1]["open"], format!("http://127.0.0.1:{stand_port}"));
+}
+
+/// A session copied from a browser goes into the jar of the running
+/// gateway: the next request carries it, the lapsed-session signal goes, and
+/// nothing ever prints the value back.
+#[test]
+fn cookie_set_hands_a_browser_session_to_the_gateway() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    spawn_stand(stand_listener);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+
+    turnout(dir.path())
+        .args(["cookie", "set", "myapp"])
+        .write_stdin("Cookie: sid=from-the-browser")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the gateway is not running"));
+
+    let _gateway = run_gateway(dir.path(), gateway_reservation);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{gateway_port}{path}");
+        runtime.block_on(async move { reqwest::get(url).await.unwrap().text().await.unwrap() })
+    };
+    get("/hello");
+    get("/expire");
+    wait_until("the session signal", || signals(dir.path()).len() == 1);
+
+    let copied = "curl 'https://stand.example.com/api/me' -H 'accept: */*' -b 'sid=from-the-browser; lang=en'";
+    turnout(dir.path())
+        .args(["cookie", "set", "myapp"])
+        .write_stdin(copied)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("now sends 2 cookies to 'stand' for 'myapp': sid, lang").and(predicate::str::contains("from-the-browser").not()));
+    // The jar keeps no order of its own, so the header is compared as a set.
+    let mut sent: Vec<String> = get("/echo-cookie").split("; ").map(str::to_string).collect();
+    sent.sort();
+    assert_eq!(sent, ["lang=en", "sid=from-the-browser"]);
+    wait_until("the session signal to go", || signals(dir.path()).is_empty());
+
+    let output = turnout(dir.path()).args(["cookie", "list", "--json"]).output().unwrap();
+    let jars: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(jars, serde_json::json!([{"app": "myapp", "server": "stand", "cookies": ["lang", "sid"]}]));
+    let journal = std::fs::read_to_string(dir.path().join("journal.jsonl")).unwrap();
+    assert!(journal.contains(r#""action":"cookie.set""#), "{journal}");
+    assert!(!journal.contains("from-the-browser"), "the session leaked into the journal: {journal}");
+
+    turnout(dir.path())
+        .args(["cookie", "set", "myapp"])
+        .write_stdin("sid=x; Path=/; HttpOnly")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Set-Cookie"));
+
+    turnout(dir.path()).args(["cookie", "clear", "myapp"]).assert().success();
+    assert_eq!(get("/echo-cookie"), "none");
+    turnout(dir.path())
+        .args(["cookie", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("holds no cookies"));
+}
+
+/// The control channel answers turnout and nobody else: a request without
+/// the token from the gateway's record - what any web page could send to a
+/// localhost port - is refused.
+#[test]
+fn the_control_channel_refuses_requests_without_the_token() {
+    let (dir, project) = workspace();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", "http://127.0.0.1:9"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    let _gateway = run_gateway(dir.path(), gateway_reservation);
+    let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("jobs").join("gateway.json")).unwrap()).unwrap();
+    let control = &record["work"]["gateway"]["control"];
+    let port = control["port"].as_u64().unwrap();
+    let token = control["token"].as_str().unwrap().to_string();
+    assert_eq!(token.len(), 64);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async move {
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/jars");
+        assert_eq!(client.get(&url).send().await.unwrap().status(), 403);
+        assert_eq!(client.get(&url).bearer_auth("0".repeat(64)).send().await.unwrap().status(), 403);
+        let jar = format!("http://127.0.0.1:{port}/jar/myapp/stand");
+        let put = client
+            .put(&jar)
+            .header("content-type", "application/json")
+            .body(r#"{"cookies":[["sid","planted"]]}"#);
+        assert_eq!(put.send().await.unwrap().status(), 403, "a page must not plant a session");
+        assert_eq!(client.get(&url).bearer_auth(&token).send().await.unwrap().status(), 200);
+    });
 }

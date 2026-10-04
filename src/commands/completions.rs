@@ -49,7 +49,7 @@ _turnout_dynamic() {
             # `use TARGET SERVER`: first word is an app or a group, second a server.
             if [[ ${COMP_CWORD} -eq 2 ]]; then kind="bindable"; else kind="servers"; fi
             ;;
-        dev|build|test|lint|deploy-setup)
+        dev|build|test|lint|deploy-setup|open)
             [[ ${COMP_CWORD} -eq 2 ]] && kind="apps"
             ;;
         logs|stop)
@@ -85,6 +85,10 @@ _turnout_dynamic() {
         pass)
             # `pass` works on credentials since the v0.9.0 split; `list` takes no name.
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|copy|remove)$ ]] && kind="credentials"
+            ;;
+        cookie)
+            # `cookie set|clear [APP]`; `list` takes no name.
+            [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|clear)$ ]] && kind="apps"
             ;;
     esac
 

@@ -9,9 +9,11 @@
 use anyhow::{Result, bail};
 use dialoguer::Input;
 
-use crate::cli::TargetCommand;
+use serde::Serialize;
+
+use crate::cli::{Format, TargetCommand};
 use crate::model::{Target, unique_target_name, validate_name};
-use crate::{pick, store};
+use crate::{output, pick, store};
 
 pub fn run(command: TargetCommand) -> Result<()> {
     match command {
@@ -22,8 +24,8 @@ pub fn run(command: TargetCommand) -> Result<()> {
             credential,
             path,
         } => add(name, app, server, credential, path),
-        TargetCommand::List => list(),
-        TargetCommand::Show { name } => show(&resolve(name, "Show target")?),
+        TargetCommand::List { format } => list(format),
+        TargetCommand::Show { name, format } => show(&resolve(name, "Show target")?, format),
         TargetCommand::Edit {
             name,
             server,
@@ -173,37 +175,70 @@ pub fn offer_to_save(app: &str, server: &str, credential: &str, path: &str) -> R
     Ok(Some(name))
 }
 
-fn list() -> Result<()> {
-    let targets = store::load_targets()?;
-    if targets.is_empty() {
-        println!("No targets yet - run `turnout target add`.");
-        return Ok(());
-    }
-    let width = targets.iter().map(|t| t.name.len()).max().unwrap_or(0);
-    for target in targets {
-        println!(
-            "{:width$}  {} -> {}  ({}@, {})",
-            target.name, target.app, target.server, target.credential, target.path
-        );
-    }
-    Ok(())
+/// A deploy target as `target list` and `target show` report it.
+#[derive(Serialize)]
+pub struct TargetView {
+    pub name: String,
+    pub app: String,
+    pub server: String,
+    pub credential: String,
+    pub path: String,
+    /// The directory the path names - "where does this land" is the question
+    /// `show` is asked, and another name to look up is half an answer.
+    /// `null` when the path is gone from the catalog.
+    pub dir: Option<String>,
 }
 
-fn show(name: &str) -> Result<()> {
-    let targets = store::load_targets()?;
-    let target = targets.iter().find(|t| t.name == name).ok_or_else(|| unknown(name))?;
-    println!("{}", target.name);
-    println!("  App:        {}", target.app);
-    println!("  Server:     {}", target.server);
-    println!("  Logs in as: {}", target.credential);
-    // The directory itself, not just the path's name: "where does this land" is
-    // the question `show` is asked, and answering it with another name to look
-    // up is half an answer.
-    match store::load_paths()?.iter().find(|p| p.name == target.path) {
-        Some(path) => println!("  Lands in:   {} ({})", target.path, path.dir),
-        None => println!("  Lands in:   {} (missing from the catalog)", target.path),
-    }
-    Ok(())
+/// Every target as a view, in catalog order.
+pub fn views() -> Result<Vec<TargetView>> {
+    let paths = store::load_paths()?;
+    Ok(store::load_targets()?
+        .into_iter()
+        .map(|target| TargetView {
+            dir: paths.iter().find(|p| p.name == target.path).map(|p| p.dir.clone()),
+            name: target.name,
+            app: target.app,
+            server: target.server,
+            credential: target.credential,
+            path: target.path,
+        })
+        .collect())
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |targets| {
+        if targets.is_empty() {
+            return "No targets yet - run `turnout target add`.".to_string();
+        }
+        let width = targets.iter().map(|t| t.name.len()).max().unwrap_or(0);
+        let lines: Vec<String> = targets
+            .iter()
+            .map(|target| {
+                format!(
+                    "{:width$}  {} -> {}  ({}@, {})",
+                    target.name, target.app, target.server, target.credential, target.path
+                )
+            })
+            .collect();
+        lines.join("\n")
+    })
+}
+
+fn show(name: &str, format: Format) -> Result<()> {
+    let target = views()?.into_iter().find(|t| t.name == name).ok_or_else(|| unknown(name))?;
+    output::emit(format, &target, |target| {
+        [
+            target.name.clone(),
+            format!("  App:        {}", target.app),
+            format!("  Server:     {}", target.server),
+            format!("  Logs in as: {}", target.credential),
+            match &target.dir {
+                Some(dir) => format!("  Lands in:   {} ({dir})", target.path),
+                None => format!("  Lands in:   {} (missing from the catalog)", target.path),
+            },
+        ]
+        .join("\n")
+    })
 }
 
 fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Option<String>) -> Result<()> {

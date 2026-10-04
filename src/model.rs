@@ -147,8 +147,10 @@ impl Auth {
 }
 
 impl std::fmt::Display for Auth {
+    /// `pad`, not `write_str`: a column of auth kinds is laid out with `{:8}`,
+    /// and `write_str` ignores the width it is given.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
+        f.pad(self.as_str())
     }
 }
 
@@ -255,11 +257,56 @@ pub struct Group {
 }
 
 /// Current working mode, kept apart from the catalogs (`state.json`).
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Eq)]
 pub struct State {
     /// Which server each app currently uses for development.
     #[serde(default)]
     pub bindings: BTreeMap<String, String>,
+    /// The server each app used before its binding last changed - where
+    /// `use -` takes it back to.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub previous: BTreeMap<String, String>,
+    /// The app or group the last `use` switched: what a bare `use -` undoes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last: Option<String>,
+}
+
+impl State {
+    /// Point `app` at `server`, remembering where it pointed before.
+    ///
+    /// Re-binding to the server it already uses changes nothing, so a repeated
+    /// `use` does not make `use -` a no-op.
+    pub fn bind(&mut self, app: &str, server: &str) {
+        match self.bindings.insert(app.to_string(), server.to_string()) {
+            Some(before) if before != server => {
+                self.previous.insert(app.to_string(), before);
+            }
+            _ => {}
+        }
+    }
+
+    /// An app left the catalog: it points nowhere and is nobody's last switch.
+    pub fn forget_app(&mut self, app: &str) {
+        self.bindings.remove(app);
+        self.previous.remove(app);
+        self.forget_name(app);
+    }
+
+    /// A server left the catalog: whatever pointed at it - now or before -
+    /// points nowhere. Returns the apps that lost their binding.
+    pub fn forget_server(&mut self, server: &str) -> Vec<String> {
+        let unbound: Vec<String> = self.bindings.iter().filter(|(_, s)| *s == server).map(|(app, _)| app.clone()).collect();
+        self.bindings.retain(|_, s| s != server);
+        self.previous.retain(|_, s| s != server);
+        unbound
+    }
+
+    /// A name that may have been the last switch is gone.
+    pub fn forget_name(&mut self, name: &str) {
+        if self.last.as_deref() == Some(name) {
+            self.last = None;
+        }
+    }
 }
 
 /// The running gateway, read from its record in the job registry
@@ -267,10 +314,17 @@ pub struct State {
 #[derive(Clone)]
 pub struct Gateway {
     pub pid: u32,
+    /// Seconds since the epoch.
+    pub started: u64,
     /// Listening port per app at the moment the gateway started.
     pub ports: BTreeMap<u16, String>,
     /// Where the front door opened, when it did.
     pub front_port: Option<u16>,
+    /// Where it takes requests about itself; `None` for a gateway started by
+    /// a turnout before v0.22.
+    pub control: Option<crate::registry::Control>,
+    /// What it has noticed about the stands and is still seeing.
+    pub signals: Vec<crate::signal::Signal>,
 }
 
 /// Entity names are stable identifiers: lowercase letters, digits and inner dashes.
@@ -470,6 +524,64 @@ mod tests {
     fn generated_names_are_valid_names() {
         assert!(validate_name(&target_name("my-app", "kib-2")).is_ok());
         assert!(validate_name(&unique_target_name("web", "prod", &[a_target("web-prod")])).is_ok());
+    }
+
+    /// `use -` goes back one switch, and a repeated `use` of the same server
+    /// is not a switch.
+    #[test]
+    fn binding_remembers_the_server_before() {
+        let mut state = State::default();
+        state.bind("web", "dev");
+        assert!(state.previous.is_empty(), "the first binding has nothing before it");
+        state.bind("web", "prod");
+        assert_eq!(state.previous.get("web").map(String::as_str), Some("dev"));
+        state.bind("web", "prod");
+        assert_eq!(
+            state.previous.get("web").map(String::as_str),
+            Some("dev"),
+            "the same server again is not a switch"
+        );
+    }
+
+    /// Removing a server unbinds what pointed at it, now or before; removing
+    /// an app takes it out of every part of the state.
+    #[test]
+    fn removed_entities_leave_the_state() {
+        let mut state = State::default();
+        state.bind("web", "dev");
+        state.bind("web", "prod");
+        state.bind("api", "prod");
+        state.bind("admin", "dev");
+        state.last = Some("web".into());
+        assert_eq!(state.forget_server("prod"), vec!["api".to_string(), "web".to_string()]);
+        assert_eq!(state.bindings.get("admin").map(String::as_str), Some("dev"));
+        assert!(!state.bindings.contains_key("web"));
+        assert_eq!(
+            state.previous.get("web").map(String::as_str),
+            Some("dev"),
+            "a previous server that exists stays"
+        );
+        state.forget_server("dev");
+        assert!(state.previous.is_empty());
+        state.bind("web", "stage");
+        state.forget_app("web");
+        assert_eq!(state, State::default());
+    }
+
+    /// The fields `use -` added are optional on disk, so a state file written
+    /// before them reads as it was.
+    #[test]
+    fn an_older_state_file_still_reads() {
+        let state: State = serde_json::from_str(r#"{"bindings":{"web":"prod"}}"#).unwrap();
+        assert_eq!(state.bindings.get("web").map(String::as_str), Some("prod"));
+        assert!(state.previous.is_empty() && state.last.is_none());
+        assert_eq!(serde_json::to_string(&state).unwrap(), r#"{"bindings":{"web":"prod"}}"#);
+    }
+
+    /// A column of auth kinds lines up: Display pads, `write_str` would not.
+    #[test]
+    fn auth_kinds_fill_their_column() {
+        assert_eq!(format!("{:8}|", Auth::Key), "key     |");
     }
 
     #[test]

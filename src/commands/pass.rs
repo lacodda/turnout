@@ -9,15 +9,15 @@ use std::io::Read;
 use anyhow::{Context, Result, bail};
 use dialoguer::Password;
 
-use crate::cli::PassCommand;
+use crate::cli::{Format, PassCommand};
 use crate::model::Auth;
-use crate::{pick, secrets, store};
+use crate::{output, pick, secrets, store};
 
 pub fn run(command: PassCommand) -> Result<()> {
     match command {
         PassCommand::Set { credential } => set(credential),
         PassCommand::Copy { credential, user, show } => copy(credential, user, show),
-        PassCommand::List => list(),
+        PassCommand::List { format } => list(format),
         PassCommand::Remove { credential, assume_yes } => remove(credential, assume_yes),
     }
 }
@@ -99,19 +99,24 @@ fn copy(name: Option<String>, user: bool, show: bool) -> Result<()> {
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let credentials = store::load_credentials()?;
-    if credentials.is_empty() {
-        println!("No credentials yet - run `turnout credential add`.");
-        return Ok(());
-    }
-    let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
-    for credential in &credentials {
-        let stored = if secrets::get(&credential.name).is_ok() { "stored" } else { "-" };
-        println!("{:width$}  {}@  {:8}  {stored}", credential.name, credential.user, credential.auth);
-    }
-    println!("Secrets live in the OS keyring; copy one with `turnout pass copy NAME`.");
-    Ok(())
+/// The credentials and whether each has its secret - the same view
+/// `credential list` prints, so a script reads one shape for both.
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &crate::commands::credential::views()?, |credentials| {
+        if credentials.is_empty() {
+            return "No credentials yet - run `turnout credential add`.".to_string();
+        }
+        let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
+        let mut lines: Vec<String> = credentials
+            .iter()
+            .map(|credential| {
+                let stored = if credential.secret_stored { "stored" } else { "-" };
+                format!("{:width$}  {}@  {:8}  {stored}", credential.name, credential.user, credential.auth.as_str())
+            })
+            .collect();
+        lines.push("Secrets live in the OS keyring; copy one with `turnout pass copy NAME`.".to_string());
+        lines.join("\n")
+    })
 }
 
 fn remove(name: Option<String>, assume_yes: bool) -> Result<()> {

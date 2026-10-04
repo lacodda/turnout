@@ -69,7 +69,7 @@ russh-sftp = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tar = { version = "0.4.46", default-features = false }
-tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "io-util"] }
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "io-util", "sync"] }
 # The rustls feature is load-bearing: the gateway's default WebSocket path
 # passes `None` as the connector and relies on tungstenite's built-in rustls
 # (see websocket_proxy in gateway.rs); only the accept-invalid-certs path

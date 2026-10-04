@@ -217,6 +217,35 @@ pub fn failed(app: &str, command: &str, how: &str, reason: Option<&str>, places:
     }
 }
 
+/// The stand refused the session the gateway holds for an app. `login` is
+/// where the app answers, so the click lands on its login page.
+pub fn session_expired(app: &str, server: &str, login: &str) -> Toast {
+    Toast {
+        title: format!("{app}: the {server} session expired"),
+        body: "The stand refused the gateway's cookies. Log in again, or hand the gateway a cookie from the browser.".to_string(),
+        note: Some(format!("turnout cookie set {app}")),
+        open: Some(login.to_string()),
+        buttons: vec![Button::new("Log in", login)],
+        failure: true,
+    }
+}
+
+/// A stand behind the gateway answers 502, 503 or 504 - or nothing. `url` is
+/// the stand itself.
+pub fn stand_down(server: &str, status: Option<u16>, app: &str, url: &str) -> Toast {
+    Toast {
+        title: match status {
+            Some(status) => format!("{server} answers {status}"),
+            None => format!("{server} does not answer"),
+        },
+        body: format!("{app}'s requests fail at the stand, not in the app."),
+        note: Some("turnout status".to_string()),
+        open: Some(url.to_string()),
+        buttons: vec![Button::new("Open the stand", url)],
+        failure: true,
+    }
+}
+
 /// How long a toast line may run before it is cut.
 const REASON_CHARS: usize = 160;
 

@@ -3,6 +3,7 @@ pub mod app_wizard;
 pub mod backup;
 pub mod complete;
 pub mod completions;
+pub mod cookie;
 pub mod credential;
 pub mod deploy;
 pub mod deploy_setup;

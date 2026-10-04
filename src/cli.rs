@@ -31,6 +31,17 @@ pub struct Console {
     pub foreground: bool,
 }
 
+/// How a command that reports prints: for a person, or for a program.
+///
+/// One definition flattened into every reading command, so `--json` means the
+/// same everywhere and only appears where it does something.
+#[derive(Args, Clone, Copy, Default)]
+pub struct Format {
+    /// Print JSON instead of text - the same fields, for scripts and status bars
+    #[arg(long)]
+    pub json: bool,
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     /// Initialize the data directory and walk through first-run setup
@@ -39,8 +50,14 @@ pub enum Command {
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
     },
-    /// Show what turnout knows: apps, servers, bindings, gateway state
-    Status,
+    /// Show what turnout knows: apps and where they point, the gateway, jobs
+    Status {
+        #[command(flatten)]
+        format: Format,
+        /// One line for a shell prompt or a status bar: `prod · gw ok · 2 dev`
+        #[arg(short, long, conflicts_with = "json")]
+        short: bool,
+    },
     /// Manage apps - the local projects turnout works with
     App {
         #[command(subcommand)]
@@ -79,11 +96,11 @@ pub enum Command {
     },
     /// Bind an app (or a whole group) to a server - the daily switch command
     Use {
-        /// App or group name; picked interactively when omitted
+        /// App or group name, or `-` to undo the last switch; picked interactively when omitted
         app: Option<String>,
-        /// Target server; picked interactively when omitted
+        /// Target server, or `-` for the one it used before; picked interactively when omitted
         server: Option<String>,
-        /// Skip the stand reachability check
+        /// Skip the stand health check
         #[arg(short = 'n', long)]
         no_check: bool,
     },
@@ -96,6 +113,11 @@ pub enum Command {
     Gateway {
         #[command(subcommand)]
         command: GatewayCommand,
+    },
+    /// Hand the gateway a stand's session cookies - for stands you can only log in to in a browser
+    Cookie {
+        #[command(subcommand)]
+        command: CookieCommand,
     },
     /// Run the app's `dev` command (app resolved from the current directory if omitted)
     Dev {
@@ -139,8 +161,10 @@ pub enum Command {
     /// Show the jobs turnout runs: dev servers, builds, deploys and the gateway
     Ps {
         /// Keep the table on screen and refresh it every second
-        #[arg(short, long)]
+        #[arg(short, long, conflicts_with = "json")]
         watch: bool,
+        #[command(flatten)]
+        format: Format,
     },
     /// Print a job's output (the app of the current directory when omitted)
     Logs {
@@ -287,6 +311,9 @@ pub enum Command {
         /// List available backups and exit
         #[arg(short, long)]
         list: bool,
+        /// With --list: print the backups as JSON
+        #[arg(long, requires = "list")]
+        json: bool,
     },
     /// Print a shell completion script (source it from your shell profile)
     Completions {
@@ -357,11 +384,16 @@ pub enum GroupCommand {
         apps: Vec<String>,
     },
     /// List groups
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show a group and where its apps point
     Show {
         /// Group name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Add or remove apps in a group
     Edit {
@@ -402,6 +434,35 @@ pub enum GatewayCommand {
 }
 
 #[derive(Subcommand)]
+pub enum CookieCommand {
+    /// Replace the app's cookies for its stand with ones copied from a browser
+    ///
+    /// Reads the copied text from standard input when it is piped, otherwise
+    /// from the clipboard: the `Cookie` request header, or a whole request
+    /// copied as cURL from the browser's developer tools.
+    Set {
+        /// App name (defaults to the app of the current directory)
+        app: Option<String>,
+        /// The stand the cookies belong to (defaults to the app's current one)
+        #[arg(short, long)]
+        server: Option<String>,
+    },
+    /// Show which apps the gateway holds cookies for, by name only
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Forget the app's cookies for its stand - the gateway is logged out there
+    Clear {
+        /// App name (defaults to the app of the current directory)
+        app: Option<String>,
+        /// The stand to forget (defaults to the app's current one)
+        #[arg(short, long)]
+        server: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum PassCommand {
     /// Save or replace a credential's secret in the OS keyring
     Set {
@@ -420,7 +481,10 @@ pub enum PassCommand {
         show: bool,
     },
     /// List which credentials have a secret stored (never prints secrets)
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Remove a credential's stored secret; the credential itself stays
     Remove {
         /// Credential name; picked interactively when omitted
@@ -472,11 +536,16 @@ pub enum CredentialCommand {
         key: Option<String>,
     },
     /// List credentials
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show one credential in detail (never prints secrets)
     Show {
         /// Credential name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Edit a credential; with no flags an interactive wizard walks the fields
     Edit {
@@ -515,11 +584,16 @@ pub enum PathCommand {
         restart: Option<String>,
     },
     /// List paths
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show one path in detail
     Show {
         /// Path name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Edit a path; with no flags an interactive wizard walks the fields
     Edit {
@@ -561,11 +635,16 @@ pub enum TargetCommand {
         path: Option<String>,
     },
     /// List targets
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show one target in detail
     Show {
         /// Target name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Edit a target; with no flags an interactive wizard walks the fields
     Edit {
@@ -627,11 +706,16 @@ pub enum AppCommand {
         servers: Vec<String>,
     },
     /// List apps
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show one app in detail
     Show {
         /// App name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Edit an app; with no flags an interactive wizard walks the fields
     Edit {
@@ -696,11 +780,16 @@ pub enum ServerCommand {
         insecure: bool,
     },
     /// List servers
-    List,
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
     /// Show one server in detail
     Show {
         /// Server name; picked interactively when omitted
         name: Option<String>,
+        #[command(flatten)]
+        format: Format,
     },
     /// Edit a server; with no flags an interactive wizard walks the fields
     Edit {

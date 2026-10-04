@@ -7,15 +7,17 @@
 use anyhow::{Result, bail};
 use dialoguer::Input;
 
-use crate::cli::PathCommand;
+use serde::Serialize;
+
+use crate::cli::{Format, PathCommand};
 use crate::model::{normalize_remote_path, validate_name, validate_remote_path};
-use crate::{pick, store};
+use crate::{output, pick, store};
 
 pub fn run(command: PathCommand) -> Result<()> {
     match command {
         PathCommand::Add { name, dir, restart } => add(name, dir, restart),
-        PathCommand::List => list(),
-        PathCommand::Show { name } => show(&resolve(name, "Show path")?),
+        PathCommand::List { format } => list(format),
+        PathCommand::Show { name, format } => show(&resolve(name, "Show path")?, format),
         PathCommand::Edit { name, dir, restart } => {
             let name = resolve(name, "Edit path")?;
             edit(&name, dir, restart)
@@ -86,39 +88,63 @@ fn add(name: Option<String>, dir: Option<String>, restart: Option<String>) -> Re
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let paths = store::load_paths()?;
-    if paths.is_empty() {
-        println!("No paths yet - run `turnout path add`.");
-        return Ok(());
-    }
-    let width = paths.iter().map(|p| p.name.len()).max().unwrap_or(0);
-    for path in paths {
-        match &path.restart {
-            Some(restart) => println!("{:width$}  {}  (then: {restart})", path.name, path.dir),
-            None => println!("{:width$}  {}", path.name, path.dir),
+/// A path as `path list` and `path show` report it.
+#[derive(Serialize)]
+pub struct PathView {
+    pub name: String,
+    pub dir: String,
+    /// What runs on the server after writing here.
+    pub restart: Option<String>,
+    /// The deploy targets that write here.
+    pub used_by: Vec<String>,
+}
+
+/// Every path as a view, in catalog order.
+pub fn views() -> Result<Vec<PathView>> {
+    let targets = store::load_targets()?;
+    Ok(store::load_paths()?
+        .into_iter()
+        .map(|path| PathView {
+            used_by: targets.iter().filter(|t| t.path == path.name).map(|t| t.name.clone()).collect(),
+            name: path.name,
+            dir: path.dir,
+            restart: path.restart,
+        })
+        .collect())
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |paths| {
+        if paths.is_empty() {
+            return "No paths yet - run `turnout path add`.".to_string();
         }
-    }
-    Ok(())
+        let width = paths.iter().map(|p| p.name.len()).max().unwrap_or(0);
+        let lines: Vec<String> = paths
+            .iter()
+            .map(|path| match &path.restart {
+                Some(restart) => format!("{:width$}  {}  (then: {restart})", path.name, path.dir),
+                None => format!("{:width$}  {}", path.name, path.dir),
+            })
+            .collect();
+        lines.join("\n")
+    })
 }
 
-fn show(name: &str) -> Result<()> {
-    let paths = store::load_paths()?;
-    let path = paths.iter().find(|p| p.name == name).ok_or_else(|| unknown(name))?;
-    println!("{}", path.name);
-    println!("  Directory: {}", path.dir);
-    match &path.restart {
-        Some(restart) => println!("  After:     {restart}"),
-        None => println!("  After:     nothing"),
-    }
-    let used_by = used_by(name)?;
-    if !used_by.is_empty() {
-        println!("  Used by:   {}", used_by.join(", "));
-    }
-    Ok(())
+fn show(name: &str, format: Format) -> Result<()> {
+    let path = views()?.into_iter().find(|p| p.name == name).ok_or_else(|| unknown(name))?;
+    output::emit(format, &path, |path| {
+        let mut lines = vec![path.name.clone(), format!("  Directory: {}", path.dir)];
+        lines.push(match &path.restart {
+            Some(restart) => format!("  After:     {restart}"),
+            None => "  After:     nothing".to_string(),
+        });
+        if !path.used_by.is_empty() {
+            lines.push(format!("  Used by:   {}", path.used_by.join(", ")));
+        }
+        lines.join("\n")
+    })
 }
 
-/// Which deploy targets land in this path.
 fn used_by(name: &str) -> Result<Vec<String>> {
     Ok(store::load_targets()?.into_iter().filter(|t| t.path == name).map(|t| t.name).collect())
 }

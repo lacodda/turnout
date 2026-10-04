@@ -3,12 +3,13 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 use dialoguer::{Input, MultiSelect};
+use serde::Serialize;
 
-use crate::cli::AppCommand;
+use crate::cli::{AppCommand, Format};
 use crate::commands::app_wizard;
 use crate::detect;
 use crate::model::{App, Server, validate_name};
-use crate::{pick, store};
+use crate::{output, pick, store};
 
 pub fn run(command: AppCommand) -> Result<()> {
     match command {
@@ -23,8 +24,8 @@ pub fn run(command: AppCommand) -> Result<()> {
             commands,
             servers,
         } => add(name, path, port, env_var, env_file, dev_port, dist, commands, servers),
-        AppCommand::List => list(),
-        AppCommand::Show { name } => show(&resolve(name, "Show app")?),
+        AppCommand::List { format } => list(format),
+        AppCommand::Show { name, format } => show(&resolve(name, "Show app")?, format),
         AppCommand::Edit {
             name,
             path,
@@ -161,63 +162,127 @@ fn add(
     Ok(())
 }
 
-fn list() -> Result<()> {
-    let apps = store::load_apps()?;
-    if apps.is_empty() {
-        println!("No apps yet - run `turnout app add`.");
-        return Ok(());
-    }
-    let width = apps.iter().map(|a| a.name.len()).max().unwrap_or(0);
-    let path_width = apps.iter().map(|a| a.path.len()).max().unwrap_or(0);
-    for app in apps {
-        // The name, then the spare port behind it. The port used to be stuck
-        // straight onto the path with no separator - `/home/me/web:7100` reads
-        // as part of the directory.
-        let address = format!("http://{}.localhost", app.name);
-        let spare = app.gateway_port.map(|p| format!(" (spare :{p})")).unwrap_or_default();
-        println!("{:width$}  {:path_width$}  {address}{spare}", app.name, app.path);
-    }
-    Ok(())
+/// An app as `app list`, `app show` and `status` report it.
+#[derive(Serialize)]
+pub struct AppView {
+    pub name: String,
+    pub path: String,
+    /// Whether the project directory is still there.
+    pub path_exists: bool,
+    /// The server the app is bound to for development.
+    pub server: Option<String>,
+    /// The app's name behind the front door: the address to open and share.
+    pub address: String,
+    /// The port the dev server listens on, once the first `dev` fixed it.
+    pub dev_port: Option<u16>,
+    /// The app's own gateway port, and the URL on it - the spare way in.
+    pub gateway_port: Option<u16>,
+    pub gateway_url: Option<String>,
+    /// The variable that carries the gateway URL to the app's commands, and
+    /// the dotenv file turnout keeps it in.
+    pub env_var: String,
+    pub env_file: String,
+    pub dist: Option<String>,
+    pub commands: BTreeMap<String, String>,
+    /// The servers the app may use; empty means any.
+    pub servers: Vec<String>,
 }
 
-fn show(name: &str) -> Result<()> {
+impl AppView {
+    /// `door` is the front door's port, when the gateway has one open.
+    pub fn new(app: &App, state: &crate::model::State, door: Option<u16>) -> Self {
+        Self {
+            name: app.name.clone(),
+            path: app.path.clone(),
+            path_exists: Path::new(&app.path).is_dir(),
+            server: state.bindings.get(&app.name).cloned(),
+            address: crate::front::address(&app.name, door.unwrap_or(crate::front::PORT)),
+            dev_port: app.dev_port,
+            gateway_port: app.gateway_port,
+            gateway_url: app.gateway_url(),
+            env_var: app.gateway_env_name().to_string(),
+            env_file: app.env_file_name().to_string(),
+            dist: app.dist_dir.clone(),
+            commands: app.commands.clone(),
+            servers: app.servers.clone(),
+        }
+    }
+}
+
+/// Every app as a view, in catalog order.
+pub fn views() -> Result<Vec<AppView>> {
+    let state = store::load_state()?;
+    let door = front_door()?;
+    Ok(store::load_apps()?.iter().map(|app| AppView::new(app, &state, door)).collect())
+}
+
+/// The port the running gateway's front door opened on, if it did.
+fn front_door() -> Result<Option<u16>> {
+    Ok(crate::registry::gateway()?.and_then(|gateway| gateway.front_port))
+}
+
+fn list(format: Format) -> Result<()> {
+    output::emit(format, &views()?, |apps| {
+        if apps.is_empty() {
+            return "No apps yet - run `turnout app add`.".to_string();
+        }
+        let width = apps.iter().map(|a| a.name.len()).max().unwrap_or(0);
+        let path_width = apps.iter().map(|a| a.path.len()).max().unwrap_or(0);
+        let lines: Vec<String> = apps
+            .iter()
+            .map(|app| {
+                // The name, then the spare port behind it. The port used to be
+                // stuck straight onto the path with no separator -
+                // `/home/me/web:7100` reads as part of the directory.
+                let spare = app.gateway_port.map(|p| format!(" (spare :{p})")).unwrap_or_default();
+                let server = app.server.as_deref().map(|server| format!("  -> {server}")).unwrap_or_default();
+                format!("{:width$}  {:path_width$}  {}{spare}{server}", app.name, app.path, app.address)
+            })
+            .collect();
+        lines.join("\n")
+    })
+}
+
+fn show(name: &str, format: Format) -> Result<()> {
     let apps = store::load_apps()?;
-    let app = find(&apps, name)?;
-    println!("{}", app.name);
-    println!("  Path:     {}", app.path);
-    if !Path::new(&app.path).is_dir() {
-        println!("            (warning: directory no longer exists)");
-    }
-    // The front door first, the port second: the name is the address to use
-    // and to share, the port is the way in when the door is shut.
-    let door = crate::registry::gateway()?.and_then(|gateway| gateway.front_port).unwrap_or(crate::front::PORT);
-    match app.dev_port {
-        Some(port) => println!("  Address:  {} (dev server port {port})", crate::front::address(&app.name, door)),
-        None => println!(
-            "  Address:  {} (dev server port assigned on the first `turnout dev`)",
-            crate::front::address(&app.name, door)
-        ),
-    }
-    match app.gateway_port {
-        Some(port) => println!("  Spare:    http://localhost:{port} (the app's own gateway port)"),
-        None => println!("  Spare:    none - this app has no gateway port"),
-    }
-    println!("  Env:      {} -> {}", app.gateway_env_name(), app.env_file_name());
-    if let Some(dist) = &app.dist_dir {
-        println!("  Dist:     {dist}");
-    }
-    if app.commands.is_empty() {
-        println!("  Commands: none");
-    } else {
-        println!("  Commands:");
-        print_commands(&app.commands);
-    }
-    if app.servers.is_empty() {
-        println!("  Servers:  none allowed yet");
-    } else {
-        println!("  Servers:  {}", app.servers.join(", "));
-    }
-    Ok(())
+    let app = AppView::new(find(&apps, name)?, &store::load_state()?, front_door()?);
+    output::emit(format, &app, |app| {
+        let mut lines = vec![app.name.clone(), format!("  Path:     {}", app.path)];
+        if !app.path_exists {
+            lines.push("            (warning: directory no longer exists)".to_string());
+        }
+        lines.push(match &app.server {
+            Some(server) => format!("  Server:   {server}"),
+            None => format!("  Server:   none - bind one with `turnout use {} SERVER`", app.name),
+        });
+        // The front door first, the port second: the name is the address to use
+        // and to share, the port is the way in when the door is shut.
+        lines.push(match app.dev_port {
+            Some(port) => format!("  Address:  {} (dev server port {port})", app.address),
+            None => format!("  Address:  {} (dev server port assigned on the first `turnout dev`)", app.address),
+        });
+        lines.push(match &app.gateway_url {
+            Some(url) => format!("  Spare:    {url} (the app's own gateway port)"),
+            None => "  Spare:    none - this app has no gateway port".to_string(),
+        });
+        lines.push(format!("  Env:      {} -> {}", app.env_var, app.env_file));
+        if let Some(dist) = &app.dist {
+            lines.push(format!("  Dist:     {dist}"));
+        }
+        if app.commands.is_empty() {
+            lines.push("  Commands: none".to_string());
+        } else {
+            lines.push("  Commands:".to_string());
+            lines.push(commands_text(&app.commands).trim_end().to_string());
+        }
+        // An empty allow-list forbids nothing: `use` takes any server.
+        lines.push(if app.servers.is_empty() {
+            "  Servers:  any - no allow-list".to_string()
+        } else {
+            format!("  Servers:  {}", app.servers.join(", "))
+        });
+        lines.join("\n")
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -313,6 +378,10 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         store::save_targets(&targets)?;
         println!("Removed targets: {}.", dropped.join(", "));
     }
+    // Nothing points from it any more, and `use -` has nothing to go back to.
+    let mut state = store::load_state()?;
+    state.forget_app(name);
+    store::save_state(&state)?;
     crate::journal::record("app.remove", Some(name), None, None);
     println!("App '{name}' removed. The project on disk is untouched.");
     Ok(())
@@ -387,11 +456,13 @@ fn unknown_app(name: &str) -> anyhow::Error {
 }
 
 pub(super) fn print_commands(commands: &BTreeMap<String, String>) {
+    print!("{}", commands_text(commands));
+}
+
+fn commands_text(commands: &BTreeMap<String, String>) -> String {
     // Script names come from package.json and can be longer than the roles.
     let width = commands.keys().map(|n| n.len()).max().unwrap_or(0).max(8);
-    for (name, cmd) in commands {
-        println!("    {name:width$} {cmd}");
-    }
+    commands.iter().map(|(name, cmd)| format!("    {name:width$} {cmd}\n")).collect()
 }
 
 /// Apply NAME=CMD pairs; an empty CMD removes the command.

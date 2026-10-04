@@ -3,8 +3,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::model::Server;
-
 /// Normalize a project directory for storing and for spawning tools in it.
 /// Canonicalized via dunce so the result carries no `\\?\` prefix; this also
 /// fixes a lowercase drive letter, which would otherwise reach dev servers as
@@ -50,19 +48,6 @@ pub fn run_blocking<T>(future: impl Future<Output = Result<T>>) -> Result<T> {
         .build()
         .context("cannot start a runtime")?;
     runtime.block_on(future)
-}
-
-/// Best-effort reachability probe used by `use` before binding.
-pub fn check_reachable(server: &Server) -> Result<reqwest::StatusCode> {
-    run_blocking(async {
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .danger_accept_invalid_certs(server.accept_invalid_certs)
-            .timeout(std::time::Duration::from_secs(4))
-            .build()?;
-        let response = client.get(&server.url).send().await.with_context(|| format!("{} is unreachable", server.url))?;
-        Ok(response.status())
-    })
 }
 
 /// Keep our own standard handles out of a child we are about to detach.

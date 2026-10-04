@@ -55,6 +55,10 @@ pub struct Entry {
     /// How the job ended, once it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ended: Option<Ended>,
+    /// What the job has noticed and is still seeing - the gateway's word on
+    /// the stands behind it. Written by the job itself, as it changes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<crate::signal::Signal>,
 }
 
 /// What a job runs.
@@ -75,7 +79,19 @@ pub enum Work {
         /// Where the front door opened, when it did.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         front_port: Option<u16>,
+        /// Where the gateway takes requests about itself.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        control: Option<Control>,
     },
+}
+
+/// The gateway's control channel: a loopback port, and the token a request
+/// must carry. The token is what keeps a web page out - any page can send a
+/// request to a localhost port, none can read this file (ADR 0021).
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Control {
+    pub port: u16,
+    pub token: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -117,6 +133,7 @@ impl Entry {
             log,
             ready: None,
             ended: None,
+            signals: Vec::new(),
         }
     }
 
@@ -332,10 +349,13 @@ pub fn gateway() -> Result<Option<crate::model::Gateway>> {
 /// A record as the gateway it describes, whether or not it still runs.
 pub fn as_gateway(entry: Entry) -> Option<crate::model::Gateway> {
     match entry.work {
-        Work::Gateway { ports, front_port } => Some(crate::model::Gateway {
+        Work::Gateway { ports, front_port, control } => Some(crate::model::Gateway {
             pid: entry.pid,
+            started: entry.started,
             ports,
             front_port,
+            control,
+            signals: entry.signals,
         }),
         Work::Command { .. } => None,
     }
@@ -381,6 +401,10 @@ mod tests {
         let gateway = Work::Gateway {
             ports: BTreeMap::from([(7100, "web".to_string()), (7101, "api".to_string())]),
             front_port: Some(80),
+            control: Some(Control {
+                port: 51234,
+                token: "0f".repeat(32),
+            }),
         };
         let command = Work::Command {
             app: "myapp".into(),
@@ -393,12 +417,20 @@ mod tests {
                 url: Some("http://a.localhost".into()),
             });
             entry.ended = Some(Ended { at: 9, code: None });
+            entry.signals = vec![crate::signal::Signal {
+                kind: crate::signal::Kind::StandDown,
+                app: "web".into(),
+                server: "prod".into(),
+                status: None,
+                since: 7,
+            }];
             let text = serde_json::to_string(&entry).unwrap();
             let back: Entry = serde_json::from_str(&text).unwrap_or_else(|err| panic!("{err}: {text}"));
             assert_eq!(back.work, work);
             assert_eq!((back.pid, back.birth, back.detached), (entry.pid, entry.birth, true));
             assert_eq!(back.ready.unwrap().url.as_deref(), Some("http://a.localhost"));
             assert_eq!(back.ended.unwrap().code, None);
+            assert_eq!(back.signals, entry.signals);
         }
     }
 
