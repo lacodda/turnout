@@ -23,7 +23,7 @@ Point an app at a stand:
 $ turnout use web staging
 'web' now uses 'staging'.
 The running gateway picks this up automatically.
-Stand check: https://staging.example.com responded with 200 OK.
+'staging' is up: https://staging.example.com/health answered 200 in 84 ms.
 ```
 
 Nothing in the project changed - the app still talks to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it to the stand you picked. Your session survives the switch, because cookies are kept per app **and** stand.
@@ -79,24 +79,26 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.21.0
-Data directory: ~/.local/share/lacodda/turnout
-Apps:    2 (api, web)
-Servers: 2 (prod-eu, staging)
-Group:   contour (web, api)
-Creds:   1 (prod-deploy)
-Paths:   1 (wwwroot)
-Targets: 1 (web-prod-eu)
-Bindings:
-  api -> staging
-  web -> prod-eu
-Gateway: running (pid 24180)
-Front:   http://localhost - http://NAME.localhost
-Spare:   web:7100 -> VITE_API_URL, api:7101 -> TURNOUT_GATEWAY_URL
-Jobs:    2 running (api dev, web dev) - see `turnout ps`
-Recent:
-  2026-08-09T01:15:02Z  deploy         web -> prod-eu (142 files)
-  2026-08-09T01:12:44Z  use            web -> prod-eu
+turnout 0.22.0  ~/.local/share/lacodda/turnout
+
+Apps
+  api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
+  web  -> prod-eu  http://web.localhost  spare :7100 (VITE_API_URL)
+
+Gateway  running · pid 24180 · up 2h 05m
+  front door  http://localhost
+  ! 'staging' answers 502 - the stand is down, not the app (3m)
+
+Jobs  2 running - `turnout ps` shows the rest
+  api dev  ready      9m  http://api.localhost
+  web dev  ready     14m  http://web.localhost
+
+Recent
+   3m ago  deploy  web -> prod-eu (142 files)
+   6m ago  use     web -> prod-eu
+
+$ turnout status --short
+prod-eu · gw ok · 2 dev
 ```
 
 ## What you get
@@ -116,6 +118,8 @@ Recent:
 - **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong. Artifacts travel as a single archive instead of thousands of round trips, falling back to file-by-file when the server cannot unpack one. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
 - **Portable settings.** `export` writes your apps, servers, credentials, paths, targets and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
 - **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
+- **One window onto it all.** `status` shows where every app points, the gateway, running jobs and the latest actions, with clickable addresses; `status --short` puts `prod · gw ok · 2 dev` into a starship or tmux line; `use -` goes back to the stand before. Every command that reports takes `--json`.
+- **A gateway that speaks up.** A stand answering 502 or a session the stand refused shows in `status` and the prompt line, and once on the desktop - not as a mystery in your app. Stands behind single sign-on get their browser session handed over with `turnout cookie set`.
 - **Groups.** Bind a whole contour to one stand with a single `use`.
 - **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs. The short alias `tn` is installed alongside.
 - **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
@@ -178,10 +182,11 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.21.0, in daily use. Everything above works today: stands and switching
-between them, the gateway, secrets in the OS keyring, the quiet console, jobs
-in the background with `ps`, `logs`, `stop` and a notification when they are
-done, and build and deploy from any directory. What landed in each version:
+v0.22.0, in daily use. Everything above works today: stands and switching
+between them, the gateway and what it notices about them, secrets in the OS
+keyring, the quiet console, jobs in the background with a notification when
+they are done, `status` for a person, a prompt and a script, and build and
+deploy from any directory. What landed in each version:
 [the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation
