@@ -6,6 +6,20 @@ import starlight from '@astrojs/starlight';
 export default defineConfig({
 	site: 'https://lacodda.github.io',
 	base: '/turnout',
+	vite: {
+		build: {
+			rolldownOptions: {
+				// Astro puts a "use astro:head-inject" directive into every MDX page
+				// that imports a component, and the bundler warns that it may drop
+				// it. The directive is Astro's own, read by Astro before bundling;
+				// only that one warning is silenced, every other still prints.
+				onwarn(warning, warn) {
+					if (warning.code === 'MODULE_LEVEL_DIRECTIVE' && warning.message.includes('astro:head-inject')) return;
+					warn(warning);
+				},
+			},
+		},
+	},
 	integrations: [
 		starlight({
 			title: 'turnout',
