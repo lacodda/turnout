@@ -58,6 +58,8 @@ turnout pass list
 
 One line per credential: name, user, auth kind, and whether a secret is stored. Never the secrets themselves.
 
+`--json` prints the same array as [`turnout credential list --json`](/turnout/reference/credential/#list--show): one shape for both, with `secret_stored` saying whether the keyring holds a secret.
+
 ## remove
 
 ```bash

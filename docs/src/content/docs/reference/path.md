@@ -61,6 +61,8 @@ turnout path list          # one line per path: name, directory, post-write comm
 turnout path show wwwroot  # full card, plus which targets write into it
 ```
 
+Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
+
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/).
 
 ## edit

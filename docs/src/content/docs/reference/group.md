@@ -38,6 +38,8 @@ turnout group list           # groups and their members
 turnout group show contour   # members and where each one points now
 ```
 
+Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
+
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 
 ## edit / remove

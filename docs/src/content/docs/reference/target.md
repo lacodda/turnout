@@ -42,6 +42,8 @@ turnout target list          # name, app -> server, credential and path
 turnout target show myapp-prod   # full card, including the directory files land in
 ```
 
+Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
+
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/).
 
 `turnout server show` lists the targets that land on a server, and `turnout path show` the ones that write into a path - the relationship reads from every side.

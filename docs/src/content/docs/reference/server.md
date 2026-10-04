@@ -45,6 +45,8 @@ turnout server list         # one line per server: name, URL, label
 turnout server show prod    # full card: URL, SSH, credential, which targets land here
 ```
 
+`show` also names the apps whose allow-list has the server (**Used by**) and the apps bound to it right now (**Bound**). Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
+
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 
 ## edit

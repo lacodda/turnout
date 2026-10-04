@@ -37,6 +37,8 @@ This is what makes switching seamless:
 - stand cookie domains and login redirects never leak into the browser;
 - no more "why am I suddenly logged out" after touching env files.
 
+A stand whose login is a single sign-on page on another domain sends you back to its own address, not to `localhost`, so that login cannot happen through the gateway. Log in in the browser and hand the session over with [`turnout cookie set`](/turnout/reference/cookie/).
+
 ## What the gateway handles
 
 Real stands are messy, so the gateway is built for:
@@ -44,9 +46,28 @@ Real stands are messy, so the gateway is built for:
 - **HTTPS with self-signed certificates** - TLS verification is configured per server;
 - **redirects** - `Location` headers are rewritten so the browser never escapes to the stand's real address;
 - **WebSocket** and live streams;
-- **clear errors** - if a stand is down, you see "stand unreachable", not a cryptic proxy failure.
+- **clear errors** - if a stand is down, you see "stand unreachable", not a cryptic proxy failure - and the gateway [says so](#when-a-stand-misbehaves) outside the browser too.
 
 Response bodies are not rewritten: apps are expected to use relative URLs for API calls, which is the norm for SPA setups.
+
+## When a stand misbehaves
+
+The gateway sees every answer a stand gives. Two of them the app in the browser cannot tell from its own bugs, so the gateway says them out loud:
+
+| Signal | When | Gone when |
+| --- | --- | --- |
+| **The stand is down** | It answers 502, 503 or 504 - its web server is there, the application is not - or does not answer at all | It answers anything below 500 again |
+| **The session expired** | It answers 401 (or IIS's 440) to a request that carried the cookies the gateway holds for it | A login through the gateway sets new cookies, or [`turnout cookie set`](/turnout/reference/cookie/) hands it a session |
+
+A 401 on a request that carried no cookies is not a lapsed session - nobody had logged in yet, and the app's own login page is the answer. A stand that is down is down for every app pointed at it, so it is one signal; a session belongs to one app.
+
+A signal shows in three places:
+
+- **`turnout status`** - a line under the gateway, with how long it has been up;
+- **[the prompt line](/turnout/guides/prompt-line/)** - `prod 502`, `prod down`, `prod login`;
+- **one desktop [notification](/turnout/concepts/notifications/)** - when it goes up, not on every failing request. *staging answers 502* opens the stand; *myapp: the staging session expired* opens the app, where the login page is. A stand that flaps is not announced again for ten minutes; `status` still shows every episode.
+
+The gateway's log - `turnout logs gateway` - has a line for every signal that goes up and down, so an afternoon of outages can be read back later.
 
 ## Daily flow
 

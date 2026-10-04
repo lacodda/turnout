@@ -46,6 +46,8 @@ turnout credential show prod-deploy
 
 `show` prints the user, the auth kind, the key file if there is one, whether a secret is stored, and which servers use it. It never prints the secret - use [`turnout pass copy`](/turnout/reference/pass/) for that.
 
+Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/). The JSON says whether a secret is stored (`secret_stored`) and, like the text, never what it is.
+
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/).
 
 ## edit

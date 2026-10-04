@@ -137,7 +137,9 @@ myshop  /home/me/dev/myshop  http://myshop.localhost (spare :7100)
 api     /home/me/dev/api     http://api.localhost (spare :7101)
 ```
 
-The address is the one to use and to share; the **spare** is the app's own gateway port, the way in when the front door cannot open (see [gateway](/turnout/reference/gateway/#the-front-door)).
+The address is the one to use and to share; the **spare** is the app's own gateway port, the way in when the front door cannot open (see [gateway](/turnout/reference/gateway/#the-front-door)). A bound app ends its line with the server it points at.
+
+Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
 
 `show` warns if the project directory no longer exists on disk. Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 

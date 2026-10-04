@@ -12,6 +12,10 @@ A job in your terminal speaks there. A [job in the background](/turnout/concepts
 | A deploy went out | `myapp deployed` - the stand and how long it took | The stand's address |
 | Anything failed | `myapp build failed` - the line of output most likely to say why, the exit code, and the command that shows the rest | The log of that failure, [kept aside](/turnout/concepts/background-jobs/#a-failure-is-kept) |
 | A server that had come up ended by itself | `myapp stopped` - how long it ran | Its log |
+| The [gateway](/turnout/concepts/gateway/#when-a-stand-misbehaves) found a stand down | `staging answers 502` (or `does not answer`) | The stand itself |
+| The gateway found a session expired | `myapp: the staging session expired`, naming `turnout cookie set` | The app, where its login page is |
+
+The gateway's notifications come once per episode - when the stand goes down, not on every request that fails while it is - and a stand that comes back and fails again within ten minutes is not announced twice.
 
 The line quoted for a failure is the last one of the output that mentions an error, leaving out what npm, yarn or pnpm add about the script afterwards - `npm error code 2` is true and never the reason.
 
@@ -19,6 +23,7 @@ The line quoted for a failure is the last one of the output that mentions an err
 
 - **A job in your terminal.** You are looking at its result already; the terminal is where it speaks.
 - **A job you stopped.** `turnout stop` takes the supervisor down with the job, and you know why it ended.
+- **A request that fails while the stand is already known to be down.** One outage, one notification; `turnout status` keeps the rest.
 - **Progress.** One notification when the outcome is known, never one per step.
 
 A job that fails within its first moment is reported in the terminal that started it *and* in a notification: `--detach` waits most of a second for exactly those, and the notification is how every background job ends, whether or not somebody was still watching.

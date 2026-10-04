@@ -102,24 +102,28 @@ And when you come back with `turnout use myshop main`, you are **still logged in
 
 ```text
 $ turnout status
-turnout 0.21.0
-Data directory: C:\Users\me\AppData\Local\lacodda\turnout
-Apps:    1 (myshop)
-Servers: 2 (main, second)
-Creds:   1 (main-login)
-Paths:   none yet
-Bindings:
-  myshop -> second
-Gateway: running (pid 18324)
-Front:   http://localhost - http://NAME.localhost
-Spare:   myshop:7100 -> VITE_API_URL
+turnout 0.22.0  C:\Users\me\AppData\Local\lacodda\turnout
+
+Apps
+  myshop  -> second  http://myshop.localhost  spare :7100 (VITE_API_URL)
+
+Gateway  running · pid 18324 · up 25m
+  front door  http://localhost
+
+Catalog
+  servers      main, second
+  credentials  main-login
+  paths        none yet
+  targets      none yet
 ```
+
+The same in one line for your prompt - `second · gw ok` - is [`status --short`](/turnout/guides/prompt-line/); `turnout use -` takes `myshop` back to `main`.
 
 ## What the gateway handles for you
 
 - Stand redirects (`Location: https://api.example.com/...`) come back rewritten to `http://localhost:7100/...` - the browser never escapes to the stand.
 - WebSocket connections are proxied the same way (`wss` for https stands), with the same jar cookies.
-- A stand that is down answers with a clear `502: stand 'main' is unreachable` instead of a cryptic proxy error.
+- A stand that is down answers with a clear `502: stand 'main' is unreachable` instead of a cryptic proxy error - and the gateway [says so](/turnout/concepts/gateway/#when-a-stand-misbehaves) in `status` and on the desktop, as it does when the stand stops taking your session.
 - If the gateway itself restarts, the only cost is logging in to the stand again - jars live in the process memory.
 
 ## When a second app appears

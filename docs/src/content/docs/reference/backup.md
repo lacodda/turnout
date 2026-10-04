@@ -8,7 +8,7 @@ sidebar:
 
 ```bash
 turnout backup  [TARGET] [--server SERVER] [--credential NAME] [--path NAME]
-turnout restore [TARGET] [--server SERVER] [--credential NAME] [--path NAME] [--from NAME] [--list]
+turnout restore [TARGET] [--server SERVER] [--credential NAME] [--path NAME] [--from NAME] [--list [--json]]
 ```
 
 Backups are timestamped `tar.gz` archives of the target directory, stored on the server next to it in `{dir}.backups/`. `TARGET` is a [target](/turnout/reference/target/) name or an app name, and resolves - along with server, credential and path - exactly like in [`turnout deploy`](/turnout/reference/deploy/).
@@ -53,7 +53,8 @@ turnout restore myapp-prod --from 20260806-120000.tar.gz
 | `--credential` | `-C` | Credential for this run only, overriding the target's |
 | `--path` | `-p` | Named path to restore into, overriding the target's |
 | `--from` | `-f` | Backup archive name (defaults to the newest) |
-| `--list` | `-l` | List available backups and exit |
+| `--list` | `-l` | List available backups, newest first, and exit |
+| `--json` | | With `--list`: print `{"dir": ..., "backups": [...]}` instead - see [JSON output](/turnout/concepts/json-output/) |
 
 Restore empties the target directory, unpacks the chosen archive into it and runs the path's post-write command (the same one `deploy` uses) if there is one - so a rollback also restarts the service.
 

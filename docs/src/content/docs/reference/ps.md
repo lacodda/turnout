@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout ps [-w]
+turnout ps [-w | --json]
 ```
 
 Lists every [job](/turnout/concepts/background-jobs/) turnout knows about: what runs right now, in the background or in some other terminal, and how the last run of each command ended. The gateway is a job like any other and has its row.
@@ -25,6 +25,7 @@ web deploy    failed (exit 1)  -      -     -                      1m ago
 | Flag | Meaning |
 | --- | --- |
 | `-w, --watch` | Keep the table on screen and refresh it every second; Ctrl+C to quit |
+| `--json` | Print the jobs as a JSON array instead - see [below](#as-json) |
 
 ## The columns
 
@@ -43,3 +44,29 @@ Running jobs come first. A finished row stays until the next run of the same com
 ## Watching
 
 `--watch` redraws the table every second - a poor man's `top` for the jobs of your project. It needs a terminal; piped, `ps` without the flag prints the table once, as often as you ask.
+
+## As JSON
+
+`turnout ps --json` prints one object per row, in the same order - the fields a status bar or a script needs, with nothing to parse out of columns:
+
+```json
+[
+  {
+    "job": "web dev",
+    "app": "web",
+    "command": "dev",
+    "state": "ready",
+    "exit_code": null,
+    "pid": 31412,
+    "port": 5100,
+    "address": "http://web.localhost",
+    "background": true,
+    "started": "2026-10-04T09:12:44Z",
+    "ended": null,
+    "log": "C:\\Users\\me\\AppData\\Local\\lacodda\\turnout\\logs\\web.dev.log"
+  }
+]
+```
+
+`state` is one of `ready`, `running`, `done`, `failed`, `gone`; `exit_code` is set once a job ended by itself. Times are ISO 8601 in UTC. See [JSON output](/turnout/concepts/json-output/) for the rules every command's JSON follows.
+

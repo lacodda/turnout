@@ -11,7 +11,7 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0005](0005-no-legacy-import.md) | No import from the predecessor tool | accepted |
 | [0006](0006-starlight-diataxis-docs.md) | Docs: Astro Starlight structured by Diátaxis | accepted |
 | [0007](0007-json-catalogs.md) | Catalogs as one JSON file per entity kind | accepted |
-| [0008](0008-state-file-over-ipc.md) | Bindings travel through the state file, not IPC | accepted |
+| [0008](0008-state-file-over-ipc.md) | Bindings travel through the state file, not IPC | accepted; cookies use the channel of [0021](0021-a-control-channel-for-the-gateway.md) |
 | [0009](0009-trusted-publishing.md) | Registry publishing via OIDC trusted publishing | accepted |
 | [0010](0010-entity-split.md) | Servers, credentials and paths as three entities | accepted |
 | [0011](0011-russh-transport.md) | SSH on russh, and one TLS stack (rustls) | accepted |
@@ -23,3 +23,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0017](0017-jobs-are-captured-not-passed-through.md) | A job's output is captured, not passed through | accepted |
 | [0018](0018-a-registry-of-jobs.md) | A registry of jobs, one file per job, known by pid and birth | accepted |
 | [0019](0019-a-background-job-reports-once.md) | A background job reports once, keeps its failure, and can be the default | accepted |
+| [0020](0020-json-is-a-view-not-the-storage.md) | JSON output is a view, not the storage | accepted |
+| [0021](0021-a-control-channel-for-the-gateway.md) | A token-guarded control channel for the gateway | accepted |

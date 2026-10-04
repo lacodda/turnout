@@ -40,7 +40,10 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 $ turnout use web staging
 'web' now uses 'staging'.
 The running gateway picks this up automatically.
-Stand check: https://staging.example.com responded with 200 OK.
+'staging' is up: https://staging.example.com/health answered 200 in 84 ms.
+
+$ turnout status --short
+staging · gw ok · 1 dev
 
 $ cd ~/dev/web/src/components
 $ turnout dev --open
@@ -56,6 +59,12 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 <CardGrid stagger>
 	<Card title="Dev gateway" icon="rocket">
 		Your apps always talk to localhost; turnout routes requests to the selected stand. Switching is one command, and sessions survive it - the gateway keeps a cookie jar per app+server pair. You never type a port: turnout assigns them, and the app gets the address as a variable on `turnout dev` and from a dotenv file turnout keeps in step. And every app has one address of its own - `http://myapp.localhost` - whatever port its dev server took. The servers are one command away too: `turnout ssh` and `turnout exec` reach them with nothing to remember.
+	</Card>
+	<Card title="One window onto the switchyard" icon="information">
+		`turnout status` shows where every app points, the gateway, running jobs and the latest actions - in colour, with clickable addresses. `status --short` puts `prod · gw ok · 2 dev` into your prompt or tmux bar; `turnout use -` goes back to the stand before, and the server picker shows which stands are up before you pick one. Every command that reports takes `--json`.
+	</Card>
+	<Card title="The gateway speaks up" icon="warning">
+		When a stand answers 502 or its session expires, the gateway says so - in `status`, in the prompt line, and once on the desktop - instead of leaving you to debug your own app. A stand you can only log in to in a browser gets its session handed over with `turnout cookie set`, straight from the developer tools.
 	</Card>
 	<Card title="Servers, logins and paths, apart" icon="puzzle">
 		A machine, the credential that logs into it and the directory files land in are three named entities. Define the deploy account once and point every stand at it; the same web root serves staging and production without being retyped.

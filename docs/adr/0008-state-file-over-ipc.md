@@ -1,6 +1,6 @@
 # ADR 0008: Bindings travel through the state file, not IPC
 
-- Status: accepted
+- Status: accepted; for cookies, which must not touch the disk, see [ADR 0021](0021-a-control-channel-for-the-gateway.md)
 - Date: 2026-08-05
 
 ## Context
