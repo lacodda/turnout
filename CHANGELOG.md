@@ -7,6 +7,14 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.23.0] - 2026-10-08
+
+### Documentation
+- Describe the doctor, the cookie jar's semantics and the session check
+
+### Features
+- Doctor, a jar that honours Set-Cookie, dev that minds its port
+
 ## [0.22.0] - 2026-10-04
 
 ### Documentation
