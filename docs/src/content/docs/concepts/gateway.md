@@ -39,6 +39,18 @@ This is what makes switching seamless:
 
 A stand whose login is a single sign-on page on another domain sends you back to its own address, not to `localhost`, so that login cannot happen through the gateway. Log in in the browser and hand the session over with [`turnout cookie set`](/turnout/reference/cookie/).
 
+A jar keeps cookies the way a browser does ([RFC 6265](https://datatracker.ietf.org/doc/html/rfc6265)):
+
+- **a cookie the stand deletes is gone** - `Max-Age=0`, or an `Expires` in the past, is how a stand ends a session, and the cookie stops going back to it;
+- **a cookie expires** at its `Max-Age` or `Expires`; one with neither lasts as long as the gateway runs;
+- **`Path` and `Domain` decide where it goes** - a cookie set for `/api` is sent to `/api` and below, not to every path;
+- **a `Secure` cookie goes over HTTPS only** (and to a stand on `localhost`, as browsers do);
+- **a cookie for another domain is refused**, as a browser refuses it.
+
+Cookies handed over with `cookie set` carry no attributes - a `Cookie` header has none - so they are kept for the stand's whole host, every path, for the session.
+
+Whether a session is still alive *now* is a question for the stand. [`turnout doctor`](/turnout/reference/doctor/#is-the-session-alive) asks it: the gateway sends again the last `GET` that proved the session and reports what the stand answered.
+
 ## What the gateway handles
 
 Real stands are messy, so the gateway is built for:

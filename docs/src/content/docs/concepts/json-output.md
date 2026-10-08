@@ -8,10 +8,11 @@ Every command that reports something takes `--json` and prints the same thing as
 | Command | Prints |
 | --- | --- |
 | [`status --json`](/turnout/reference/status/#as-json) | The whole view: apps, groups, gateway and its signals, running jobs, catalogs, recent actions |
+| [`doctor --json`](/turnout/reference/doctor/#as-json) | Every check: its state, what it is about, the fix; the counts; with `--server`, the deploy step a problem stops |
 | [`ps --json`](/turnout/reference/ps/#as-json) | An array of jobs |
 | `app`, `server`, `credential`, `path`, `target`, `group` - `list --json` / `show NAME --json` | An array of entities / one entity |
 | [`pass list --json`](/turnout/reference/pass/#list) | The credentials, as `credential list --json` |
-| [`cookie list --json`](/turnout/reference/cookie/#list) | The jars the gateway holds, by cookie name |
+| [`cookie list --json`](/turnout/reference/cookie/#list) | The jars the gateway holds, by cookie name, with their expiry and the stand's last answer |
 | [`restore --list --json`](/turnout/reference/backup/) | The backups of a target, newest first |
 
 ```bash

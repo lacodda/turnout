@@ -55,11 +55,11 @@ turnout cookie list
 ```
 
 ```text
-myapp -> staging  csrftoken, lang, sessionid
+myapp -> staging  csrftoken, lang, sessionid · expire in 47m · the stand answered 200 3m ago
 admin -> staging  sessionid
 ```
 
-Which apps the gateway holds cookies for, and the cookies' names - never their values. `--json` prints `[{"app", "server", "cookies": [names]}]`.
+Which apps the gateway holds cookies for, and the cookies' names - never their values. When the first of them runs out, if any carries an expiry; and the stand's last answer to a request that carried them. `--json` prints `[{"app", "server", "cookies": [names], "expires", "last_answer": {"status", "at"}, "proven"}]` - `proven` is when a request last proved the session, the one [`turnout doctor`](/turnout/reference/doctor/#is-the-session-alive) sends again to ask whether it still does.
 
 ## clear
 
@@ -72,6 +72,8 @@ Forget the app's cookies for its stand: the next request there is logged out. `-
 ## When the session lapses
 
 When a stand refuses the cookies the gateway holds, the gateway [says so](/turnout/concepts/gateway/#when-a-stand-misbehaves): a line in `turnout status`, `prod login` in [the prompt line](/turnout/guides/prompt-line/), and one desktop notification that names this command. A fresh `cookie set` - or a login through the gateway - clears it.
+
+The gateway only learns of it when the app runs into it. To ask before that - in the morning, say - run [`turnout doctor`](/turnout/reference/doctor/#is-the-session-alive): it has the gateway send the stand the last request that proved the session, and tells you what it answered.
 
 ## How it reaches the gateway
 

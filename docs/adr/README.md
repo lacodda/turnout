@@ -5,7 +5,7 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | # | Title | Status |
 | --- | --- | --- |
 | [0001](0001-rust.md) | Rust as the implementation language | accepted |
-| [0002](0002-cookie-jar-gateway.md) | Dev gateway keeps a cookie jar per app+server | accepted |
+| [0002](0002-cookie-jar-gateway.md) | Dev gateway keeps a cookie jar per app+server | accepted; its semantics made whole in [0023](0023-the-jar-keeps-cookies-as-a-browser-does.md) |
 | [0003](0003-os-keyring.md) | Secrets live in the OS keyring | accepted |
 | [0004](0004-no-env-file-fallback.md) | No env-file generation fallback | accepted |
 | [0005](0005-no-legacy-import.md) | No import from the predecessor tool | accepted |
@@ -25,3 +25,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0019](0019-a-background-job-reports-once.md) | A background job reports once, keeps its failure, and can be the default | accepted |
 | [0020](0020-json-is-a-view-not-the-storage.md) | JSON output is a view, not the storage | accepted |
 | [0021](0021-a-control-channel-for-the-gateway.md) | A token-guarded control channel for the gateway | accepted |
+| [0022](0022-the-doctor-looks-and-repairs-only-what-it-owns.md) | The doctor looks, and repairs only what turnout owns | accepted |
+| [0023](0023-the-jar-keeps-cookies-as-a-browser-does.md) | The jar keeps cookies as a browser does, and can ask whether they still work | accepted |

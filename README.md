@@ -120,6 +120,7 @@ prod-eu · gw ok · 2 dev
 - **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
 - **One window onto it all.** `status` shows where every app points, the gateway, running jobs and the latest actions, with clickable addresses; `status --short` puts `prod · gw ok · 2 dev` into a starship or tmux line; `use -` goes back to the stand before. Every command that reports takes `--json`.
 - **A gateway that speaks up.** A stand answering 502 or a session the stand refused shows in `status` and the prompt line, and once on the desktop - not as a mystery in your app. Stands behind single sign-on get their browser session handed over with `turnout cookie set`.
+- **A doctor.** `turnout doctor` answers "why does it not work": a dev server left on the app's port, a dotenv file naming an old port, a stand that is down, a session that lapsed overnight, a tool missing from PATH - each with its fix, and `--fix` repairs what is turnout's to repair. `doctor --server prod` says where a deploy would stop, before it starts.
 - **Groups.** Bind a whole contour to one stand with a single `use`.
 - **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs. The short alias `tn` is installed alongside.
 - **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
@@ -182,11 +183,12 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.22.0, in daily use. Everything above works today: stands and switching
+v0.23.0, in daily use. Everything above works today: stands and switching
 between them, the gateway and what it notices about them, secrets in the OS
 keyring, the quiet console, jobs in the background with a notification when
-they are done, `status` for a person, a prompt and a script, and build and
-deploy from any directory. What landed in each version:
+they are done, `status` for a person, a prompt and a script, `doctor` for the
+day something does not work, and build and deploy from any directory. What
+landed in each version:
 [the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation

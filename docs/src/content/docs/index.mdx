@@ -66,6 +66,9 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 	<Card title="The gateway speaks up" icon="warning">
 		When a stand answers 502 or its session expires, the gateway says so - in `status`, in the prompt line, and once on the desktop - instead of leaving you to debug your own app. A stand you can only log in to in a browser gets its session handed over with `turnout cookie set`, straight from the developer tools.
 	</Card>
+	<Card title="A doctor for why it does not work" icon="magnifier">
+		`turnout doctor` finds the dev server a closed terminal left on the app's port, the dotenv file that names an old gateway port, the stand that is down and the session that lapsed overnight - each with its fix; `--fix` repairs what is turnout's to repair. `doctor --server prod` signs in as the deploy would and says where it would stop: a directory it cannot write, a full disk, a restart that wants a sudo password.
+	</Card>
 	<Card title="Servers, logins and paths, apart" icon="puzzle">
 		A machine, the credential that logs into it and the directory files land in are three named entities. Define the deploy account once and point every stand at it; the same web root serves staging and production without being retyped.
 	</Card>
