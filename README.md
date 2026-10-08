@@ -79,7 +79,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.22.0  ~/.local/share/lacodda/turnout
+turnout 0.23.0  ~/.local/share/lacodda/turnout
 
 Apps
   api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
