@@ -73,6 +73,11 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     // Before a single line is printed: a job that is already running is the
     // whole answer, and the port notes below would only bury it.
     job::ensure_free(&crate::registry::command_key(&app.name, command_name))?;
+    if command_name == "dev"
+        && let Some(port) = app.dev_port
+    {
+        clear_dev_port(&app.name, port)?;
+    }
     // The gateway address rides along as a variable for `dev` and for any
     // custom command - but not for `build`, `test` or `lint`. A variable in
     // the process environment overrides every dotenv file whatever the mode,
@@ -163,6 +168,40 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
         outcome.status.code().unwrap_or(1)
     };
     std::process::exit(code);
+}
+
+/// Make sure nothing else sits on the app's dev port before `dev` starts.
+///
+/// No job of the app runs - `ensure_free` said so - so whatever listens there
+/// is not turnout's: a dev server a closed terminal left behind, or one
+/// started by hand. Starting over it is the worst of both: the new server
+/// moves on to another port, the front door keeps routing to the old one,
+/// and the browser shows yesterday's code with no error anywhere. So the
+/// holder is named before anything starts, and in a terminal `dev` offers to
+/// end it; elsewhere it stops and says how.
+fn clear_dev_port(app: &str, port: u16) -> Result<()> {
+    let Some(holder) = crate::ports::holder(port) else {
+        return Ok(());
+    };
+    let pid = holder.pid.filter(|_| crate::pick::interactive());
+    if let Some(pid) = pid
+        && crate::pick::confirm_destructive(
+            format!(
+                "Dev port {port} of '{app}' is held by {}, which turnout did not start. End it?",
+                holder.describe()
+            ),
+            false,
+        )?
+    {
+        crate::commands::doctor::end_holder(pid, port)?;
+        eprintln!("[{app}] ended {} - dev port {port} is free", holder.describe());
+        return Ok(());
+    }
+    bail!(
+        "dev port {port} of '{app}' is held by {}, which turnout did not start - a dev server left behind, or one started by hand. \
+         Over it, the front door would keep showing that one. End it (`turnout doctor --fix`), or pin another port with `turnout app edit {app} --dev-port PORT`",
+        holder.describe()
+    )
 }
 
 /// What `--open` does once the server answers: open its front door, or say

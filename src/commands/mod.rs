@@ -7,6 +7,8 @@ pub mod cookie;
 pub mod credential;
 pub mod deploy;
 pub mod deploy_setup;
+pub mod doctor;
+pub mod doctor_server;
 pub mod exec;
 pub mod gateway;
 pub mod group;

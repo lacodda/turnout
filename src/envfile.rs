@@ -158,6 +158,134 @@ fn is_assignment(line: &str) -> bool {
     !line.is_empty() && !line.starts_with('#') && line.contains('=')
 }
 
+/// How an app's dotenv file stands against what turnout would write there.
+///
+/// The file is the road for an app started past turnout - from an IDE, or
+/// with `pnpm dev` by hand - and it drifts without a sound: the port moved
+/// while the gateway was not restarted, a hand edit renamed the variable, a
+/// teammate's line further down sets it again. The app then talks to a port
+/// nobody listens on, and the error it shows names its own code.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Drift {
+    /// Nothing to keep in step: no port and no block, or no project directory.
+    Nothing,
+    /// The block says what the port says, and nothing after it says otherwise.
+    InStep,
+    /// The app has a port and the file holds no block of ours - or there is
+    /// no file at all.
+    Missing,
+    /// The block says something else: another address, or another variable.
+    Stale { says: String },
+    /// The block is right, and a later line sets the same variable again.
+    /// Dotenv readers take the last assignment, so that line wins.
+    Shadowed { line: String },
+    /// The app has no port any more, and its block is still in the file.
+    Leftover,
+}
+
+/// Read the app's dotenv file and say how it stands; see [`Drift`].
+pub fn drift(app: &App) -> Result<Drift> {
+    let dir = Path::new(&app.path);
+    if !dir.is_dir() {
+        return Ok(Drift::Nothing);
+    }
+    let path = dir.join(app.env_file_name());
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => Some(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
+    };
+    Ok(judge(
+        text.as_deref(),
+        app.gateway_url().map(|url| format!("{}={url}", app.gateway_env_name())).as_deref(),
+    ))
+}
+
+/// The pure half of [`drift`]: the file's text, if there is a file, against
+/// the assignment turnout would write, if the app has a port.
+fn judge(text: Option<&str>, assignment: Option<&str>) -> Drift {
+    let lines: Vec<&str> = text.unwrap_or_default().lines().collect();
+    let header = lines.iter().position(|line| *line == HEADER);
+    let Some(assignment) = assignment else {
+        return if header.is_some() { Drift::Leftover } else { Drift::Nothing };
+    };
+    let Some(at) = header else {
+        return Drift::Missing;
+    };
+    let says = lines.get(at + 1).copied().filter(|line| is_assignment(line)).unwrap_or_default();
+    if says.trim() != assignment {
+        return Drift::Stale { says: says.trim().to_string() };
+    }
+    let variable = assignment.split('=').next().unwrap_or_default();
+    let again = lines[at + 2..].iter().rev().find(|line| {
+        let line = line.trim_start();
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        is_assignment(line) && line.split('=').next().is_some_and(|name| name.trim() == variable)
+    });
+    match again {
+        Some(line) if line.trim() != assignment => Drift::Shadowed { line: line.trim().to_string() },
+        _ => Drift::InStep,
+    }
+}
+
+/// What git makes of the app's dotenv file.
+#[derive(Debug, PartialEq, Eq)]
+pub enum InGit {
+    /// Not in a repository, or git is not there to ask.
+    Outside,
+    /// Ignored: it never shows in `git status`.
+    Ignored,
+    /// Not ignored: every rewrite shows up as a change to commit.
+    Noticed,
+    /// Committed: ignore rules no longer apply to it, and the local address
+    /// travels to everybody who pulls.
+    Tracked,
+}
+
+/// Ask git about the app's dotenv file. Git itself answers, rather than a
+/// reading of the `.gitignore` files: the answer also depends on
+/// `.git/info/exclude` and the user's global excludes, which only git reads
+/// the way git does.
+pub fn in_git(app: &App) -> InGit {
+    let dir = Path::new(&app.path);
+    let file = app.env_file_name();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .and_then(|status| status.code())
+    };
+    if !dir.is_dir() {
+        return InGit::Outside;
+    }
+    match git(&["ls-files", "--error-unmatch", "--", file]) {
+        Some(0) => return InGit::Tracked,
+        Some(1) => {}
+        // 128: not a repository; `None`: no git to ask.
+        _ => return InGit::Outside,
+    }
+    match git(&["check-ignore", "-q", "--", file]) {
+        Some(0) => InGit::Ignored,
+        Some(1) => InGit::Noticed,
+        _ => InGit::Outside,
+    }
+}
+
+/// Keep the app's dotenv file out of git, whether or not it was just written.
+pub fn keep_out_of_git(app: &App) -> Result<()> {
+    let dir = Path::new(&app.path);
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    ensure_ignored(dir, app.env_file_name())
+}
+
 /// Keep the dotenv file out of git.
 ///
 /// A repository is not always the app's own directory. In a monorepo the app
@@ -485,6 +613,45 @@ mod tests {
         ] {
             assert!(!covers(pattern, entry), "{pattern} should not cover {entry}");
         }
+    }
+
+    /// Every way the file can stand against the port, read from its text.
+    #[test]
+    fn the_file_is_judged_against_the_port() {
+        let line = "VITE_API_URL=http://localhost:7101";
+        let assignment = Some(line);
+        let written = render("A=1\n", line);
+        assert_eq!(judge(Some(&written), assignment), Drift::InStep);
+        assert_eq!(judge(None, assignment), Drift::Missing, "no file at all");
+        assert_eq!(judge(Some("A=1\n"), assignment), Drift::Missing, "a file without our block");
+        // The port moved and nobody rewrote the file.
+        let old = render("", "VITE_API_URL=http://localhost:7001");
+        assert_eq!(
+            judge(Some(&old), assignment),
+            Drift::Stale {
+                says: "VITE_API_URL=http://localhost:7001".into()
+            }
+        );
+        // A hand edit renamed the variable.
+        let renamed = render("", "API_URL=http://localhost:7101");
+        assert!(matches!(judge(Some(&renamed), assignment), Drift::Stale { .. }));
+        // A header with its line gone.
+        assert_eq!(judge(Some(&format!("{HEADER}\n# note\n")), assignment), Drift::Stale { says: String::new() });
+        // A later line wins over ours, `export` or not.
+        for later in ["VITE_API_URL=http://localhost:3000", "export VITE_API_URL=http://localhost:3000"] {
+            let shadowed = format!("{written}{later}\n");
+            assert_eq!(judge(Some(&shadowed), assignment), Drift::Shadowed { line: later.into() });
+        }
+        // The same value again, or another variable, changes nothing.
+        assert_eq!(
+            judge(Some(&format!("{written}VITE_API_URL=http://localhost:7101\nOTHER=1\n")), assignment),
+            Drift::InStep
+        );
+        assert_eq!(judge(Some(&format!("{written}VITE_API_URL_V2=x\n")), assignment), Drift::InStep);
+        // No port: a block left behind is a leftover; none is nothing.
+        assert_eq!(judge(Some(&written), None), Drift::Leftover);
+        assert_eq!(judge(Some("A=1\n"), None), Drift::Nothing);
+        assert_eq!(judge(None, None), Drift::Nothing);
     }
 
     #[test]

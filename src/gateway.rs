@@ -1,17 +1,20 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::body::Body;
 use axum::extract::ws::{Message as ClientMessage, WebSocket, WebSocketUpgrade};
 use axum::extract::{FromRequestParts, Request, State};
 use axum::http::header::{CONNECTION, CONTENT_LENGTH, COOKIE, HOST, LOCATION, SEC_WEBSOCKET_PROTOCOL, SET_COOKIE, TRANSFER_ENCODING, UPGRADE};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::Response;
 use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as StandMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+use crate::control::{SessionCheck, Verdict};
+use crate::jar::{Answer, Jar, Proof};
 use crate::model::{App, Server};
 use crate::signal::{Board, Kind, Seen, Signal};
 use crate::store;
@@ -21,8 +24,13 @@ pub(crate) const MAX_REQUEST_BODY: usize = 256 * 1024 * 1024;
 
 /// Cookies issued by stands, keyed by (app, server) - the browser never sees them.
 /// In-memory by design: restarting the gateway means logging in again (ADR 0002).
-pub(crate) type Jars = Arc<Mutex<HashMap<(String, String), HashMap<String, String>>>>;
-type Clients = Arc<Mutex<HashMap<String, reqwest::Client>>>;
+pub(crate) type Jars = Arc<Mutex<HashMap<(String, String), Jar>>>;
+pub(crate) type Clients = Arc<Mutex<HashMap<String, reqwest::Client>>>;
+
+/// How long the session check waits for the stand. A proving request
+/// answered within [`crate::jar::QUICK`] once; this is the margin for a stand
+/// that is slower this morning, not for one that is gone.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 struct Ctx {
@@ -231,7 +239,7 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
         let control = match open_control().await {
             Ok((port, listener)) => {
                 let token = crate::control::token();
-                tokio::spawn(crate::control::serve(listener, token.clone(), jars.clone(), watch.clone()));
+                tokio::spawn(crate::control::serve(listener, token.clone(), jars.clone(), clients.clone(), watch.clone()));
                 Some(crate::registry::Control { port, token })
             }
             Err(err) => {
@@ -292,28 +300,35 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
     // The request is consumed either way, so its parts are moved, not cloned -
     // this is the hot path of the whole gateway.
     let (parts, body) = req.into_parts();
-    let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    let path_query = parts.uri.path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
     let target = format!("{}{}", server.url.trim_end_matches('/'), path_query);
+    let url = reqwest::Url::parse(&target).with_context(|| format!("'{target}' is not a URL"))?;
     let mut headers = parts.headers;
     strip_hop_headers(&mut headers);
     headers.remove(HOST);
     // Only jar cookies travel to the stand; the browser's localhost cookies stay home.
     headers.remove(COOKIE);
     let jar_key = (ctx.app.clone(), server_name.clone());
-    let cookie = stored_cookie_header(&ctx.jars, &jar_key)?;
+    let cookie = stored_cookie_header(&ctx.jars, &jar_key, &url)?;
     let sent_cookies = cookie.is_some();
+    // A GET with cookies may turn out to prove the session; its headers are
+    // what the check sends again, so they are kept as the app sent them.
+    let get = parts.method == Method::GET;
+    let asked = (get && sent_cookies).then(|| headers.clone());
     if let Some(cookie) = cookie {
         headers.insert(COOKIE, cookie);
     }
 
     let body = axum::body::to_bytes(body, MAX_REQUEST_BODY).await.context("request body too large")?;
-    let upstream = match client.request(parts.method, &target).headers(headers).body(body).send().await {
+    let started = Instant::now();
+    let upstream = match client.request(parts.method, url.clone()).headers(headers).body(body).send().await {
         Ok(upstream) => upstream,
         Err(err) => {
             ctx.watch.see(&ctx.app, &server_name, Seen::Unreachable);
             bail!("stand '{server_name}' is unreachable: {err}");
         }
     };
+    let took = started.elapsed();
 
     let status = upstream.status();
     let mut resp_headers = upstream.headers().clone();
@@ -326,7 +341,20 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
             got_cookies: resp_headers.contains_key(SET_COOKIE),
         },
     );
-    capture_cookies(&ctx.jars, &jar_key, &resp_headers);
+    {
+        let mut jars = ctx.jars.lock().expect("cookie jar poisoned");
+        let jar = jars.entry(jar_key).or_default();
+        let taken = take_cookies(jar, &url, &resp_headers);
+        if sent_cookies {
+            let at = crate::registry::now();
+            jar.answered(Answer { status: status.as_u16(), at });
+            if let Some(headers) = asked
+                && crate::jar::proves(get, sent_cookies, status.as_u16(), taken.deleted, took)
+            {
+                jar.proved(Proof { path: path_query, headers, at });
+            }
+        }
+    }
     resp_headers.remove(SET_COOKIE);
     strip_hop_headers(&mut resp_headers);
     rewrite_location(&mut resp_headers, &server.url, ctx.port)?;
@@ -368,7 +396,11 @@ async fn websocket_proxy(ctx: Ctx, req: Request) -> Result<Response> {
 
     let mut request = target.into_client_request().context("cannot build the upstream websocket request")?;
     let jar_key = (ctx.app.clone(), server_name.clone());
-    let cookie = stored_cookie_header(&ctx.jars, &jar_key)?;
+    // The upgrade is an HTTP request, and its cookies are matched as one: a
+    // `ws://` address would leave out the HttpOnly and Secure ones.
+    let handshake = format!("{}{path_query}", server.url.trim_end_matches('/'));
+    let handshake = reqwest::Url::parse(&handshake).with_context(|| format!("'{handshake}' is not a URL"))?;
+    let cookie = stored_cookie_header(&ctx.jars, &jar_key, &handshake)?;
     let sent_cookies = cookie.is_some();
     if let Some(cookie) = cookie {
         request.headers_mut().insert(COOKIE, cookie);
@@ -547,34 +579,96 @@ fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
     Ok(client)
 }
 
-/// The jar's cookies as a ready `Cookie` header value, when the jar has any.
+/// The jar's cookies for a request to `url` as a ready `Cookie` header value,
+/// when any of them goes there.
 ///
-/// Shared by the HTTP and WebSocket proxies so the "stored cookie is not a
-/// valid header value" complaint has exactly one home.
-fn stored_cookie_header(jars: &Jars, key: &(String, String)) -> Result<Option<HeaderValue>> {
-    jar_cookie_header(jars, key)
+/// Shared by the HTTP and WebSocket proxies and the session check, so the
+/// "stored cookie is not a valid header value" complaint has exactly one home.
+fn stored_cookie_header(jars: &Jars, key: &(String, String), url: &reqwest::Url) -> Result<Option<HeaderValue>> {
+    let cookie = jars.lock().expect("cookie jar poisoned").get(key).and_then(|jar| jar.header(url));
+    cookie
         .map(|cookie| HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value"))
         .transpose()
 }
 
-fn jar_cookie_header(jars: &Jars, key: &(String, String)) -> Option<String> {
-    let jars = jars.lock().expect("cookie jar poisoned");
-    let jar = jars.get(key)?;
-    if jar.is_empty() {
-        return None;
-    }
-    Some(jar.iter().map(|(name, value)| format!("{name}={value}")).collect::<Vec<_>>().join("; "))
+/// Put an answer's `Set-Cookie` headers into the jar, the way a browser would.
+fn take_cookies(jar: &mut Jar, url: &reqwest::Url, headers: &HeaderMap) -> crate::jar::Taken {
+    jar.take(url, headers.get_all(SET_COOKIE).iter().filter_map(|value| value.to_str().ok()))
 }
 
-fn capture_cookies(jars: &Jars, key: &(String, String), headers: &HeaderMap) {
-    let mut jars = jars.lock().expect("cookie jar poisoned");
-    for value in headers.get_all(SET_COOKIE) {
-        let Ok(text) = value.to_str() else { continue };
-        let pair = text.split(';').next().unwrap_or_default();
-        if let Some((name, value)) = pair.split_once('=') {
-            jars.entry(key.clone()).or_default().insert(name.trim().to_string(), value.trim().to_string());
-        }
+/// Ask the stand whether the session of `app` is still good: send the request
+/// that last proved it again, with the jar's cookies as they are now.
+///
+/// What the stand answers also goes where every answer goes - the signal
+/// board and the jar - so a session the check finds expired says so in
+/// `status` and on the desktop, exactly as if the app had run into it.
+pub(crate) async fn check_session(jars: &Jars, clients: &Clients, watch: &Watch, app: &str, server_name: &str) -> Result<SessionCheck> {
+    let server = store::load_servers()?
+        .into_iter()
+        .find(|s| s.name == server_name)
+        .ok_or_else(|| anyhow!("server '{server_name}' is gone from the catalog"))?;
+    let key = (app.to_string(), server_name.to_string());
+    let (proof, empty) = {
+        let jars = jars.lock().expect("cookie jar poisoned");
+        let jar = jars.get(&key);
+        (jar.and_then(Jar::proof).cloned(), jar.is_none_or(Jar::is_empty))
+    };
+    let mut check = SessionCheck {
+        verdict: Verdict::Empty,
+        status: None,
+        path: None,
+        proven: None,
+    };
+    if empty {
+        return Ok(check);
     }
+    let Some(proof) = proof else {
+        check.verdict = Verdict::Unproven;
+        return Ok(check);
+    };
+    check.path = Some(proof.path.clone());
+    check.proven = Some(crate::output::iso8601(proof.at));
+    let target = format!("{}{}", server.url.trim_end_matches('/'), proof.path);
+    let url = reqwest::Url::parse(&target).with_context(|| format!("'{target}' is not a URL"))?;
+    let Some(cookie) = stored_cookie_header(jars, &key, &url)? else {
+        // Every cookie that request carried has run out since.
+        check.verdict = Verdict::Expired;
+        return Ok(check);
+    };
+    let mut headers = proof.headers;
+    headers.insert(COOKIE, cookie);
+    let client = client_for(clients, &server)?;
+    let answer = match client.get(url.clone()).headers(headers).timeout(CHECK_TIMEOUT).send().await {
+        Ok(answer) => answer,
+        Err(_) => {
+            watch.see(app, server_name, Seen::Unreachable);
+            check.verdict = Verdict::Unreachable;
+            return Ok(check);
+        }
+    };
+    // Only the status is wanted; the body is dropped unread with the answer.
+    let status = answer.status().as_u16();
+    watch.see(
+        app,
+        server_name,
+        Seen::Answered {
+            status,
+            sent_cookies: true,
+            got_cookies: answer.headers().contains_key(SET_COOKIE),
+        },
+    );
+    {
+        let mut jars = jars.lock().expect("cookie jar poisoned");
+        let jar = jars.entry(key).or_default();
+        take_cookies(jar, &url, answer.headers());
+        jar.answered(Answer {
+            status,
+            at: crate::registry::now(),
+        });
+    }
+    check.status = Some(status);
+    check.verdict = crate::control::verdict(status);
+    Ok(check)
 }
 
 /// Absolute redirects to the stand come back as localhost so the browser never leaves.

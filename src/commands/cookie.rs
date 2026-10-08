@@ -66,9 +66,22 @@ fn list(format: Format) -> Result<()> {
             return "The gateway holds no cookies - it is not running, or nothing has logged in through it yet.".to_string();
         }
         let width = jars.iter().map(|jar| jar.app.len() + jar.server.len() + 4).max().unwrap_or(0);
+        let now = crate::registry::now();
+        let span = |at: &str| output::parse_iso8601(at).map(|at| crate::progress::human_span(at.abs_diff(now)));
         let lines: Vec<String> = jars
             .iter()
-            .map(|jar| format!("{:width$}  {}", format!("{} -> {}", jar.app, jar.server), jar.cookies.join(", ")))
+            .map(|jar| {
+                let mut line = format!("{:width$}  {}", format!("{} -> {}", jar.app, jar.server), jar.cookies.join(", "));
+                if let Some(left) = jar.expires.as_deref().and_then(span) {
+                    line.push_str(&format!(" · expire in {left}"));
+                }
+                if let Some(answer) = &jar.last_answer
+                    && let Some(ago) = span(&answer.at)
+                {
+                    line.push_str(&format!(" · the stand answered {} {ago} ago", answer.status));
+                }
+                line
+            })
             .collect();
         lines.join("\n")
     })

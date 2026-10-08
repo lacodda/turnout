@@ -73,6 +73,33 @@ pub fn delete(credential: &str) -> Result<()> {
     }
 }
 
+/// The keyring account the doctor reads. A name no credential can have -
+/// names are lowercase letters, digits and dashes - so it never meets a real
+/// secret.
+const PROBE_ACCOUNT: &str = "turnout doctor probe";
+
+/// Whether the secret store answers, and what it is called.
+///
+/// A read of an entry that is not there: "no such entry" is an answer, and
+/// anything else means the store itself is out of reach - a locked keyring,
+/// no Secret Service on the bus. Nothing is written, so a check leaves
+/// nothing behind and asks no keychain for permission to change it.
+pub fn probe() -> Result<&'static str> {
+    match backend()? {
+        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, PROBE_ACCOUNT)?.get_password() {
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(if cfg!(windows) {
+                "Windows Credential Manager"
+            } else if cfg!(target_os = "macos") {
+                "macOS Keychain"
+            } else {
+                "Secret Service"
+            }),
+            Err(err) => Err(err).context("the keyring refused a read"),
+        },
+        Backend::InsecureFile => read_file_store().map(|_| "a plain file"),
+    }
+}
+
 fn read_file_store() -> Result<BTreeMap<String, String>> {
     let path = paths::data_dir()?.join(FILE_STORE);
     if !path.exists() {

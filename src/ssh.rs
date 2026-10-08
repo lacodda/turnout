@@ -417,11 +417,15 @@ async fn finish(file: &mut russh_sftp::client::fs::File, remote: &str) -> Result
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     //! The transport is exercised against a real SSH server: russh's server
     //! side, in-process, on a loopback port. Nothing is mocked below the
     //! protocol - auth, exec and SFTP all cross an actual TCP connection, so
     //! these tests fail for the same reasons a live stand would.
+    //!
+    //! The server is shared with the doctor's tests: [`Stand::spawn_shell`]
+    //! runs what it is sent through this machine's own shell, which is how
+    //! the commands the doctor builds for a server get run for real.
 
     use std::collections::HashMap;
     use std::io::{Seek, SeekFrom, Write};
@@ -448,7 +452,7 @@ mod tests {
 
     /// One running test server: its port, the directory SFTP writes into, and
     /// a counter of how many times the SFTP subsystem was opened.
-    struct Stand {
+    pub(crate) struct Stand {
         port: u16,
         root: tempfile::TempDir,
         subsystem_opens: Arc<AtomicUsize>,
@@ -457,6 +461,13 @@ mod tests {
     impl Stand {
         fn spawn() -> Self {
             Self::spawn_with(true)
+        }
+
+        /// A stand whose commands run in this machine's shell - `cmd /C` on
+        /// Windows, `sh -c` elsewhere, the shells sshd hands a command to on
+        /// either - with their real output and exit codes.
+        pub(crate) fn spawn_shell() -> Self {
+            Self::spawn_full(true, None, true)
         }
 
         /// A stand that refuses passwords, the way a hardened sshd does.
@@ -479,14 +490,14 @@ mod tests {
         /// it is dead code on Windows, which `clippy -D warnings` refuses.
         #[cfg(unix)]
         fn spawn_authorizing(authorized: russh::keys::PublicKey) -> Self {
-            Self::spawn_full(false, Some(authorized))
+            Self::spawn_full(false, Some(authorized), false)
         }
 
         fn spawn_with(passwords_accepted: bool) -> Self {
-            Self::spawn_full(passwords_accepted, None)
+            Self::spawn_full(passwords_accepted, None, false)
         }
 
-        fn spawn_full(passwords_accepted: bool, authorized: Option<russh::keys::PublicKey>) -> Self {
+        fn spawn_full(passwords_accepted: bool, authorized: Option<russh::keys::PublicKey>, real_shell: bool) -> Self {
             let root = tempfile::tempdir().expect("a scratch directory for the SFTP root");
             let subsystem_opens = Arc::new(AtomicUsize::new(0));
             let served_root = root.path().to_path_buf();
@@ -513,6 +524,7 @@ mod tests {
                         subsystem_opens: served_opens,
                         passwords_accepted,
                         authorized,
+                        real_shell,
                     };
                     let _ = server::Server::run_on_socket(&mut factory, config, &socket).await;
                 });
@@ -521,7 +533,7 @@ mod tests {
             Self { port, root, subsystem_opens }
         }
 
-        fn session(&self) -> Session {
+        pub(crate) fn session(&self) -> Session {
             Session::open("127.0.0.1", self.port, USER, AuthMaterial::Password(PASSWORD.into())).expect("password sign-in on loopback")
         }
     }
@@ -532,6 +544,7 @@ mod tests {
         passwords_accepted: bool,
         /// When set, the only public key this stand accepts.
         authorized: Option<russh::keys::PublicKey>,
+        real_shell: bool,
     }
 
     impl server::Server for Factory {
@@ -544,6 +557,7 @@ mod tests {
                 channels: HashMap::new(),
                 passwords_accepted: self.passwords_accepted,
                 authorized: self.authorized.clone(),
+                real_shell: self.real_shell,
             }
         }
     }
@@ -554,6 +568,7 @@ mod tests {
         channels: HashMap<ChannelId, ServerChannel<ServerMsg>>,
         passwords_accepted: bool,
         authorized: Option<russh::keys::PublicKey>,
+        real_shell: bool,
     }
 
     fn rejected() -> AuthAnswer {
@@ -609,7 +624,28 @@ mod tests {
         async fn exec_request(&mut self, channel: ChannelId, data: &[u8], session: &mut ServerSession) -> Result<(), Self::Error> {
             let command = String::from_utf8_lossy(data).into_owned();
             session.channel_success(channel)?;
-            if let Some(text) = command.strip_prefix("echo ") {
+            if self.real_shell {
+                #[cfg(windows)]
+                let mut shell = {
+                    let mut shell = std::process::Command::new("cmd");
+                    // `raw_arg`: cmd reads its command line itself, and the
+                    // quoting std would add around it is not what sshd sends.
+                    std::os::windows::process::CommandExt::raw_arg(&mut shell, format!("/C {command}"));
+                    shell
+                };
+                #[cfg(not(windows))]
+                let mut shell = {
+                    let mut shell = std::process::Command::new("sh");
+                    shell.args(["-c", &command]);
+                    shell
+                };
+                let output = shell.stdin(std::process::Stdio::null()).output()?;
+                session.data(channel, output.stdout)?;
+                if !output.stderr.is_empty() {
+                    session.extended_data(channel, 1, output.stderr)?;
+                }
+                session.exit_status_request(channel, output.status.code().unwrap_or(1) as u32)?;
+            } else if let Some(text) = command.strip_prefix("echo ") {
                 session.data(channel, format!("{text}\n").into_bytes())?;
                 session.exit_status_request(channel, 0)?;
             } else if command == "fail" {

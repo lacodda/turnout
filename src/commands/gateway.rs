@@ -49,7 +49,8 @@ fn start() -> Result<()> {
     // child would only fail its bind and exit with nothing to show for it.
     for (port, app) in &ports {
         if port_answers(*port) {
-            bail!("port {port} is already in use by another process - free it, or give '{app}' another port with `turnout app edit {app} --port PORT`");
+            let holder = crate::ports::holder(*port).map_or_else(|| "another process".to_string(), |holder| holder.describe());
+            bail!("port {port} is already in use by {holder} - free it, or give '{app}' another port with `turnout app edit {app} --port PORT`");
         }
     }
 

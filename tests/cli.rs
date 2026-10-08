@@ -326,11 +326,11 @@ fn gateway_start_refuses_a_port_another_process_holds() {
     // The spawn would succeed and the child would fail its bind and exit;
     // `start` used to take the spawn for the start and record a pid that was
     // already gone. Now the taken port is named before anything is spawned.
-    turnout(dir.path())
-        .args(["gateway", "start"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains(format!("port {port} is already in use by another process")).and(predicate::str::contains("app edit myapp --port")));
+    turnout(dir.path()).args(["gateway", "start"]).assert().failure().stderr(
+        predicate::str::contains(format!("port {port} is already in use by "))
+            .and(predicate::str::contains(format!("(pid {})", std::process::id())))
+            .and(predicate::str::contains("app edit myapp --port")),
+    );
     assert!(!dir.path().join("jobs").join("gateway.json").exists(), "a dead gateway was recorded");
 }
 
@@ -1348,6 +1348,7 @@ fn spawn_stand(listener: std::net::TcpListener) -> u16 {
             use axum::http::HeaderMap;
             use axum::routing::get;
             let base = format!("http://127.0.0.1:{port}");
+            let revoked = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let app = axum::Router::new()
                 .route(
                     "/hello",
@@ -1360,6 +1361,40 @@ fn spawn_stand(listener: std::net::TcpListener) -> u16 {
                 .route("/health", get(|| async { "ok" }))
                 // A stand whose session lapsed: it refuses whatever cookie it gets.
                 .route("/expire", get(|| async { (axum::http::StatusCode::UNAUTHORIZED, "log in again") }))
+                // A session the stand ends on its own side: `/me` knows the
+                // session cookie until `/revoke` is called.
+                .route(
+                    "/me",
+                    get({
+                        let revoked = revoked.clone();
+                        move |headers: HeaderMap| {
+                            let revoked = revoked.clone();
+                            async move {
+                                let cookie = headers.get("cookie").and_then(|v| v.to_str().ok()).unwrap_or_default();
+                                if cookie.contains("sid=abc123") && !revoked.load(std::sync::atomic::Ordering::SeqCst) {
+                                    (axum::http::StatusCode::OK, "me")
+                                } else {
+                                    (axum::http::StatusCode::UNAUTHORIZED, "who are you?")
+                                }
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/revoke",
+                    get({
+                        let revoked = revoked.clone();
+                        move || {
+                            let revoked = revoked.clone();
+                            async move {
+                                revoked.store(true, std::sync::atomic::Ordering::SeqCst);
+                                "revoked"
+                            }
+                        }
+                    }),
+                )
+                // A logout: the stand deletes its session cookie.
+                .route("/bye", get(|| async { ([("set-cookie", "sid=deleted; Path=/; Max-Age=0")], "bye") }))
                 // A stand whose application is down behind its proxy.
                 .route("/down", get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "bad gateway") }))
                 .route("/sick/health", get(|| async { (axum::http::StatusCode::SERVICE_UNAVAILABLE, "unavailable") }))
@@ -3635,7 +3670,13 @@ fn cookie_set_hands_a_browser_session_to_the_gateway() {
 
     let output = turnout(dir.path()).args(["cookie", "list", "--json"]).output().unwrap();
     let jars: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(jars, serde_json::json!([{"app": "myapp", "server": "stand", "cookies": ["lang", "sid"]}]));
+    assert_eq!(jars.as_array().map(Vec::len), Some(1), "{jars}");
+    assert_eq!(jars[0]["app"], "myapp");
+    assert_eq!(jars[0]["server"], "stand");
+    assert_eq!(jars[0]["cookies"], serde_json::json!(["lang", "sid"]));
+    assert_eq!(jars[0]["expires"], serde_json::Value::Null, "cookies from a browser last for the session");
+    assert_eq!(jars[0]["last_answer"]["status"], 200, "{jars}");
+    assert!(jars[0]["proven"].is_string(), "the GET that carried them proved them: {jars}");
     let journal = std::fs::read_to_string(dir.path().join("journal.jsonl")).unwrap();
     assert!(journal.contains(r#""action":"cookie.set""#), "{journal}");
     assert!(!journal.contains("from-the-browser"), "the session leaked into the journal: {journal}");
@@ -3691,6 +3732,241 @@ fn the_control_channel_refuses_requests_without_the_token() {
             .header("content-type", "application/json")
             .body(r#"{"cookies":[["sid","planted"]]}"#);
         assert_eq!(put.send().await.unwrap().status(), 403, "a page must not plant a session");
+        let check = format!("http://127.0.0.1:{port}/jar/myapp/stand/check");
+        assert_eq!(client.post(&check).send().await.unwrap().status(), 403, "nor make the gateway send requests");
         assert_eq!(client.get(&url).bearer_auth(&token).send().await.unwrap().status(), 200);
     });
+}
+
+// --- v0.23: the doctor, and the jar that honours Set-Cookie ------------------------------
+
+/// `doctor` with `args`, its JSON parsed, and its exit code.
+fn doctor_json(data_dir: &std::path::Path, args: &[&str]) -> (serde_json::Value, Option<i32>) {
+    // The plain-file store: a doctor in CI must not wait on a keyring daemon.
+    let output = turnout(data_dir)
+        .env("TURNOUT_KEYRING", "insecure-file")
+        .arg("doctor")
+        .args(args)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let view = serde_json::from_slice(&output.stdout).unwrap_or_else(|err| {
+        panic!(
+            "{err}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    (view, output.status.code())
+}
+
+/// The first check of a kind, about a subject.
+fn a_check<'a>(view: &'a serde_json::Value, check: &str, subject: Option<&str>) -> &'a serde_json::Value {
+    view["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["check"] == check && subject.is_none_or(|subject| c["subject"] == subject))
+        .unwrap_or_else(|| panic!("no '{check}' check about {subject:?} in {view:#}"))
+}
+
+#[test]
+fn the_doctor_before_setup_names_the_way_in() {
+    let dir = tempfile::tempdir().unwrap();
+    let (view, code) = doctor_json(dir.path(), &[]);
+    assert_eq!(code, Some(1), "a failed check is a failed exit");
+    let setup = a_check(&view, "setup", None);
+    assert_eq!(setup["state"], "fail");
+    assert_eq!(setup["fix"], "turnout setup");
+    assert_eq!(view["problems"], 1);
+}
+
+/// The two usual "why does it not work": a process sitting on the dev port,
+/// and a dotenv file that names the old gateway port. The doctor names both;
+/// `--fix` rewrites the file, and leaves the process to a yes nobody off a
+/// terminal can give; `dev` refuses to start over it.
+#[test]
+fn the_doctor_finds_a_stray_on_the_dev_port_and_a_drifted_dotenv_file() {
+    let (dir, project) = workspace();
+    // The test process plays the dev server a closed terminal left behind.
+    let (dev_port, _stray) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    drop(gateway_reservation);
+    let echo = "dev=echo up";
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string(), "--dev-port", &dev_port.to_string(), "--command", echo])
+        .assert()
+        .success();
+    let env_file = project.join(".env.development.local");
+    let written = std::fs::read_to_string(&env_file).unwrap();
+    std::fs::write(&env_file, written.replace(&gateway_port.to_string(), "7001")).unwrap();
+
+    let (view, code) = doctor_json(dir.path(), &[]);
+    assert_eq!(code, Some(1), "{view:#}");
+    let stray = a_check(&view, "dev_port", Some("myapp"));
+    assert_eq!(stray["state"], "warn", "{stray}");
+    assert_eq!(stray["fixable"], true);
+    let pid = std::process::id().to_string();
+    assert!(stray["message"].as_str().unwrap().contains(&format!("pid {pid}")), "{stray}");
+    let drift = a_check(&view, "env_file", Some("myapp"));
+    assert_eq!(drift["state"], "fail", "{drift}");
+    assert!(drift["message"].as_str().unwrap().contains("http://localhost:7001"), "{drift}");
+    assert_eq!(drift["fix"], "turnout doctor --fix");
+
+    // Nothing that would start here can start over the stray.
+    turnout(dir.path())
+        .args(["dev", "myapp"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(format!("dev port {dev_port} of 'myapp' is held by")).and(predicate::str::contains(format!("pid {pid}"))));
+
+    // `--fix` off a terminal: the file is ours to rewrite, the process is not
+    // ours to end without a yes.
+    let output = turnout(dir.path()).args(["doctor", "--fix", "--json"]).output().unwrap();
+    let fixed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("ending a process needs a yes"), "{stderr}");
+    assert_eq!(
+        fixed["fixed"],
+        serde_json::json!([format!(
+            "myapp: wrote TURNOUT_GATEWAY_URL=http://localhost:{gateway_port} to .env.development.local"
+        )])
+    );
+    assert_eq!(a_check(&fixed, "env_file", Some("myapp"))["state"], "ok", "{fixed:#}");
+    assert_eq!(a_check(&fixed, "dev_port", Some("myapp"))["state"], "warn", "the stray is still there");
+    assert!(std::fs::read_to_string(&env_file).unwrap().contains(&format!("localhost:{gateway_port}")));
+}
+
+/// A stand that ends a session with a deleting `Set-Cookie` is obeyed: the
+/// cookie leaves the jar and stops going to the stand (ADR 0002).
+#[test]
+fn a_cookie_the_stand_deletes_leaves_the_jar() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    spawn_stand(stand_listener);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+    let _gateway = run_gateway(dir.path(), gateway_reservation);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{gateway_port}{path}");
+        runtime.block_on(async move { reqwest::get(url).await.unwrap().text().await.unwrap() })
+    };
+    get("/hello");
+    assert_eq!(get("/echo-cookie"), "sid=abc123");
+    get("/bye");
+    assert_eq!(get("/echo-cookie"), "none", "the deleted cookie went back to the stand");
+}
+
+/// The doctor asks the stand whether the session is still alive by sending
+/// the request that last proved it again - and a session the stand ended on
+/// its side reads as expired, with the way to log in again.
+#[test]
+fn the_doctor_checks_a_session_by_asking_the_stand_again() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    spawn_stand(stand_listener);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+    let _gateway = run_gateway(dir.path(), gateway_reservation);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{gateway_port}{path}");
+        runtime.block_on(async move { reqwest::get(url).await.unwrap().status().as_u16() })
+    };
+
+    let (view, _) = doctor_json(dir.path(), &[]);
+    let session = a_check(&view, "session", Some("myapp"));
+    assert_eq!(session["state"], "info", "nobody logged in yet: {session}");
+    assert!(session["message"].as_str().unwrap().contains("no session on stand"), "{session}");
+
+    assert_eq!(get("/hello"), 200, "logs in");
+    assert_eq!(get("/me"), 200, "a request the session proves");
+    let (view, _) = doctor_json(dir.path(), &[]);
+    let session = a_check(&view, "session", Some("myapp"));
+    assert_eq!(session["state"], "ok", "{session}");
+    assert!(session["message"].as_str().unwrap().contains("GET /me answers 200"), "{session}");
+    assert_eq!(a_check(&view, "stand", Some("stand"))["state"], "ok");
+    assert_eq!(a_check(&view, "gateway", None)["state"], "ok");
+
+    // The stand ends the session on its side; nothing local has noticed yet.
+    runtime.block_on(async { reqwest::get(format!("http://127.0.0.1:{stand_port}/revoke")).await.unwrap() });
+    let (view, code) = doctor_json(dir.path(), &[]);
+    assert_eq!(code, Some(1));
+    let session = a_check(&view, "session", Some("myapp"));
+    assert_eq!(session["state"], "fail", "{session}");
+    assert!(session["message"].as_str().unwrap().contains("GET /me now answers 401"), "{session}");
+    assert!(session["fix"].as_str().unwrap().contains("turnout cookie set myapp"), "{session}");
+    // What the check saw went where every answer goes.
+    wait_until("the session signal", || signals(dir.path()).iter().any(|s| s["kind"] == "session_expired"));
+}
+
+/// `doctor --server` says where a deploy would stop: here, at the
+/// connection, since nothing answers on the SSH port.
+#[test]
+fn the_server_doctor_names_the_step_a_deploy_would_stop_at() {
+    let (dir, _project) = workspace();
+    let (ssh_port, ssh_reservation) = reserved_port();
+    drop(ssh_reservation);
+    turnout(dir.path())
+        .args(["credential", "add", "deploy", "--user", "deploy", "--auth", "agent"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args([
+            "server",
+            "add",
+            "box",
+            "--url",
+            "http://127.0.0.1:9",
+            "--host",
+            &format!("127.0.0.1:{ssh_port}"),
+            "--credential",
+            "deploy",
+        ])
+        .assert()
+        .success();
+    let (view, code) = doctor_json(dir.path(), &["--server", "box"]);
+    assert_eq!(code, Some(1));
+    assert_eq!(view["server"], "box");
+    assert_eq!(a_check(&view, "sshd", Some("box"))["state"], "fail", "{view:#}");
+    assert_eq!(a_check(&view, "web", Some("box"))["state"], "fail");
+    assert_eq!(view["deploy_stops_at"], "connect");
+    turnout(dir.path())
+        .args(["doctor", "--server", "box"])
+        .assert()
+        .code(1)
+        .stdout(predicate::str::contains("┌  Server box").and(predicate::str::contains("a deploy would stop at the connect step")));
+    turnout(dir.path())
+        .args(["doctor", "--server", "nope"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no server named 'nope'"));
+    turnout(dir.path())
+        .args(["doctor", "--server", "box", "--fix"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
 }

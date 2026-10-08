@@ -29,7 +29,7 @@ exclude = [
 winresource = "0.1"
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Registry", "Win32_System_Threading"] }
 # Toasts go through WinRT directly: only a toast of our own XML can carry
 # protocol activation, which opens the log or the page after turnout exited.
 # The same crate russh's pageant already builds.
@@ -53,6 +53,9 @@ clap_complete = "4.6.11"
 cliclack = "0.5.6"
 # Rides along with cliclack anyway; used directly to clear the screen for `ps --watch`.
 console = "0.16"
+# The gateway's cookie jar: RFC 6265 storage and matching - expiry, deletion,
+# Path and Domain. Without its defaults: no public suffix list, no serde.
+cookie_store = { version = "0.22", default-features = false }
 dialoguer = "0.12"
 directories = "6"
 dunce = "1"

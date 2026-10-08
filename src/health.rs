@@ -27,6 +27,10 @@ pub enum Health {
     Down { status: u16 },
     /// It did not answer: off, out of reach, or the name does not resolve.
     Unreachable,
+    /// It answered with a certificate this machine does not trust, and the
+    /// server is not marked to accept one. The stand is there; the gateway
+    /// will not talk to it until it is told to.
+    Untrusted,
 }
 
 impl Health {
@@ -36,6 +40,7 @@ impl Health {
             Health::Up { millis, .. } => format!("up, {millis} ms"),
             Health::Down { status } => format!("down, {status}"),
             Health::Unreachable => "unreachable".to_string(),
+            Health::Untrusted => "untrusted certificate".to_string(),
         }
     }
 
@@ -52,6 +57,10 @@ impl Health {
                 "warning: '{}' did not answer within {}s - the stand is off or out of reach.",
                 server.name,
                 TIMEOUT.as_secs()
+            ),
+            Health::Untrusted => format!(
+                "warning: '{0}' answers with a certificate this machine does not trust - accept it with `turnout server edit {0} --insecure`.",
+                server.name
             ),
         }
     }
@@ -88,8 +97,23 @@ async fn probe(server: Server) -> Health {
     let started = Instant::now();
     match client.get(health_url(&server.url)).send().await {
         Ok(response) => classify(response.status().as_u16(), started.elapsed()),
+        Err(err) if !server.accept_invalid_certs && is_certificate_error(&err) => Health::Untrusted,
         Err(_) => Health::Unreachable,
     }
+}
+
+/// Whether a failed request failed on the stand's certificate. rustls says so
+/// somewhere down the chain of sources - "invalid peer certificate:
+/// UnknownIssuer" - and reqwest only wraps it as a connect error.
+fn is_certificate_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(err);
+    while let Some(err) = current {
+        if err.to_string().to_ascii_lowercase().contains("certificate") {
+            return true;
+        }
+        current = err.source();
+    }
+    false
 }
 
 fn classify(status: u16, elapsed: Duration) -> Health {
@@ -124,5 +148,28 @@ mod tests {
         assert_eq!(classify(502, ms), Health::Down { status: 502 });
         assert_eq!(classify(503, ms).label(), "down, 503");
         assert_eq!(classify(200, ms).label(), "up, 120 ms");
+    }
+
+    /// A stand with a self-signed certificate is there, and says so: the
+    /// probe names the certificate rather than calling the stand unreachable.
+    #[test]
+    fn a_certificate_this_machine_does_not_trust_is_named() {
+        #[derive(Debug)]
+        struct Wrapped(Box<dyn std::error::Error + 'static>);
+        impl std::fmt::Display for Wrapped {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("error sending request")
+            }
+        }
+        impl std::error::Error for Wrapped {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self.0.as_ref())
+            }
+        }
+        let tls = Wrapped("invalid peer certificate: UnknownIssuer".into());
+        assert!(is_certificate_error(&tls));
+        let refused = Wrapped("connection refused".into());
+        assert!(!is_certificate_error(&refused));
+        assert_eq!(Health::Untrusted.label(), "untrusted certificate");
     }
 }

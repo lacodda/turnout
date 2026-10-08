@@ -8,6 +8,7 @@ mod envfile;
 mod front;
 mod gateway;
 mod health;
+mod jar;
 mod job;
 mod journal;
 mod keysetup;
@@ -18,6 +19,7 @@ mod output;
 mod paths;
 mod pick;
 mod portable;
+mod ports;
 mod process;
 mod progress;
 mod registry;
@@ -57,6 +59,12 @@ fn main() {
     );
     let result = match cli.command {
         cli::Command::Setup { assume_yes } => commands::setup::run(assume_yes),
+        cli::Command::Doctor {
+            server,
+            fix,
+            assume_yes,
+            format,
+        } => commands::doctor::run(format, fix, assume_yes, server),
         cli::Command::Status { format, short } => commands::status::run(format, short),
         cli::Command::App { command } => commands::app::run(command),
         cli::Command::Server { command } => commands::server::run(command),
