@@ -101,6 +101,8 @@ turnout target edit myapp-prod --health-wait 120                     # a slow st
 
 A deploy that fails its check - or whose restart fails - is **rolled back**: see [Health check and rollback](/turnout/reference/deploy/#health-check-and-rollback).
 
+In Git Bash, a path like `/health` is rewritten into `C:/Program Files/Git/health` before turnout sees it; turnout recognizes that shape and says so. Prefix the command with `MSYS_NO_PATHCONV=1`, double the slash (`--health //health`, stored as `/health`), or use PowerShell.
+
 A run that overrides the server or the path (`deploy myapp-prod --path other`) goes to a different stand, so the target's check is not asked there, and the deploy says so.
 
 ## rename

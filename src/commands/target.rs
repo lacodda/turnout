@@ -86,7 +86,9 @@ fn health_from(current: Option<HealthCheck>, args: &HealthArgs) -> Result<Option
         (_, Some(command)) if command.is_empty() => Some(None),
         (Some(url), _) => {
             validate_health_url(url)?;
-            Some(Some(Probe::Url(url.clone())))
+            // `//health` is how a Git Bash user keeps the path from being
+            // rewritten; it means `/health`, and is stored that way.
+            Some(Some(Probe::Url(crate::model::normalize_remote_path(url))))
         }
         (_, Some(command)) => Some(Some(Probe::Command(command.clone()))),
         (None, None) => None,
@@ -520,6 +522,22 @@ mod tests {
         assert!(health_from(None, &flags(None, None, Some(30))).is_err());
         assert!(health_from(check(Probe::Url("/h".into()), None), &flags(Some(""), None, Some(30))).is_err());
         assert!(health_from(None, &flags(Some("health"), None, None)).is_err());
+        // What Git Bash makes of `/health` and `/`, named as such; and the
+        // doubled slash that keeps it from doing so, read as the path.
+        let rewritten = health_from(None, &flags(Some("C:/Program Files/Git/health"), None, None))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            rewritten.contains("Git Bash rewrote '/health'") && rewritten.contains("MSYS_NO_PATHCONV"),
+            "{rewritten}"
+        );
+        let root = health_from(None, &flags(Some("C:/Program Files/Git/"), None, None)).unwrap_err().to_string();
+        assert!(root.contains("rewrote '/'"), "{root}");
+        assert_eq!(
+            health_from(None, &flags(Some("//health"), None, None)).unwrap(),
+            check(Probe::Url("/health".into()), None)
+        );
+        assert_eq!(health_from(None, &flags(Some("//"), None, None)).unwrap(), check(Probe::Url("/".into()), None));
         assert!(url_from("admin.example.com".into()).is_err());
         assert_eq!(url_from(String::new()).unwrap(), None);
         assert_eq!(

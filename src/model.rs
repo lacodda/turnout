@@ -277,7 +277,17 @@ pub fn health_url(url: &str, address: &str) -> String {
 
 /// A health URL is an address or a path under one; anything else would be
 /// joined into nonsense.
+///
+/// A path is exactly what Git Bash rewrites before turnout sees it - `/health`
+/// arrives as `C:/Program Files/Git/health` - so that shape is named for what
+/// it is, as a remote directory's is.
 pub fn validate_health_url(url: &str) -> Result<()> {
+    if let Some(original) = looks_rewritten_by_git_bash(url) {
+        bail!(
+            "'{url}' looks like Git Bash rewrote '/{original}' into a local path before turnout saw it.\n\
+             Prefix the command with MSYS_NO_PATHCONV=1, double the leading slash (//{original}), or use PowerShell."
+        );
+    }
     if url.starts_with('/') || url.starts_with("http://") || url.starts_with("https://") {
         Ok(())
     } else {
