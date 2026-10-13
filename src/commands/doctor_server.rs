@@ -346,33 +346,9 @@ fn probe_command(dialect: Dialect, dir: &str) -> String {
                  try {{ 'free=' + [math]::Floor((New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($d))).AvailableFreeSpace / 1024) }} catch {{ }}\n\
                  'user=' + [Environment]::UserName\n"
             );
-            format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(&script))
+            crate::shell::powershell(&script)
         }
     }
-}
-
-/// A script as `-EncodedCommand` takes it: UTF-16LE, then base64.
-fn encoded(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    base64(&bytes)
-}
-
-/// Standard base64 with padding - twenty lines rather than a dependency for
-/// one call.
-fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let triple = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
-        for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
-            if index <= chunk.len() {
-                out.push(ALPHABET[(triple >> shift) as usize & 63] as char);
-            } else {
-                out.push('=');
-            }
-        }
-    }
-    out
 }
 
 fn path_checks(session: &Session, dialect: Dialect, user: &str, path: &crate::model::Path, app: Option<&App>) -> Vec<CheckView> {
@@ -682,23 +658,6 @@ fn web_check(server: &Server, health: Health) -> CheckView {
 mod tests {
     use super::*;
     use crate::commands::doctor::State;
-
-    #[test]
-    fn base64_matches_the_standard_vectors() {
-        for (plain, coded) in [
-            ("", ""),
-            ("f", "Zg=="),
-            ("fo", "Zm8="),
-            ("foo", "Zm9v"),
-            ("foob", "Zm9vYg=="),
-            ("fooba", "Zm9vYmE="),
-            ("foobar", "Zm9vYmFy"),
-        ] {
-            assert_eq!(base64(plain.as_bytes()), coded, "{plain}");
-        }
-        // PowerShell reads UTF-16LE: "a" is 61 00.
-        assert_eq!(encoded("a"), "YQA=");
-    }
 
     #[test]
     fn the_probe_reads_back_what_the_script_prints() {

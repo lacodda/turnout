@@ -116,6 +116,13 @@ impl Session {
     /// Run a remote command, returning its stdout. A non-zero exit becomes an
     /// error carrying the remote stderr.
     pub fn exec(&self, command: &str) -> Result<String> {
+        self.exec_bytes(command).map(|stdout| String::from_utf8_lossy(&stdout).into_owned())
+    }
+
+    /// [`Session::exec`] with stdout as it came, byte for byte: what reads a
+    /// remote file in pieces has to count bytes, and a character split across
+    /// two pieces would be mangled by decoding either half alone.
+    pub fn exec_bytes(&self, command: &str) -> Result<Vec<u8>> {
         self.runtime.block_on(exec(&self.handle, command))
     }
 
@@ -283,7 +290,7 @@ async fn authenticate_with_agent(mut handle: Handle<AcceptAnyHostKey>, user: &st
 
 /// Run a command over a fresh channel and collect stdout, stderr and the exit
 /// status.
-async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<String> {
+async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<Vec<u8>> {
     let mut channel: Channel<Msg> = handle
         .channel_open_session()
         .await
@@ -320,7 +327,7 @@ async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<String
     if code != 0 {
         bail!("remote command '{command}' exited with {code}: {}", String::from_utf8_lossy(&stderr).trim());
     }
-    Ok(String::from_utf8_lossy(&stdout).into_owned())
+    Ok(stdout)
 }
 
 /// Run a command over a fresh channel, copying stdout and stderr through as
@@ -429,7 +436,7 @@ pub(crate) mod tests {
 
     use std::collections::HashMap;
     use std::io::{Seek, SeekFrom, Write};
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
 
@@ -459,7 +466,7 @@ pub(crate) mod tests {
     }
 
     impl Stand {
-        fn spawn() -> Self {
+        pub(crate) fn spawn() -> Self {
             Self::spawn_with(true)
         }
 
@@ -531,6 +538,13 @@ pub(crate) mod tests {
             });
             let port = learn.recv().expect("the server reports its port");
             Self { port, root, subsystem_opens }
+        }
+
+        /// The home directory of the account the stand signs in, for a stand
+        /// that runs a real shell. Only the POSIX side keeps anything there.
+        #[cfg(unix)]
+        pub(crate) fn home(&self) -> &std::path::Path {
+            self.root.path()
         }
 
         pub(crate) fn session(&self) -> Session {
@@ -631,6 +645,12 @@ pub(crate) mod tests {
                     // `raw_arg`: cmd reads its command line itself, and the
                     // quoting std would add around it is not what sshd sends.
                     std::os::windows::process::CommandExt::raw_arg(&mut shell, format!("/C {command}"));
+                    // System32 first, as sshd's own environment has it: a
+                    // developer shell that puts Git's `usr/bin` ahead would
+                    // hand `tar` to GNU tar, which reads `C:\...` as a host.
+                    let system = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+                    let path = std::env::var("PATH").unwrap_or_default();
+                    shell.env("PATH", format!("{system}\\System32;{path}"));
                     shell
                 };
                 #[cfg(not(windows))]
@@ -639,7 +659,9 @@ pub(crate) mod tests {
                     shell.args(["-c", &command]);
                     shell
                 };
-                let output = shell.stdin(std::process::Stdio::null()).output()?;
+                // The stand's scratch directory is the account's home, so what a
+                // command keeps under `~` stays out of the developer's own.
+                let output = shell.env("HOME", &self.root).stdin(std::process::Stdio::null()).output()?;
                 session.data(channel, output.stdout)?;
                 if !output.stderr.is_empty() {
                     session.extended_data(channel, 1, output.stderr)?;
@@ -670,6 +692,7 @@ pub(crate) mod tests {
             let handler = TestSftp {
                 root: self.root.clone(),
                 files: HashMap::new(),
+                real_paths: self.real_shell,
             };
             tokio::spawn(async move {
                 russh_sftp::server::run(channel.into_stream(), handler).await;
@@ -680,13 +703,24 @@ pub(crate) mod tests {
 
     /// An SFTP server over a scratch directory: just enough of the protocol
     /// for what the transport uses - open/write/close, mkdir, stat.
+    ///
+    /// A stand whose commands run in a real shell takes remote paths as they
+    /// are, so a file SFTP writes is the file the shell then finds - a deploy
+    /// uploads and unpacks through both.
     struct TestSftp {
         root: PathBuf,
         files: HashMap<String, std::fs::File>,
+        real_paths: bool,
     }
 
-    fn resolve(root: &Path, remote: &str) -> PathBuf {
-        root.join(remote.trim_start_matches('/'))
+    impl TestSftp {
+        fn resolve(&self, remote: &str) -> PathBuf {
+            if self.real_paths {
+                PathBuf::from(remote)
+            } else {
+                self.root.join(remote.trim_start_matches('/'))
+            }
+        }
     }
 
     fn done(id: u32) -> Status {
@@ -714,7 +748,7 @@ pub(crate) mod tests {
                 .create(true)
                 .write(true)
                 .truncate(true)
-                .open(resolve(&self.root, &filename))
+                .open(self.resolve(&filename))
                 .map_err(|_| StatusCode::Failure)?;
             self.files.insert(filename.clone(), file);
             Ok(SftpHandle { id, handle: filename })
@@ -734,12 +768,12 @@ pub(crate) mod tests {
         }
 
         async fn mkdir(&mut self, id: u32, path: String, _attrs: FileAttributes) -> Result<Status, Self::Error> {
-            std::fs::create_dir(resolve(&self.root, &path)).map_err(|_| StatusCode::Failure)?;
+            std::fs::create_dir(self.resolve(&path)).map_err(|_| StatusCode::Failure)?;
             Ok(done(id))
         }
 
         async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
-            let metadata = std::fs::metadata(resolve(&self.root, &path)).map_err(|_| StatusCode::NoSuchFile)?;
+            let metadata = std::fs::metadata(self.resolve(&path)).map_err(|_| StatusCode::NoSuchFile)?;
             Ok(Attrs {
                 id,
                 attrs: FileAttributes::from(&metadata),

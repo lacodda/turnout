@@ -142,8 +142,11 @@ pub enum Command {
         #[arg(short, long)]
         open: bool,
     },
-    /// Open the app in the browser at http://NAME.localhost (through the gateway's front door)
-    Open { app: Option<String> },
+    /// Open a target's stand in the browser, or an app at http://NAME.localhost (through the gateway's front door)
+    Open {
+        /// Target or app name; the app of the current directory when omitted
+        name: Option<String>,
+    },
     /// Run the app's `build` command
     Build {
         app: Option<String>,
@@ -264,10 +267,10 @@ pub enum Command {
         #[arg(short, long)]
         server: Option<String>,
     },
-    /// Deploy to a target over SSH/SFTP: build, upload, restart
+    /// Deploy to a target over SSH/SFTP: build, upload, restart, check
     Deploy {
-        /// Target name, or an app name to use its target on the bound server
-        target: Option<String>,
+        /// Target names, or app names to use their target on the bound server; one build per app, deployed in order
+        targets: Vec<String>,
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
@@ -289,6 +292,15 @@ pub enum Command {
         /// Upload file by file instead of packing the artifacts into one archive
         #[arg(short = 'A', long)]
         no_archive: bool,
+        /// Show what the deploy would change on the server - and write nothing
+        #[arg(long, conflicts_with_all = ["detach", "open"])]
+        diff: bool,
+        /// With --diff: print the comparison as JSON
+        #[arg(long, requires = "diff")]
+        json: bool,
+        /// Open the stand in the browser once the deploy is through
+        #[arg(short, long, conflicts_with = "detach")]
+        open: bool,
         #[command(flatten)]
         console: Console,
     },
@@ -383,6 +395,8 @@ pub enum CompleteKind {
     Groups,
     /// Apps and groups together - what `use` accepts first
     Bindable,
+    /// Targets and apps together - what `open` accepts
+    Openable,
     /// Command names defined across all apps - what `run` accepts
     Commands,
 }
@@ -629,6 +643,26 @@ pub enum PathCommand {
     },
 }
 
+/// How a target proves a deploy worked: one probe, and how long to ask it.
+#[derive(Args, Clone, Default)]
+pub struct HealthArgs {
+    /// After a deploy, GET this - a path under the target's address or a full URL; no answer below 400 rolls the deploy back. Empty clears the check
+    #[arg(long, value_name = "URL", conflicts_with = "health_command")]
+    pub health: Option<String>,
+    /// After a deploy, run this on the server in the deploy directory; a non-zero exit rolls the deploy back. Empty clears the check
+    #[arg(long, value_name = "CMD")]
+    pub health_command: Option<String>,
+    /// How long the health check keeps asking, in seconds (default 60)
+    #[arg(long, value_name = "SECS")]
+    pub health_wait: Option<u64>,
+}
+
+impl HealthArgs {
+    pub fn any(&self) -> bool {
+        self.health.is_some() || self.health_command.is_some() || self.health_wait.is_some()
+    }
+}
+
 #[derive(Subcommand)]
 pub enum TargetCommand {
     /// Add a target; missing parts are picked interactively
@@ -647,6 +681,11 @@ pub enum TargetCommand {
         /// The named path they are written to
         #[arg(short, long)]
         path: Option<String>,
+        /// Where the deployed app answers, when that is not the server's URL
+        #[arg(short, long)]
+        url: Option<String>,
+        #[command(flatten)]
+        health: HealthArgs,
     },
     /// List targets
     List {
@@ -670,6 +709,11 @@ pub enum TargetCommand {
         credential: Option<String>,
         #[arg(short, long)]
         path: Option<String>,
+        /// Where the deployed app answers, when that is not the server's URL; empty clears it
+        #[arg(short, long)]
+        url: Option<String>,
+        #[command(flatten)]
+        health: HealthArgs,
     },
     /// Rename a target
     Rename {

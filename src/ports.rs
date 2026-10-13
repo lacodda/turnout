@@ -254,7 +254,18 @@ mod tests {
             assert!(holder.name.is_some(), "the test binary has a name: {holder:?}");
         }
         drop(listener);
-        assert_eq!(super::holder(port), None, "nobody listens once the listener is gone");
+        // Asked a few times, not once: on a busy Linux machine the closed
+        // socket's row can outlive it for a moment, listed with no process
+        // holding it (seen once in a container, 13.10.2026, with the suite
+        // running in parallel). A port that stays held fails as before.
+        let freed = (0..20).any(|_| {
+            let gone = super::holder(port).is_none();
+            if !gone {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            gone
+        });
+        assert!(freed, "nobody listens once the listener is gone: {:?}", super::holder(port));
     }
 
     /// An IPv6-only listener holds its port too - the way Node listens on

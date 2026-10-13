@@ -49,14 +49,22 @@ _turnout_dynamic() {
             # `use TARGET SERVER`: first word is an app or a group, second a server.
             if [[ ${COMP_CWORD} -eq 2 ]]; then kind="bindable"; else kind="servers"; fi
             ;;
-        dev|build|test|lint|deploy-setup|open)
+        dev|build|test|lint|deploy-setup)
             [[ ${COMP_CWORD} -eq 2 ]] && kind="apps"
+            ;;
+        open)
+            # A target's stand, or an app behind the front door.
+            [[ ${COMP_CWORD} -eq 2 ]] && kind="openable"
             ;;
         logs|stop)
             # `logs|stop [APP] [COMMAND]`: an app (or `gateway`), then one of its commands.
             if [[ ${COMP_CWORD} -eq 2 ]]; then kind="apps"; elif [[ ${COMP_CWORD} -eq 3 ]]; then kind="commands"; fi
             ;;
-        deploy|backup|restore)
+        deploy)
+            # Named deploy targets - as many as the deploy goes to - or apps.
+            [[ ${COMP_CWORD} -ge 2 ]] && kind="targets"
+            ;;
+        backup|restore)
             # A named deploy target, or an app to use its target on the bound server.
             [[ ${COMP_CWORD} -eq 2 ]] && kind="targets"
             ;;

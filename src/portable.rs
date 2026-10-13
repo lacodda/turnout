@@ -23,9 +23,14 @@ use crate::model::{App, Credential, Group, Server, Target};
 
 /// Bumped when the shape below changes in a way an older turnout cannot read.
 ///
+/// 4 since v0.24.0: a target can carry a health check and an address. A file
+/// with them imported by an older turnout would arrive without the check and
+/// deploy unchecked, so that turnout has to refuse it - the same reason the
+/// data directory went to schema 6.
+///
 /// 3 since v0.11.0: the deploy target is a named entity of its own, and the
 /// server no longer carries the app-to-path map a v0.10 turnout would look for.
-const FORMAT_VERSION: u32 = 3;
+const FORMAT_VERSION: u32 = 4;
 
 /// Argon2id parameters. Deliberately above the crate defaults: this guards a
 /// file that can be copied and attacked offline for as long as an attacker
@@ -153,7 +158,8 @@ impl Snapshot {
     /// the data-directory migration uses, so a machine reached either way ends
     /// up with the same names.
     pub fn adopt_v2_targets(&mut self, raw: &str) -> Result<usize> {
-        if self.version >= FORMAT_VERSION {
+        // Only format 2 kept routes in its servers; 3 and later name them.
+        if self.version != 2 {
             return Ok(0);
         }
         let parsed: serde_json::Value = serde_json::from_str(raw)?;
@@ -180,6 +186,8 @@ impl Snapshot {
                     server: server_name.to_string(),
                     credential: credential.to_string(),
                     path: path.to_string(),
+                    url: None,
+                    health: None,
                 });
             }
         }

@@ -11,8 +11,8 @@ use dialoguer::Input;
 
 use serde::Serialize;
 
-use crate::cli::{Format, TargetCommand};
-use crate::model::{Target, unique_target_name, validate_name};
+use crate::cli::{Format, HealthArgs, TargetCommand};
+use crate::model::{HealthCheck, Probe, Target, unique_target_name, validate_health_url, validate_name, validate_url};
 use crate::{output, pick, store};
 
 pub fn run(command: TargetCommand) -> Result<()> {
@@ -23,7 +23,9 @@ pub fn run(command: TargetCommand) -> Result<()> {
             server,
             credential,
             path,
-        } => add(name, app, server, credential, path),
+            url,
+            health,
+        } => add(name, Parts { app, server, credential, path }, url, &health),
         TargetCommand::List { format } => list(format),
         TargetCommand::Show { name, format } => show(&resolve(name, "Show target")?, format),
         TargetCommand::Edit {
@@ -31,9 +33,11 @@ pub fn run(command: TargetCommand) -> Result<()> {
             server,
             credential,
             path,
+            url,
+            health,
         } => {
             let name = resolve(name, "Edit target")?;
-            edit(&name, server, credential, path)
+            edit(&name, server, credential, path, url, &health)
         }
         TargetCommand::Rename { name, to } => {
             let name = resolve(name, "Rename target")?;
@@ -53,7 +57,65 @@ fn resolve(name: Option<String>, prompt: &str) -> Result<String> {
     }
 }
 
-fn add(name: Option<String>, app: Option<String>, server: Option<String>, credential: Option<String>, path: Option<String>) -> Result<()> {
+/// The four entities a new target joins, each picked when not named.
+struct Parts {
+    app: Option<String>,
+    server: Option<String>,
+    credential: Option<String>,
+    path: Option<String>,
+}
+
+/// A target's own address as typed: empty clears it, anything else has to be
+/// a URL.
+fn url_from(url: String) -> Result<Option<String>> {
+    if url.is_empty() {
+        return Ok(None);
+    }
+    validate_url(&url)?;
+    Ok(Some(url.trim_end_matches('/').to_string()))
+}
+
+/// The health check a target ends up with, from what it had and the flags.
+///
+/// An empty probe clears the check; a new probe replaces the old one and keeps
+/// its wait unless a wait is given too; a wait alone changes the check that is
+/// there. A wait with no check to belong to is refused rather than dropped.
+fn health_from(current: Option<HealthCheck>, args: &HealthArgs) -> Result<Option<HealthCheck>> {
+    let probe = match (&args.health, &args.health_command) {
+        (Some(url), _) if url.is_empty() => Some(None),
+        (_, Some(command)) if command.is_empty() => Some(None),
+        (Some(url), _) => {
+            validate_health_url(url)?;
+            Some(Some(Probe::Url(url.clone())))
+        }
+        (_, Some(command)) => Some(Some(Probe::Command(command.clone()))),
+        (None, None) => None,
+    };
+    let orphan_wait = || anyhow::anyhow!("--health-wait belongs to a check: pass --health URL or --health-command CMD as well");
+    match (probe, current) {
+        (Some(None), _) if args.health_wait.is_some() => Err(orphan_wait()),
+        (Some(None), _) => Ok(None),
+        (Some(Some(probe)), current) => Ok(Some(HealthCheck {
+            probe,
+            wait: args.health_wait.or(current.and_then(|check| check.wait)),
+        })),
+        (None, Some(mut check)) => {
+            if let Some(wait) = args.health_wait {
+                check.wait = Some(wait);
+            }
+            Ok(Some(check))
+        }
+        (None, None) if args.health_wait.is_some() => Err(orphan_wait()),
+        (None, None) => Ok(None),
+    }
+}
+
+fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthArgs) -> Result<()> {
+    let Parts { app, server, credential, path } = parts;
+    // Read before anything is asked: a bad flag must fail at once, not after
+    // three pickers.
+    let url = url.map(url_from).transpose()?.flatten();
+    let health = health_from(None, health)?;
     let mut targets = store::load_targets()?;
     let apps = store::load_apps()?;
     let servers = store::load_servers()?;
@@ -128,6 +190,8 @@ fn add(name: Option<String>, app: Option<String>, server: Option<String>, creden
         server: server_name.clone(),
         credential: credential_name,
         path: path_name,
+        url,
+        health,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -168,6 +232,8 @@ pub fn offer_to_save(app: &str, server: &str, credential: &str, path: &str) -> R
         server: server.to_string(),
         credential: credential.to_string(),
         path: path.to_string(),
+        url: None,
+        health: None,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -187,20 +253,62 @@ pub struct TargetView {
     /// `show` is asked, and another name to look up is half an answer.
     /// `null` when the path is gone from the catalog.
     pub dir: Option<String>,
+    /// The target's own address; `null` when it answers at the server's URL.
+    pub url: Option<String>,
+    /// Where the deployed app answers - the target's address or the server's
+    /// URL; `null` when neither is known (the server is gone).
+    pub address: Option<String>,
+    /// How a deploy proves it worked; `null` when it is not checked.
+    pub health: Option<HealthView>,
+}
+
+/// A health check as the views report it: every key always there, and the
+/// wait as the seconds a deploy will actually spend, the default filled in.
+#[derive(Serialize)]
+pub struct HealthView {
+    /// The URL asked, as the target names it; `null` for a command check.
+    pub url: Option<String>,
+    /// The command run on the server; `null` for a URL check.
+    pub command: Option<String>,
+    pub wait: u64,
+    #[serde(skip)]
+    check: HealthCheck,
+}
+
+impl From<HealthCheck> for HealthView {
+    fn from(check: HealthCheck) -> Self {
+        let (url, command) = match &check.probe {
+            Probe::Url(url) => (Some(url.clone()), None),
+            Probe::Command(command) => (None, Some(command.clone())),
+        };
+        Self {
+            url,
+            command,
+            wait: check.wait().as_secs(),
+            check,
+        }
+    }
 }
 
 /// Every target as a view, in catalog order.
 pub fn views() -> Result<Vec<TargetView>> {
     let paths = store::load_paths()?;
+    let servers = store::load_servers()?;
     Ok(store::load_targets()?
         .into_iter()
         .map(|target| TargetView {
             dir: paths.iter().find(|p| p.name == target.path).map(|p| p.dir.clone()),
+            address: target
+                .url
+                .clone()
+                .or_else(|| servers.iter().find(|s| s.name == target.server).map(|s| s.url.clone())),
             name: target.name,
             app: target.app,
             server: target.server,
             credential: target.credential,
             path: target.path,
+            url: target.url,
+            health: target.health.map(HealthView::from),
         })
         .collect())
 }
@@ -236,15 +344,31 @@ fn show(name: &str, format: Format) -> Result<()> {
                 Some(dir) => format!("  Lands in:   {} ({dir})", target.path),
                 None => format!("  Lands in:   {} (missing from the catalog)", target.path),
             },
+            match (&target.url, &target.address) {
+                (Some(url), _) => format!("  Answers at: {url}"),
+                (None, Some(address)) => format!("  Answers at: {address} (the server's)"),
+                (None, None) => "  Answers at: unknown - the server is missing from the catalog".to_string(),
+            },
+            match &target.health {
+                Some(view) => format!(
+                    "  Health:     {}, asked for up to {}s - a deploy that fails it is rolled back",
+                    view.check.describe(target.address.as_deref().unwrap_or_default()),
+                    view.wait
+                ),
+                None => format!("  Health:     not checked - turnout target edit {} --health /health", target.name),
+            },
         ]
         .join("\n")
     })
 }
 
-fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Option<String>) -> Result<()> {
+fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Option<String>, url: Option<String>, health: &HealthArgs) -> Result<()> {
     let mut targets = store::load_targets()?;
     let index = targets.iter().position(|t| t.name == name).ok_or_else(|| unknown(name))?;
-    if server.is_none() && credential.is_none() && path.is_none() {
+    // Read before anything is written: a bad flag must not leave half an edit.
+    let url = url.map(url_from).transpose()?;
+    let check = health.any().then(|| health_from(targets[index].health.clone(), health)).transpose()?;
+    if server.is_none() && credential.is_none() && path.is_none() && url.is_none() && check.is_none() {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
         let apps = store::load_apps()?;
         let app = apps
@@ -283,6 +407,12 @@ fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Op
         }
         if let Some(path) = path {
             target.path = path;
+        }
+        if let Some(url) = url {
+            target.url = url;
+        }
+        if let Some(check) = check {
+            target.health = check;
         }
     }
     store::save_targets(&targets)?;
@@ -340,4 +470,61 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
 
 fn unknown(name: &str) -> anyhow::Error {
     anyhow::anyhow!("no target named '{name}' - see `turnout target list`")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flags(health: Option<&str>, command: Option<&str>, wait: Option<u64>) -> HealthArgs {
+        HealthArgs {
+            health: health.map(str::to_string),
+            health_command: command.map(str::to_string),
+            health_wait: wait,
+        }
+    }
+
+    fn check(probe: Probe, wait: Option<u64>) -> Option<HealthCheck> {
+        Some(HealthCheck { probe, wait })
+    }
+
+    /// Each flag changes its own part of the check and nothing else: a new
+    /// probe keeps the wait, a wait keeps the probe, an empty probe clears.
+    #[test]
+    fn the_health_flags_edit_one_part_each() {
+        let current = check(Probe::Url("/health".into()), Some(90));
+        assert_eq!(
+            health_from(current.clone(), &flags(None, Some("curl -f localhost"), None)).unwrap(),
+            check(Probe::Command("curl -f localhost".into()), Some(90))
+        );
+        assert_eq!(
+            health_from(current.clone(), &flags(None, None, Some(30))).unwrap(),
+            check(Probe::Url("/health".into()), Some(30))
+        );
+        assert_eq!(health_from(current.clone(), &flags(Some(""), None, None)).unwrap(), None);
+        assert_eq!(health_from(current.clone(), &flags(None, Some(""), None)).unwrap(), None);
+        assert_eq!(
+            health_from(current, &flags(None, None, None)).unwrap(),
+            check(Probe::Url("/health".into()), Some(90))
+        );
+        assert_eq!(
+            health_from(None, &flags(Some("/up"), None, None)).unwrap(),
+            check(Probe::Url("/up".into()), None)
+        );
+    }
+
+    /// A wait with no check would be dropped on the floor; a bare word would
+    /// be joined into an address nobody meant.
+    #[test]
+    fn a_check_that_cannot_mean_anything_is_refused() {
+        assert!(health_from(None, &flags(None, None, Some(30))).is_err());
+        assert!(health_from(check(Probe::Url("/h".into()), None), &flags(Some(""), None, Some(30))).is_err());
+        assert!(health_from(None, &flags(Some("health"), None, None)).is_err());
+        assert!(url_from("admin.example.com".into()).is_err());
+        assert_eq!(url_from(String::new()).unwrap(), None);
+        assert_eq!(
+            url_from("https://admin.example.com/".into()).unwrap().as_deref(),
+            Some("https://admin.example.com")
+        );
+    }
 }

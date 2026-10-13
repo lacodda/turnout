@@ -1911,6 +1911,188 @@ fn a_target_names_the_whole_deploy() {
         .stdout(predicate::str::contains("live").and(predicate::str::contains("myapp-staging").not()));
 }
 
+/// A target with all its parts, named `myapp-staging`.
+fn a_full_target(dir: &std::path::Path, project: &std::path::Path, extra: &[&str]) {
+    add_staging(dir);
+    add_path(dir);
+    add_credential(dir);
+    turnout(dir).args(["app", "add", "myapp", "--path"]).arg(project).assert().success();
+    turnout(dir)
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .args(extra)
+        .assert()
+        .success();
+}
+
+fn target_json(dir: &std::path::Path) -> serde_json::Value {
+    let output = turnout(dir).args(["target", "show", "myapp-staging", "--json"]).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+/// The address and the health check are the target's own: set with it,
+/// changed a part at a time, cleared with an empty value, and shown where the
+/// rest of the route is.
+#[test]
+fn a_target_carries_its_address_and_health_check() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &["--health", "/health", "--health-wait", "90"]);
+    let target = target_json(dir.path());
+    assert_eq!(target["health"], serde_json::json!({"url": "/health", "command": null, "wait": 90}));
+    assert_eq!(target["url"], serde_json::Value::Null);
+    assert_eq!(target["address"], "https://staging.example.com", "the server's, when the target names none");
+    turnout(dir.path())
+        .args(["target", "show", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("GET https://staging.example.com/health").and(predicate::str::contains("rolled back")));
+
+    turnout(dir.path())
+        .args([
+            "target",
+            "edit",
+            "myapp-staging",
+            "--url",
+            "https://admin.example.com/",
+            "--health-command",
+            "curl -fsS localhost:3000/health",
+        ])
+        .assert()
+        .success();
+    let target = target_json(dir.path());
+    assert_eq!(target["url"], "https://admin.example.com");
+    assert_eq!(
+        target["health"],
+        serde_json::json!({"url": null, "command": "curl -fsS localhost:3000/health", "wait": 90}),
+        "a new probe keeps the wait"
+    );
+
+    // A wait with no check to belong to, an address that is not one, a check
+    // that is both: each is refused, and nothing is half-written.
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--health", "", "--health-wait", "5"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--health-wait belongs to a check"));
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--url", "admin.example.com"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid URL"));
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--health", "/up", "--health-command", "true"])
+        .assert()
+        .failure();
+    assert_eq!(target_json(dir.path())["url"], "https://admin.example.com");
+
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--health", "", "--url", ""])
+        .assert()
+        .success();
+    let target = target_json(dir.path());
+    assert_eq!(target["health"], serde_json::Value::Null);
+    assert_eq!(target["url"], serde_json::Value::Null);
+}
+
+/// `open` with a target's name opens the stand it deploys to - its own
+/// address, else its server's.
+#[test]
+fn open_a_target_opens_its_stand() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &[]);
+    let opened = dir.path().join("opened.txt");
+    turnout(dir.path())
+        .env("TURNOUT_OPENED", &opened)
+        .args(["open", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Opening https://staging.example.com"));
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--url", "https://admin.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_OPENED", &opened)
+        .args(["open", "myapp-staging"])
+        .assert()
+        .success();
+    assert_eq!(
+        std::fs::read_to_string(&opened).unwrap().lines().collect::<Vec<_>>(),
+        vec!["https://staging.example.com", "https://admin.example.com"]
+    );
+}
+
+/// Several targets go out in one command; an override changes one route, so
+/// it takes one target, and a target named twice is a typo.
+#[test]
+fn deploy_takes_several_targets() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &[]);
+    turnout(dir.path())
+        .args(["deploy", "myapp-staging", "other", "--path", "wwwroot"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("name a single target"));
+    turnout(dir.path())
+        .args(["deploy", "myapp-staging", "myapp-staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("named twice"));
+    turnout(dir.path())
+        .args(["deploy", "myapp-staging", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--diff"));
+    turnout(dir.path())
+        .args(["deploy", "myapp-staging", "--diff", "--detach"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
+/// A deploy that sends what is already built says so when a source changed
+/// after that build - and names the file. It still goes on: shipping a known
+/// older build is sometimes the point.
+#[test]
+fn a_build_older_than_its_sources_is_named() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &[]);
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--host", "127.0.0.1:1"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "edit", "myapp", "--dist", "dist"]).assert().success();
+    let dist = project.join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("index.html"), "built").unwrap();
+    let built = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(dist.join("index.html"))
+        .unwrap()
+        .set_modified(built)
+        .unwrap();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src").join("main.ts"), "edited").unwrap();
+
+    turnout(dir.path()).args(["deploy", "myapp-staging", "--no-build"]).assert().failure().stderr(
+        predicate::str::contains("no password stored")
+            .and(predicate::str::contains("dist is older than its sources: src/main.ts changed"))
+            .and(predicate::str::contains("'myapp' has no build command")),
+    );
+}
+
 /// Removing a path unlinks the servers that deployed into it, and says so -
 /// but never touches the directory on the server itself.
 #[test]

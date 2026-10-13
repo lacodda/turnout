@@ -201,6 +201,88 @@ pub struct Target {
     pub credential: String,
     /// The named path they are written to.
     pub path: String,
+    /// Where the deployed app answers, when that is not the server's own URL.
+    ///
+    /// A server's URL is the stand the gateway routes an app's requests to -
+    /// usually an API. What a deploy puts on it is often seen elsewhere: an
+    /// admin front end on its own host name, a site under a path. `open` and a
+    /// relative health check need that address, not the API's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// How a deploy proves it worked. A deploy that cannot prove it is rolled
+    /// back to what the stand ran before (schema 6, v0.24.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<HealthCheck>,
+}
+
+impl Target {
+    /// Where the deployed app answers: the target's own address, or the
+    /// server's.
+    pub fn address(&self, server: &Server) -> String {
+        self.url.clone().unwrap_or_else(|| server.url.clone())
+    }
+}
+
+/// What a deploy asks after the restart to know the stand works.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct HealthCheck {
+    #[serde(flatten)]
+    pub probe: Probe,
+    /// Seconds to keep asking before the deploy counts as failed; `None` is
+    /// [`DEFAULT_HEALTH_WAIT`]. Per target, because a service decides how long
+    /// it takes to start: a static site answers at once, a JVM after a minute.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait: Option<u64>,
+}
+
+/// How long a health check keeps asking when the target names no wait.
+pub const DEFAULT_HEALTH_WAIT: u64 = 60;
+
+impl HealthCheck {
+    pub fn wait(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.wait.unwrap_or(DEFAULT_HEALTH_WAIT))
+    }
+
+    /// The check in a few words: `GET https://.../health`, `run curl -f ...`.
+    pub fn describe(&self, address: &str) -> String {
+        match &self.probe {
+            Probe::Url(url) => format!("GET {}", health_url(url, address)),
+            Probe::Command(command) => format!("`{command}`"),
+        }
+    }
+}
+
+/// One way to ask a stand whether it works. Exactly one per check: a check
+/// that both fetched and ran something would leave "which one failed" open.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Probe {
+    /// An address that answers below 400 when the stand works: absolute, or a
+    /// path under the target's address (`/health`).
+    Url(String),
+    /// A command run on the server, in the deploy directory; exit code 0 means
+    /// the stand works.
+    Command(String),
+}
+
+/// The address a URL probe asks: an absolute one as it is, a path joined to
+/// the target's address.
+pub fn health_url(url: &str, address: &str) -> String {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("{}/{}", address.trim_end_matches('/'), url.trim_start_matches('/'))
+    }
+}
+
+/// A health URL is an address or a path under one; anything else would be
+/// joined into nonsense.
+pub fn validate_health_url(url: &str) -> Result<()> {
+    if url.starts_with('/') || url.starts_with("http://") || url.starts_with("https://") {
+        Ok(())
+    } else {
+        bail!("invalid health URL '{url}': give a path under the target's address (/health) or a full http(s):// URL")
+    }
 }
 
 /// The name a target gets when nobody typed one: `{app}-{server}`.
@@ -494,7 +576,60 @@ mod tests {
             server: "prod".into(),
             credential: "deploy".into(),
             path: "wwwroot".into(),
+            url: None,
+            health: None,
         }
+    }
+
+    /// A check is written as the one probe it is, so a file can never hold a
+    /// check that both fetches and runs; and a target without one reads and
+    /// writes exactly as before schema 6.
+    #[test]
+    fn a_health_check_is_stored_as_its_one_probe() {
+        let mut target = a_target("web-prod");
+        assert!(!serde_json::to_string(&target).unwrap().contains("health"), "nothing to write");
+        target.health = Some(HealthCheck {
+            probe: Probe::Url("/health".into()),
+            wait: None,
+        });
+        let json = serde_json::to_value(&target).unwrap();
+        assert_eq!(json["health"], serde_json::json!({"url": "/health"}));
+        let back: Target = serde_json::from_value(json).unwrap();
+        assert_eq!(back.health, target.health);
+
+        let command: HealthCheck = serde_json::from_str(r#"{"command":"curl -f localhost:3000","wait":120}"#).unwrap();
+        assert_eq!(command.probe, Probe::Command("curl -f localhost:3000".into()));
+        assert_eq!(command.wait(), std::time::Duration::from_secs(120));
+        assert!(
+            serde_json::from_str::<HealthCheck>(r#"{"wait":5}"#).is_err(),
+            "a check with no probe is not a check"
+        );
+    }
+
+    /// A path is asked under the target's address, a full URL as it is.
+    #[test]
+    fn a_health_path_joins_the_address() {
+        assert_eq!(health_url("/health", "https://admin.example.com/"), "https://admin.example.com/health");
+        assert_eq!(health_url("/api/health", "https://example.com/app"), "https://example.com/app/api/health");
+        assert_eq!(health_url("http://10.0.0.5:3000/up", "https://example.com"), "http://10.0.0.5:3000/up");
+        assert!(validate_health_url("/health").is_ok());
+        assert!(validate_health_url("https://x.example.com/up").is_ok());
+        assert!(validate_health_url("health").is_err(), "a bare word joins into nonsense");
+
+        let mut target = a_target("web-prod");
+        let server = Server {
+            name: "prod".into(),
+            label: None,
+            url: "https://api.example.com".into(),
+            host: None,
+            port: 22,
+            accept_invalid_certs: false,
+            shell: None,
+            credential: None,
+        };
+        assert_eq!(target.address(&server), "https://api.example.com", "the server's, when it names none");
+        target.url = Some("https://admin.example.com".into());
+        assert_eq!(target.address(&server), "https://admin.example.com");
     }
 
     /// The generated name joins two names the user already chose - that is what

@@ -111,12 +111,13 @@ impl Dialect {
     ///
     /// `mkdir -p` has no `cmd.exe` equivalent: bare `mkdir` creates parents
     /// anyway but fails when the directory exists, so the existence check comes
-    /// first and the whole thing is a conditional.
+    /// first and the whole thing is a conditional - in parentheses, because an
+    /// `if` in `cmd.exe` owns the rest of its line (see [`Dialect::and_then`]).
     pub fn mkdir_p(&self, dir: &str) -> String {
         let quoted = self.quote(dir);
         match self {
             Dialect::Posix => format!("mkdir -p {quoted}"),
-            Dialect::Windows => format!("if not exist {quoted} mkdir {quoted}"),
+            Dialect::Windows => format!("(if not exist {quoted} mkdir {quoted})"),
         }
     }
 
@@ -133,9 +134,11 @@ impl Dialect {
         match self {
             Dialect::Posix => format!("find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"),
             // `del /q /s` empties the files, `for /d ... rd /s /q` the
-            // subdirectories. The trailing `exit /b 0` keeps "nothing to
-            // delete" from surfacing as a failed deploy step.
-            Dialect::Windows => format!("del /f /q /s {quoted}\\* >nul 2>&1 & for /d %i in ({quoted}\\*) do @rd /s /q \"%i\" & exit /b 0"),
+            // subdirectories. The trailing `(call )` keeps "nothing to
+            // delete" from surfacing as a failed deploy step: it sets the
+            // exit code to 0 without leaving, where `exit /b 0` would end the
+            // whole command line and skip whatever is chained after it.
+            Dialect::Windows => format!("(del /f /q /s {quoted}\\* >nul 2>&1 & for /d %i in ({quoted}\\*) do @rd /s /q \"%i\" & (call ))"),
         }
     }
 
@@ -144,7 +147,7 @@ impl Dialect {
         let quoted = self.quote(path);
         match self {
             Dialect::Posix => format!("rm -f {quoted}"),
-            Dialect::Windows => format!("del /f /q {quoted} >nul 2>&1 & exit /b 0"),
+            Dialect::Windows => format!("(del /f /q {quoted} >nul 2>&1 & (call ))"),
         }
     }
 
@@ -174,7 +177,7 @@ impl Dialect {
         match self {
             Dialect::Posix => format!("ls -1 {quoted} 2>/dev/null || true"),
             // `/b` is bare format - names only, no header or byte totals.
-            Dialect::Windows => format!("dir /b {quoted} 2>nul & exit /b 0"),
+            Dialect::Windows => format!("(dir /b {quoted} 2>nul & (call ))"),
         }
     }
 
@@ -183,7 +186,18 @@ impl Dialect {
         let quoted = self.quote(path);
         match self {
             Dialect::Posix => format!("test -f {quoted}"),
-            Dialect::Windows => format!("if not exist {quoted} exit /b 1"),
+            Dialect::Windows => format!("(if not exist {quoted} exit /b 1)"),
+        }
+    }
+
+    /// Whether `dir` is an existing directory; the command succeeds if it is.
+    ///
+    /// `cmd.exe`'s `if exist` says yes to a file of that name as well, unless
+    /// the name ends in a separator - then only a directory answers.
+    pub fn dir_exists(&self, dir: &str) -> String {
+        match self {
+            Dialect::Posix => format!("test -d {}", self.quote(dir)),
+            Dialect::Windows => format!("(if not exist \"{}\\\" exit /b 1)", dir.trim_end_matches(['\\', '/'])),
         }
     }
 
@@ -192,6 +206,15 @@ impl Dialect {
     /// `&&` means the same thing in both shells; the method exists so callers
     /// never hand-assemble command strings, which is the habit that let the
     /// POSIX assumption spread in the first place.
+    ///
+    /// What makes the join safe in `cmd.exe` is the shape of each Windows
+    /// command above: a self-contained group in parentheses that never ends
+    /// in `exit /b 0`. Until v0.24 they were bare, and two `cmd.exe` rules
+    /// broke every chain they were in - an `if` takes the rest of the line as
+    /// its body, so `if not exist B mkdir B && tar ...` skipped the backup
+    /// whenever its directory was already there; and `exit /b 0` ends the
+    /// whole line, so a failed `tar` before a tolerant `del` read as success.
+    /// Only running the chains through a real `cmd.exe` showed it.
     pub fn and_then(&self, first: &str, second: &str) -> String {
         format!("{first} && {second}")
     }
@@ -224,7 +247,7 @@ impl Dialect {
         let quoted = self.quote(path);
         match self {
             Dialect::Posix => format!("cat {quoted} 2>/dev/null || true"),
-            Dialect::Windows => format!("type {quoted} 2>nul & exit /b 0"),
+            Dialect::Windows => format!("(type {quoted} 2>nul & (call ))"),
         }
     }
 
@@ -278,9 +301,63 @@ impl Dialect {
     }
 }
 
+/// A PowerShell script as one command any Windows shell runs: `cmd.exe` has
+/// no quoting that would carry a script through intact, and base64 has
+/// nothing to quote. `cmd.exe` caps a command line at 8191 characters, and
+/// the encoding takes about 2.7 of them per character of script - callers
+/// that send long lists keep their scripts under [`POWERSHELL_SCRIPT_CHARS`].
+pub fn powershell(script: &str) -> String {
+    format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(script))
+}
+
+/// The longest script [`powershell`] can carry through `cmd.exe`, with room
+/// to spare for the command around it.
+pub const POWERSHELL_SCRIPT_CHARS: usize = 2_800;
+
+/// A script as `-EncodedCommand` takes it: UTF-16LE, then base64.
+fn encoded(script: &str) -> String {
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    base64(&bytes)
+}
+
+/// Standard base64 with padding - twenty lines rather than a dependency for
+/// one call.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let triple = (u32::from(chunk[0]) << 16) | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8) | u32::from(*chunk.get(2).unwrap_or(&0));
+        for (index, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if index <= chunk.len() {
+                out.push(ALPHABET[(triple >> shift) as usize & 63] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Dialect, PROBE, read_probe};
+    use super::{Dialect, PROBE, base64, encoded, read_probe};
+
+    #[test]
+    fn base64_matches_the_standard_vectors() {
+        for (plain, coded) in [
+            ("", ""),
+            ("f", "Zg=="),
+            ("fo", "Zm8="),
+            ("foo", "Zm9v"),
+            ("foob", "Zm9vYg=="),
+            ("fooba", "Zm9vYmE="),
+            ("foobar", "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64(plain.as_bytes()), coded, "{plain}");
+        }
+        // PowerShell reads UTF-16LE: "a" is 61 00.
+        assert_eq!(encoded("a"), "YQA=");
+    }
 
     /// A path's post-write command runs in the deploy directory, which is what
     /// "after writing here" always meant. The Windows form needs `/d` or it
@@ -310,7 +387,7 @@ mod tests {
     #[test]
     fn reading_a_missing_file_is_not_a_failure() {
         assert!(Dialect::Posix.read_file("/home/pi/.ssh/authorized_keys").contains("|| true"));
-        assert!(Dialect::Windows.read_file("C:\\ProgramData\\ssh\\x").contains("exit /b 0"));
+        assert!(Dialect::Windows.read_file("C:\\ProgramData\\ssh\\x").contains("(call )"));
     }
 
     /// The appended line must arrive verbatim: `cmd.exe` would take POSIX
@@ -424,9 +501,9 @@ mod tests {
     #[test]
     fn listing_and_clearing_tolerate_nothing_there() {
         assert!(Dialect::Posix.list_dir("/backups").contains("|| true"));
-        assert!(Dialect::Windows.list_dir("C:\\backups").contains("exit /b 0"));
-        assert!(Dialect::Windows.clear_dir("C:\\site").contains("exit /b 0"));
-        assert!(Dialect::Windows.remove_file("C:\\x.tar.gz").contains("exit /b 0"));
+        assert!(Dialect::Windows.list_dir("C:\\backups").contains("(call )"));
+        assert!(Dialect::Windows.clear_dir("C:\\site").contains("(call )"));
+        assert!(Dialect::Windows.remove_file("C:\\x.tar.gz").contains("(call )"));
     }
 
     /// Windows has had a working tar since 1803; the bug was the question, not
@@ -452,6 +529,6 @@ mod tests {
     #[test]
     fn mkdir_tolerates_an_existing_directory() {
         assert!(Dialect::Posix.mkdir_p("/var/www/site").starts_with("mkdir -p"));
-        assert!(Dialect::Windows.mkdir_p("C:\\site").starts_with("if not exist"));
+        assert!(Dialect::Windows.mkdir_p("C:\\site").starts_with("(if not exist"));
     }
 }

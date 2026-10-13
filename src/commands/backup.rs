@@ -94,22 +94,21 @@ pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: 
                 .to_string()
         }
     };
-    remote::check_quotable(dialect, &[&name])?;
-    let archive = remote::join_remote(&backups_raw, &name);
-    let dir = deploy_dir.trim_end_matches(['/', '\\']);
     let step = Step::start(format!("Restoring {name} into {deploy_dir} ..."));
-    remote::exec(
-        &session,
-        &dialect.and_then(
-            &dialect.file_exists(&archive),
-            &dialect.and_then(&dialect.clear_dir(dir), &dialect.untar(&archive, dir)),
-        ),
-    )?;
+    remote::restore_backup(&session, dialect, &deploy_dir, &name)?;
     step.done(format!("Restored {name} into {deploy_dir}"));
     crate::journal::record("restore", Some(&target.app.name), Some(&target.server.name), Some(&name));
     if let Some(restart) = &target.path.restart {
+        // The same post-write command a deploy runs, run the same way: in the
+        // deploy directory, and detached from this connection. Until v0.24 a
+        // restore ran it in the home directory, which a deploy stopped doing
+        // in v0.11.
+        let mut session = session;
+        let connect = || remote::connect(&target.server, &target.credential);
         let step = Step::start(format!("Running: {restart}"));
-        let output = remote::exec(&session, restart)?;
+        let output = remote::restart(&mut session, dialect, &target.path, restart, &connect, |line| {
+            step.update(format!("Running: {restart} · {line}"))
+        })?;
         step.done(format!("Restarted: {restart}"));
         if !output.trim().is_empty() {
             println!("{}", output.trim_end());

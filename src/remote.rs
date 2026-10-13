@@ -23,6 +23,14 @@ pub struct Resolved {
     /// assembled from the binding with nothing saved yet - which is what the
     /// offer to save a target keys on.
     pub target: Option<String>,
+    /// Where the deployed app answers: the target's own address, else the
+    /// server's URL.
+    pub address: String,
+    /// How a deploy proves it worked, when the target says.
+    pub health: Option<crate::model::HealthCheck>,
+    /// Why the target's health check is not part of this run, when it has one
+    /// and an override moved the run to another stand.
+    pub unchecked: Option<String>,
 }
 
 impl Resolved {
@@ -187,6 +195,24 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         .into_iter()
         .find(|p| p.name == path_name)
         .ok_or_else(|| dangling(&target.name, "path", &path_name, "turnout path list"))?;
+    // The address and the check describe the stand - the server and the
+    // directory. Another login reaches the same stand, so they stay; another
+    // server or directory is a different stand, and checking it against this
+    // target's address would roll back a deploy for somebody else's outage.
+    let same_stand = server.name == target.server && path.name == target.path;
+    let unchecked = match &target.health {
+        Some(health) if !same_stand => Some(format!(
+            "this run lands somewhere else than target '{}' does, so its health check ({}) is not asked",
+            target.name,
+            health.describe(&target.url.clone().unwrap_or_else(|| server.url.clone()))
+        )),
+        _ => None,
+    };
+    let (address, health) = if same_stand {
+        (target.address(&server), target.health.clone())
+    } else {
+        (server.url.clone(), None)
+    };
     Ok(Resolved {
         app,
         server,
@@ -195,6 +221,9 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         // An overridden run is not this target any more, and recording it as one
         // would let a `--path other` run be journaled under the target's name.
         target: (!overridden).then_some(target.name),
+        address,
+        health,
+        unchecked,
     })
 }
 
@@ -253,11 +282,14 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         .ok_or_else(|| anyhow::anyhow!("no path named '{path_name}' - see `turnout path list`"))?;
 
     Ok(Resolved {
+        address: server.url.clone(),
         app,
         server,
         credential,
         path,
         target: None,
+        health: None,
+        unchecked: None,
     })
 }
 
@@ -396,6 +428,50 @@ pub fn run_backup(session: &Session, dialect: Dialect, deploy_path: &str) -> Res
     })
 }
 
+/// Put a backup back: empty the deploy directory, then unpack the archive
+/// into it. The archive is checked for first, so a wrong name empties nothing.
+pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<()> {
+    let backups = backups_dir(deploy_dir);
+    check_quotable(dialect, &[deploy_dir, &backups, name])?;
+    let archive = join_remote(&backups, name);
+    let dir = deploy_dir.trim_end_matches(['/', '\\']);
+    exec(
+        session,
+        &dialect.and_then(
+            &dialect.file_exists(&archive),
+            &dialect.and_then(&dialect.clear_dir(dir), &dialect.untar(&archive, dir)),
+        ),
+    )
+    .map(|_| ())
+}
+
+/// Delete one backup archive.
+pub fn remove_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<()> {
+    exec(session, &dialect.remove_file(&join_remote(&backups_dir(deploy_dir), name))).map(|_| ())
+}
+
+/// Whether the deploy directory is there yet - a first deploy creates it, and
+/// has nothing to back up.
+pub fn dir_exists(session: &Session, dialect: Dialect, dir: &str) -> bool {
+    exec(session, &dialect.dir_exists(dir)).is_ok()
+}
+
+/// Run a path's post-write command in its directory, detached from this
+/// connection where the server allows it (see [`crate::detached`]), and
+/// return its output. `connect` opens a new connection when this one drops;
+/// `progress` hears the newest line of output.
+pub fn restart(
+    session: &mut Session,
+    dialect: Dialect,
+    path: &crate::model::Path,
+    restart: &str,
+    connect: &dyn Fn() -> Result<Session>,
+    progress: impl FnMut(&str),
+) -> Result<String> {
+    check_quotable(dialect, &[&path.dir])?;
+    crate::detached::run(session, dialect, &path.dir, restart, connect, progress)
+}
+
 /// Why the backup was refused and the one command that unblocks it.
 ///
 /// The fix is spelled in the server's own idiom: `sudo chown` means nothing on
@@ -505,6 +581,60 @@ mod tests {
             windows.contains("tar czf \"C:\\inetpub\\site.backups\\20260812-181500.tar.gz\" -C \"C:\\inetpub\\site\" ."),
             "{windows}"
         );
+    }
+
+    /// The chains a deploy sends, run through this machine's own shell - sh,
+    /// or cmd.exe on Windows. Each one failed on cmd.exe until v0.24 while
+    /// every string test passed: a second backup was skipped because its
+    /// directory existed, a restore did nothing because its archive did, and
+    /// a failed unpack read as success.
+    #[test]
+    fn the_chains_hold_in_a_real_shell() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dialect = crate::shell::read_probe(&session.exec(crate::shell::PROBE).unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let site = root.path().join("site");
+        std::fs::create_dir_all(site.join("assets")).unwrap();
+        std::fs::write(site.join("index.html"), "v1").unwrap();
+        std::fs::write(site.join("assets").join("app.js"), "one").unwrap();
+        let dir = site.display().to_string();
+
+        assert!(super::dir_exists(&session, dialect, &dir));
+        assert!(!super::dir_exists(&session, dialect, &format!("{dir}-not-there")));
+        std::fs::write(root.path().join("a-file"), "x").unwrap();
+        assert!(
+            !super::dir_exists(&session, dialect, &root.path().join("a-file").display().to_string()),
+            "a file is not a directory"
+        );
+
+        let first = super::run_backup(&session, dialect, &dir).unwrap();
+        // Names are per second; the second backup must not reuse the first.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(site.join("index.html"), "v2").unwrap();
+        std::fs::write(site.join("extra.txt"), "only in v2").unwrap();
+        let second = super::run_backup(&session, dialect, &dir).unwrap();
+        let backups = std::path::PathBuf::from(super::backups_dir(&dir));
+        assert!(backups.join(&first).is_file() && backups.join(&second).is_file(), "both backups exist");
+
+        super::restore_backup(&session, dialect, &dir, &first).unwrap();
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1", "the restore put v1 back");
+        assert!(!site.join("extra.txt").exists(), "and emptied what v1 did not have");
+        assert_eq!(std::fs::read_to_string(site.join("assets").join("app.js")).unwrap(), "one");
+        assert!(
+            super::restore_backup(&session, dialect, &dir, "20000101-000000.tar.gz").is_err(),
+            "no such backup"
+        );
+        assert!(site.join("index.html").exists(), "a missing backup empties nothing");
+
+        let broken = site.join(".turnout-upload.tar.gz");
+        std::fs::write(&broken, "not an archive").unwrap();
+        let archive = broken.display().to_string();
+        let unpack = dialect.and_then(&dialect.untar(&archive, &dir), &dialect.remove_file(&archive));
+        assert!(super::exec(&session, &unpack).is_err(), "a failed unpack must fail the chain");
+
+        super::remove_backup(&session, dialect, &dir, &second).unwrap();
+        assert!(!backups.join(&second).exists());
     }
 
     /// The name is a sort key: `restore` picks the newest backup by sorting

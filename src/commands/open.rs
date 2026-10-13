@@ -2,10 +2,28 @@ use anyhow::{Result, bail};
 
 use crate::{front, store};
 
-/// Open the app in the browser by its name behind the front door.
-pub fn run(app: Option<String>) -> Result<()> {
+/// Open something in the browser: a target's stand, or an app by its name
+/// behind the front door.
+///
+/// A target is tried first, the way `deploy` and `ssh` read a name: it names
+/// a whole route, and an app that shares the name is still reachable through
+/// the current directory.
+pub fn run(name: Option<String>) -> Result<()> {
+    if let Some(name) = &name
+        && let Some(target) = store::load_targets()?.into_iter().find(|target| &target.name == name)
+    {
+        let server = store::load_servers()?.into_iter().find(|server| server.name == target.server).ok_or_else(|| {
+            anyhow::anyhow!(
+                "target '{name}' names server '{}', which is not in the catalog - see `turnout server list`",
+                target.server
+            )
+        })?;
+        let address = target.address(&server);
+        println!("Opening {address}");
+        return front::open_in_browser(&address);
+    }
     let apps = store::load_apps()?;
-    let app = crate::commands::exec::resolve(&apps, app)?;
+    let app = crate::commands::exec::resolve(&apps, name)?;
     let Some(gateway) = crate::registry::gateway()?.filter(crate::commands::gateway::probe) else {
         bail!(
             "the gateway is not running - start it with `turnout gateway start`, then `turnout open {}`",

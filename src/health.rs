@@ -102,6 +102,43 @@ async fn probe(server: Server) -> Health {
     }
 }
 
+/// How long one ask of a health check waits for its answer. Longer than the
+/// stand probe: a service that just restarted is often slow on its first
+/// request.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One ask of a health check's URL after a deploy: the status and how long it
+/// took when the stand works, or what it said instead.
+///
+/// Stricter than [`probe`], which asks whether a stand is *there*: a check the
+/// target names is the owner's word for "this works", so 4xx fails it too - a
+/// health address that answers 404 is a deploy that lost its routes. No
+/// redirects are followed: a check that is sent to a login page did not get a
+/// yes.
+pub fn ask(url: &str, accept_invalid_certs: bool) -> std::result::Result<String, String> {
+    let url = url.to_string();
+    let answered = crate::utils::run_blocking(async move {
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .danger_accept_invalid_certs(accept_invalid_certs)
+            .timeout(CHECK_TIMEOUT)
+            .build()?;
+        let started = Instant::now();
+        let outcome = match client.get(&url).send().await {
+            Ok(response) => Ok((response.status().as_u16(), started.elapsed())),
+            Err(err) if !accept_invalid_certs && is_certificate_error(&err) => Err("answers with a certificate this machine does not trust".to_string()),
+            Err(err) if err.is_timeout() => Err(format!("no answer within {}s", CHECK_TIMEOUT.as_secs())),
+            Err(_) => Err("no answer".to_string()),
+        };
+        Ok(outcome)
+    })
+    .map_err(|err| format!("{err:#}"))?;
+    match answered? {
+        (status, took) if status < 400 => Ok(format!("{status} in {} ms", took.as_millis())),
+        (status, _) => Err(format!("answered {status}")),
+    }
+}
+
 /// Whether a failed request failed on the stand's certificate. rustls says so
 /// somewhere down the chain of sources - "invalid peer certificate:
 /// UnknownIssuer" - and reqwest only wraps it as a connect error.

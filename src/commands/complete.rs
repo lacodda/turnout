@@ -23,6 +23,13 @@ pub fn run(what: CompleteKind) -> Result<()> {
             names.sort();
             names
         }
+        CompleteKind::Openable => {
+            let mut names = targets();
+            names.extend(apps());
+            names.sort();
+            names.dedup();
+            names
+        }
         CompleteKind::Commands => commands(),
     };
     for name in names {

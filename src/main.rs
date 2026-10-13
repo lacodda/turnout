@@ -1,8 +1,10 @@
 mod agent;
 mod alias;
+mod artifact;
 mod cli;
 mod commands;
 mod control;
+mod detached;
 mod detect;
 mod envfile;
 mod front;
@@ -12,6 +14,7 @@ mod jar;
 mod job;
 mod journal;
 mod keysetup;
+mod manifest;
 mod migrate;
 mod model;
 mod notify;
@@ -81,7 +84,7 @@ fn main() {
         cli::Command::Gateway { command } => commands::gateway::run(command),
         cli::Command::Cookie { command } => commands::cookie::run(command),
         cli::Command::Dev { app, console, open } => commands::exec::run("dev", app, commands::exec::Options { console, open }),
-        cli::Command::Open { app } => commands::open::run(app),
+        cli::Command::Open { name } => commands::open::run(name),
         cli::Command::Build { app, console } => commands::exec::run("build", app, commands::exec::Options { console, open: false }),
         cli::Command::Test { app, console } => commands::exec::run("test", app, commands::exec::Options { console, open: false }),
         cli::Command::Lint { app, console } => commands::exec::run("lint", app, commands::exec::Options { console, open: false }),
@@ -127,7 +130,7 @@ fn main() {
         } => commands::remote_exec::run(name, credential, dir, command),
         cli::Command::DeploySetup { app, server } => commands::deploy_setup::run(app, server),
         cli::Command::Deploy {
-            target,
+            targets,
             server,
             credential,
             path,
@@ -135,15 +138,21 @@ fn main() {
             backup,
             clear,
             no_archive,
+            diff,
+            json,
+            open,
             console,
         } => commands::deploy::run(
-            target,
+            targets,
             remote::Overrides { server, credential, path },
             commands::deploy::Flags {
                 no_build,
                 backup,
                 clear,
                 no_archive,
+                diff,
+                json,
+                open,
                 console,
             },
         ),

@@ -151,6 +151,8 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
                 server: server_name.clone(),
                 credential: credential_name.clone(),
                 path: path_name.clone(),
+                url: None,
+                health: None,
             });
             targets.sort_by(|a, b| a.name.cmp(&b.name));
             name

@@ -298,8 +298,24 @@ pub fn ensure_dev_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()
     Ok(())
 }
 
+/// Writes the pages turnout would open into a file, one per line, instead of
+/// opening them. Undocumented in the CLI, like `TURNOUT_TOASTS`.
+pub const OPENED_ENV: &str = "TURNOUT_OPENED";
+
 /// Open a URL in the default browser, the platform's way.
 pub fn open_in_browser(url: &str) -> Result<()> {
+    // For tests, as `TURNOUT_TOASTS` is for notifications: which page a
+    // command opens is the behaviour under test, and a test run must not
+    // open real browser tabs - nor can a CI runner.
+    if let Some(sink) = std::env::var_os(OPENED_ENV).filter(|path| !path.is_empty()) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&sink)
+            .with_context(|| format!("cannot write {}", std::path::Path::new(&sink).display()))?;
+        return writeln!(file, "{url}").context("cannot record the opened page");
+    }
     #[cfg(windows)]
     let status = std::process::Command::new("cmd").args(["/C", "start", "", url]).status();
     #[cfg(target_os = "macos")]

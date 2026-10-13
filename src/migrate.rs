@@ -30,6 +30,11 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
+/// 6 since v0.24.0: a target can carry a health check and an address of its
+/// own. Nothing is rewritten - both are optional - but a turnout older than
+/// this would read such a target, drop the check without a word and deploy
+/// unchecked. The bump is what makes it refuse instead.
+///
 /// 5 since v0.20.0: the gateway's record left `state.json` for the job
 /// registry (`jobs/gateway.json`), where every other job turnout runs is
 /// recorded too. A gateway running through the upgrade keeps running and is
@@ -43,7 +48,7 @@ use anyhow::{Context, Result, bail};
 /// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
 /// the server's own `deploy` map - which held the app-to-path relationship - is
 /// gone (ADR 0013).
-pub const CURRENT_VERSION: u32 = 5;
+pub const CURRENT_VERSION: u32 = 6;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -89,7 +94,19 @@ const STEPS: &[Step] = &[
         apply: gateway_into_the_job_registry,
         rewrites: true,
     },
+    Step {
+        from: 5,
+        describes: "targets can carry a health check now - an older turnout will refuse these settings rather than deploy unchecked",
+        apply: nothing_to_rewrite,
+        rewrites: false,
+    },
 ];
+
+/// A step whose whole effect is the version it leaves behind: the shape it
+/// introduces is optional, and what has to change is who may read it.
+fn nothing_to_rewrite(_dir: &Path) -> Result<()> {
+    Ok(())
+}
 
 /// The v0.9.0 split, explained instead of guessed at.
 ///
@@ -182,6 +199,8 @@ fn targets_from_server_deploy(dir: &Path) -> Result<()> {
                 server: server_name.clone(),
                 credential,
                 path: path.to_string(),
+                url: None,
+                health: None,
             });
         }
     }
@@ -421,18 +440,32 @@ pub fn run(dir: &Path, from: u32) -> Result<u32> {
     // that ends in a refusal must leave the directory exactly as it found it,
     // backup folder included, and a chain can refuse at step one and still
     // contain a rewriting step later (1 -> 2 -> 3 is exactly that shape).
+    //
+    // The heading goes out with the first step that succeeds rather than with
+    // the copy: a step that rewrites nothing still changes what the directory
+    // is, and a description under no heading reads like a stray line.
     let mut copied = false;
+    let mut announced = false;
+    let mut copy_note = None;
     for step in pending {
         if step.rewrites && !copied {
             let backup = backup_dir(dir, from);
             std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
             copy_data_files(dir, &backup)?;
-            eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
-            eprintln!("  A copy of the old files is in {}", backup.display());
+            copy_note = Some(format!("  A copy of the old files is in {}", backup.display()));
             copied = true;
         }
         match (step.apply)(dir) {
-            Ok(()) => eprintln!("  {}", step.describes),
+            Ok(()) => {
+                if !announced {
+                    eprintln!("Migrating settings from schema {from} to {CURRENT_VERSION}.");
+                    announced = true;
+                }
+                if let Some(note) = copy_note.take() {
+                    eprintln!("{note}");
+                }
+                eprintln!("  {}", step.describes);
+            }
             // A refusal is already a complete explanation; wrapping it in
             // "migration 1 -> 2 failed" would bury the part the user acts on.
             Err(err) if !step.rewrites => return Err(err),
@@ -487,6 +520,19 @@ mod tests {
         // No backup folder for a no-op: the directory must look untouched.
         let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
         assert_eq!(entries.len(), 1, "{entries:?}");
+    }
+
+    /// Schema 5 -> 6 changes who may read the directory, not what is in it:
+    /// the files stay byte for byte, and no safety copy is made of nothing.
+    #[test]
+    fn schema_5_moves_on_without_touching_a_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let targets = r#"[{"name":"web-prod","app":"web","server":"prod","credential":"deploy","path":"wwwroot"}]"#;
+        std::fs::write(dir.path().join("targets.json"), targets).unwrap();
+        assert_eq!(run(dir.path(), 5).unwrap(), 5);
+        assert_eq!(std::fs::read_to_string(dir.path().join("targets.json")).unwrap(), targets);
+        let entries: Vec<_> = std::fs::read_dir(dir.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(entries.len(), 1, "no backup folder for a step that rewrites nothing: {entries:?}");
     }
 
     /// The case this whole module exists to handle safely: data written by a
