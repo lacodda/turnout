@@ -78,7 +78,7 @@ tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal
 # (see websocket_proxy in gateway.rs); only the accept-invalid-certs path
 # builds its own config.
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-native-roots"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
+zip = { version = "9.0.2", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 png = "0.18"

@@ -217,7 +217,7 @@ fn extract_from_zip(archive: &[u8], wanted: &str) -> Result<Vec<u8>> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(archive)).context("the download is not a valid zip archive")?;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index)?;
-        if entry.is_file() && entry.name().rsplit('/').next() == Some(wanted) {
+        if entry.is_file() && entry.name().context("an entry of the archive has an unreadable name")?.rsplit('/').next() == Some(wanted) {
             let mut bytes = Vec::new();
             entry.read_to_end(&mut bytes).context("cannot read the binary out of the archive")?;
             return Ok(bytes);
@@ -390,7 +390,7 @@ mod tests {
         let mut buffer = Vec::new();
         {
             let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut buffer));
-            let options: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+            let options = zip::write::SimpleFileOptions::default();
             writer.start_file("turnout-v0.5.0-x86_64-pc-windows-msvc/README.md", options).unwrap();
             std::io::Write::write_all(&mut writer, b"not the binary").unwrap();
             writer.start_file("turnout-v0.5.0-x86_64-pc-windows-msvc/turnout.exe", options).unwrap();
