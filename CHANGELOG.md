@@ -11,6 +11,7 @@ and nothing is missing - the number is simply unused.
 
 ### Bug Fixes
 - Quote a silent command's exit code without a dangling colon
+- Hash a Windows server's files with .NET, not Get-FileHash
 
 ### Documentation
 - Describe health checks and rollback, --diff, several targets and the detached restart
