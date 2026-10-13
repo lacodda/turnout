@@ -15,6 +15,8 @@ A job in your terminal speaks there. A [job in the background](/turnout/concepts
 | The [gateway](/turnout/concepts/gateway/#when-a-stand-misbehaves) found a stand down | `staging answers 502` (or `does not answer`) | The stand itself |
 | The gateway found a session expired | `myapp: the staging session expired`, naming `turnout cookie set` | The app, where its login page is |
 
+A deploy that failed its [health check](/turnout/reference/target/#health-check) and was rolled back is a `myapp deploy failed` like any other failure; its line says so - `rolled back to 20261013-101500.tar.gz: the stand works again`.
+
 The gateway's notifications come once per episode - when the stand goes down, not on every request that fails while it is - and a stand that comes back and fails again within ten minutes is not announced twice.
 
 The line quoted for a failure is the last one of the output that mentions an error, leaving out what npm, yarn or pnpm add about the script afterwards - `npm error code 2` is true and never the reason.

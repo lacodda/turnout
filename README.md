@@ -69,7 +69,8 @@ $ turnout deploy web-prod-eu -b
 ✓ Backup 20260809-011500.tar.gz created in /var/www/web.backups
 ================>          2.02 MiB/3.11 MiB · 1.81 MiB/s · eta 1s  assets/index-b3f0a1.js
 Uploaded 142 files (3.11 MiB) to prod-eu:/var/www/web
-✓ Ran: systemctl restart web
+✓ Restarted: systemctl restart web
+✓ Healthy: GET https://prod-eu.example.com/health - 200 in 38 ms
 Deploy of 'web' to 'prod-eu' finished.
 ```
 
@@ -115,7 +116,8 @@ prod-eu · gw ok · 2 dev
 - **A quiet console.** A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it reports itself and speaks again only when something breaks. A failure prints its output on the spot - no re-run to see what went wrong - and every job's output is kept in a log file whatever the terminal showed. `-v` gives you all of it, and so does any pipe, so scripts and CI logs are unchanged.
 - **Jobs in the background.** `turnout dev --detach` gives the terminal back and the server keeps running; so do `build`, `run` and `deploy`. When one is done, a desktop notification says so and opens the page, the stand or the log of the failure. `turnout ps` shows everything turnout runs, `logs -f` follows any of it, and `stop` takes a job down with every process it started.
 - **A hand on the server.** `turnout ssh web-prod` opens a session with host, port, user and key from the catalogs, in the deploy directory, the password already on the clipboard; `turnout exec web-prod -- docker compose ps` runs one command there and hands back its exit code.
-- **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore when a release goes wrong. Artifacts travel as a single archive instead of thousands of round trips, falling back to file-by-file when the server cannot unpack one. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
+- **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore. Artifacts travel as a single archive instead of thousands of round trips. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
+- **A deploy that checks itself.** Give a target a health check and a deploy asks the stand after the restart - and rolls it back when it does not answer. `--diff` shows what would change before anything is written; `deploy web-stage web-prod` ships one build to both; a long restart survives a dropped connection.
 - **Portable settings.** `export` writes your apps, servers, credentials, paths, targets and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
 - **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
 - **One window onto it all.** `status` shows where every app points, the gateway, running jobs and the latest actions, with clickable addresses; `status --short` puts `prod · gw ok · 2 dev` into a starship or tmux line; `use -` goes back to the stand before. Every command that reports takes `--json`.
@@ -187,8 +189,8 @@ v0.23.0, in daily use. Everything above works today: stands and switching
 between them, the gateway and what it notices about them, secrets in the OS
 keyring, the quiet console, jobs in the background with a notification when
 they are done, `status` for a person, a prompt and a script, `doctor` for the
-day something does not work, and build and deploy from any directory. What
-landed in each version:
+day something does not work, and build and deploy from any directory - checked
+and rolled back when it fails. What landed in each version:
 [the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation

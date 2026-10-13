@@ -56,7 +56,9 @@ turnout restore myapp-prod --from 20260806-120000.tar.gz
 | `--list` | `-l` | List available backups, newest first, and exit |
 | `--json` | | With `--list`: print `{"dir": ..., "backups": [...]}` instead - see [JSON output](/turnout/concepts/json-output/) |
 
-Restore empties the target directory, unpacks the chosen archive into it and runs the path's post-write command (the same one `deploy` uses) if there is one - so a rollback also restarts the service.
+Restore empties the target directory, unpacks the chosen archive into it and runs the path's post-write command (the same one `deploy` uses) if there is one - so a rollback also restarts the service. The command runs the way a deploy runs it: in the deploy directory, and [detached from the connection](/turnout/reference/deploy/#a-restart-that-outlives-the-connection) on a Linux or macOS server. Before v0.24 a restore ran it in the home directory.
+
+A deploy to a target with a [health check](/turnout/reference/target/#health-check) does this by itself when the check fails - see [Health check and rollback](/turnout/reference/deploy/#health-check-and-rollback).
 
 "Newest" is decided by sorting the archive names, which are fixed-width timestamps - not by the order the server listed them in. Files in the backups directory that turnout did not write are ignored, so a note you left there will never be restored over your site.
 

@@ -14,6 +14,7 @@ Every command that reports something takes `--json` and prints the same thing as
 | [`pass list --json`](/turnout/reference/pass/#list) | The credentials, as `credential list --json` |
 | [`cookie list --json`](/turnout/reference/cookie/#list) | The jars the gateway holds, by cookie name, with their expiry and the stand's last answer |
 | [`restore --list --json`](/turnout/reference/backup/) | The backups of a target, newest first |
+| [`deploy --diff --json`](/turnout/reference/deploy/#before-writing---diff) | What a deploy would change, per target: files to add, update and leave, and the bytes it adds |
 
 ```bash
 turnout app list --json | jq -r '.[] | select(.server == "prod") | .name'
@@ -34,4 +35,4 @@ The text and the JSON are made from one value. A command builds what it knows in
 
 The JSON is not the catalog files. Those are storage: they change shape with the schema and are migrated when they do. The JSON is what turnout promises to whoever reads its output, and it is kept apart from storage so a migration does not break a script ([ADR 0020](https://github.com/lacodda/turnout/blob/main/docs/adr/0020-json-is-a-view-not-the-storage.md)). Fields may be added; removing or renaming one is a breaking change, named in the changelog with the way forward.
 
-`--json` exists only on commands that report - `turnout deploy --json` is an error, not a flag quietly ignored.
+`--json` exists only on commands that report - `turnout deploy --json` without `--diff` is an error, not a flag quietly ignored.

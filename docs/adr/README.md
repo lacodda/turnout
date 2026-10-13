@@ -27,3 +27,6 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0021](0021-a-control-channel-for-the-gateway.md) | A token-guarded control channel for the gateway | accepted |
 | [0022](0022-the-doctor-looks-and-repairs-only-what-it-owns.md) | The doctor looks, and repairs only what turnout owns | accepted |
 | [0023](0023-the-jar-keeps-cookies-as-a-browser-does.md) | The jar keeps cookies as a browser does, and can ask whether they still work | accepted |
+| [0024](0024-a-checked-deploy-rolls-itself-back.md) | A checked deploy rolls itself back | accepted |
+| [0025](0025-a-restart-outlives-its-connection.md) | A restart outlives the connection that started it | accepted |
+| [0026](0026-a-diff-asks-the-files-not-a-manifest.md) | A diff asks the files, not a manifest | accepted |

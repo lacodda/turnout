@@ -19,6 +19,12 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 6: targets can be checked
+
+**v0.24.0** lets a [target](/turnout/reference/target/) carry a health check and an address of its own. Both are optional, so nothing in the directory is rewritten and no copy is set aside - the step says what changed and moves the version on.
+
+What changes is who may read the directory. A turnout older than v0.24 would read a target with a health check, drop the check without a word, and deploy unchecked - no check, no rollback. After the bump it refuses the directory instead, the way it refuses anything a newer turnout wrote.
+
 ## Schema 5: the gateway is a job
 
 **v0.20.0** gave every job turnout runs a record in the [job registry](/turnout/concepts/background-jobs/#the-registry), and the gateway became the first of them. Its record moves out of `state.json` into `jobs/gateway.json`.

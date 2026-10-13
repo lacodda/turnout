@@ -14,7 +14,7 @@ OpenSSH on Windows hands your command to **`cmd.exe`**, unless an administrator 
 | | POSIX (`sh`) | `cmd.exe` |
 | --- | --- | --- |
 | Quoting | `'one arg'` | `"one arg"` - single quotes are ordinary characters |
-| Create a directory | `mkdir -p dir` | `if not exist dir mkdir dir` |
+| Create a directory | `mkdir -p dir` | `(if not exist dir mkdir dir)` |
 | Variables | `$VAR`, `$(command)` | `%VAR%`, no command substitution |
 | Empty a directory | `find dir -mindepth 1 -delete` | `del /f /q /s` plus `rd /s /q` |
 
@@ -68,6 +68,19 @@ The ways out are in the message: prefix with `MSYS_NO_PATHCONV=1`, double the le
 Windows has shipped `tar.exe` (bsdtar) in `System32` since Windows 10 1803, and it reads `.tar.gz`. So the fast path - pack the artifacts locally, send one file, unpack on the server - works on Windows exactly as it does on Linux, and no second archive format is involved.
 
 Backups are `.tar.gz` too, named `YYYYMMDD-HHMMSS.tar.gz`. The timestamp is generated **locally**: the old command asked the server for the time with `$(date +%Y%m%d-%H%M%S)`, which `cmd.exe` would have taken literally, naming the archive `$(date`. Restoring picks the newest backup by sorting those names, also locally, because `ls -1 | sort | tail -n 1` is a POSIX pipeline with no `cmd.exe` equivalent.
+
+## Commands in a chain
+
+A deploy joins commands with `&&` - create the backups directory, *then* pack; check the archive is there, *then* empty the directory, *then* unpack. `&&` means the same in both shells, but two `cmd.exe` rules make a bare command misbehave inside a chain:
+
+- **An `if` owns the rest of its line.** `if not exist B mkdir B && tar ...` makes the `tar` part of the `if` - so when `B` already exists, nothing after it runs.
+- **`exit /b 0` ends the whole line**, not just its own command. A tolerant `del ... & exit /b 0` after a failed `tar` reports success.
+
+So every Windows command turnout sends is a self-contained group in parentheses, and the tolerant ones end in `(call )` - which sets the exit code to 0 without leaving - rather than `exit /b 0`. Up to v0.23 they were bare: on a Windows server every backup after the first was skipped, a restore did nothing, and a failed unpack read as success, while every test that compared command strings passed. Since v0.24 the chains run through a real `cmd.exe` in turnout's test suite.
+
+## A restart runs attached
+
+On a Linux or macOS server a deploy's restart runs [detached from the SSH connection](/turnout/reference/deploy/#a-restart-that-outlives-the-connection), so a dropped connection does not kill it. On a Windows server it still runs attached: OpenSSH for Windows ends the session's whole job object when the connection closes, and leaving that takes launching the command through WMI - a separate piece of work. Keep a long restart (an image build) off a connection you might lose, or run it with `turnout exec` from a machine that stays connected.
 
 ## What cmd.exe cannot express
 

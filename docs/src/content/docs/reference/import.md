@@ -52,7 +52,7 @@ With no terminal the passphrase is read from stdin:
 printf '%s' "$PASSPHRASE" | turnout import backup.json
 ```
 
-An export written by a newer turnout is refused rather than half-read, with the version it needs.
+An export written by a newer turnout is refused rather than half-read, with the version it needs. Format 4 (v0.24.0) is why: its targets can carry a [health check](/turnout/reference/target/#health-check), and an older turnout importing one would drop the check and deploy unchecked.
 
 ## Files from turnout 0.8
 
