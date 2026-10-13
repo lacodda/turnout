@@ -7,6 +7,11 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.24.1] - 2026-10-13
+
+### Bug Fixes
+- Name a health path Git Bash rewrote, and take //path for /path
+
 ## [0.24.0] - 2026-10-13
 
 ### Bug Fixes
