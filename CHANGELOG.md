@@ -7,6 +7,20 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.24.0] - 2026-10-13
+
+### Bug Fixes
+- Quote a silent command's exit code without a dangling colon
+
+### Documentation
+- Describe health checks and rollback, --diff, several targets and the detached restart
+
+### Features
+- Checked deploys that roll back, --diff, several targets, a restart that outlives the connection
+
+### Testing
+- Keep unit tests out of the real data directory, wait out a listener row that outlives its socket
+
 ## [0.23.0] - 2026-10-08
 
 ### Documentation
