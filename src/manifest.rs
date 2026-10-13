@@ -54,16 +54,25 @@ fn listing_command(dialect: Dialect, dir: &str) -> String {
             format!("sh -c {}", dialect.quote(&script))
         }
         Dialect::Windows => shell::powershell(&format!(
-            "$ErrorActionPreference = 'SilentlyContinue'\n\
+            "{WINDOWS_PREAMBLE}\
              $d = '{}'\n\
              if (-not (Test-Path -LiteralPath $d -PathType Container)) {{ 'missing'; exit 0 }}\n\
              'present'\n\
              $base = (Get-Item -LiteralPath $d).FullName.TrimEnd([char]92) + [char]92\n\
-             Get-ChildItem -LiteralPath $d -Recurse -File -Force | ForEach-Object {{ '' + $_.Length + ' ./' + $_.FullName.Substring($base.Length).Replace([char]92, [char]47) }}\n",
+             Get-ChildItem -LiteralPath $d -Recurse -File -Force | ForEach-Object {{ '' + $_.Length + ' ./' + $_.FullName.Substring($base.Length).Replace([char]92, [char]47) }}\n\
+             exit 0\n",
             dir.replace('\'', "''")
         )),
     }
 }
+
+/// What every Windows script opens with: errors and progress kept out of
+/// the reply. A PowerShell that loads a module for the first time on a
+/// machine reports "Preparing modules for first use" as progress - on a fresh
+/// CI runner that was the whole of stderr - and each script ends in an
+/// explicit `exit 0`, because PowerShell otherwise exits with the success of
+/// whatever statement ran last.
+const WINDOWS_PREAMBLE: &str = "$ErrorActionPreference = 'SilentlyContinue'\n$ProgressPreference = 'SilentlyContinue'\n";
 
 /// Read a listing: `missing`, or `present` and then `SIZE ./PATH` lines.
 /// `wc -c` pads its numbers and ends each batch with a `total` line, which has
@@ -116,10 +125,15 @@ fn hash_commands(dialect: Dialect, dir: &str, paths: &[&str]) -> Vec<String> {
                 );
                 format!("sh -c {} turnout-hash {}", dialect.quote(&script), batch.join(" "))
             }
+            // .NET's SHA-256 rather than `Get-FileHash`: in Windows
+            // PowerShell 5.1 that is a function in a script module, loaded on
+            // first use - which a fresh CI runner showed failing quietly.
             Dialect::Windows => shell::powershell(&format!(
-                "$ErrorActionPreference = 'SilentlyContinue'\n\
+                "{WINDOWS_PREAMBLE}\
                  $d = '{}'\n\
-                 foreach ($p in @({})) {{ $h = Get-FileHash -LiteralPath (Join-Path $d $p) -Algorithm SHA256; if ($h) {{ $h.Hash.ToLower() + ' ./' + $p }} }}\n",
+                 $sha = [Security.Cryptography.SHA256]::Create()\n\
+                 foreach ($p in @({})) {{ try {{ $s = [IO.File]::OpenRead((Join-Path $d $p)); try {{ ([BitConverter]::ToString($sha.ComputeHash($s)) -replace '-', '').ToLower() + ' ./' + $p }} finally {{ $s.Dispose() }} }} catch {{ }} }}\n\
+                 exit 0\n",
                 dir.replace('\'', "''"),
                 batch.join(",")
             )),

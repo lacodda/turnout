@@ -211,7 +211,7 @@ fn walked_sources(project: &Path) -> Vec<PathBuf> {
 }
 
 /// The SHA-256 of a file, as lowercase hex - the form `sha256sum` and
-/// PowerShell's `Get-FileHash` (lowercased) print.
+/// a Windows server's .NET hash (lowercased) print.
 pub fn sha256(path: &Path) -> Result<String> {
     use sha2::Digest;
     use std::io::Read;
