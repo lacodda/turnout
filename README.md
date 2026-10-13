@@ -80,7 +80,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.24.0  ~/.local/share/lacodda/turnout
+turnout 0.24.1  ~/.local/share/lacodda/turnout
 
 Apps
   api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
@@ -185,7 +185,7 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.24.0, in daily use. Everything above works today: stands and switching
+v0.24.1, in daily use. Everything above works today: stands and switching
 between them, the gateway and what it notices about them, secrets in the OS
 keyring, the quiet console, jobs in the background with a notification when
 they are done, `status` for a person, a prompt and a script, `doctor` for the
