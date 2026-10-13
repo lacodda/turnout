@@ -570,7 +570,8 @@ fn wait_healthy(check: &HealthCheck, target: &Resolved, remote: &impl Remote, di
 /// on, without the command line it already quoted.
 fn last_words(error: &str) -> String {
     match error.split_once("exited with ") {
-        Some((_, rest)) => format!("exited with {}", rest.trim()),
+        // A command that failed in silence leaves `1:` with nothing after it.
+        Some((_, rest)) => format!("exited with {}", rest.trim().trim_end_matches(':')),
         None => error.to_string(),
     }
 }
@@ -823,6 +824,7 @@ mod tests {
             last_words("remote command 'cd /x && curl -f localhost' exited with 22: curl: (22) 503"),
             "exited with 22: curl: (22) 503"
         );
+        assert_eq!(last_words("remote command 'cd /x && test ! -f broken.txt' exited with 1: "), "exited with 1");
         assert_eq!(last_words("connection reset"), "connection reset");
     }
 
