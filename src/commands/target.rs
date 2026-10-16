@@ -25,7 +25,8 @@ pub fn run(command: TargetCommand) -> Result<()> {
             path,
             url,
             health,
-        } => add(name, Parts { app, server, credential, path }, url, &health),
+            keep_backups,
+        } => add(name, Parts { app, server, credential, path }, url, &health, keep_backups),
         TargetCommand::List { format } => list(format),
         TargetCommand::Show { name, format } => show(&resolve(name, "Show target")?, format),
         TargetCommand::Edit {
@@ -35,9 +36,10 @@ pub fn run(command: TargetCommand) -> Result<()> {
             path,
             url,
             health,
+            keep_backups,
         } => {
             let name = resolve(name, "Edit target")?;
-            edit(&name, server, credential, path, url, &health)
+            edit(&name, server, credential, path, url, &health, keep_backups)
         }
         TargetCommand::Rename { name, to } => {
             let name = resolve(name, "Rename target")?;
@@ -112,12 +114,25 @@ fn health_from(current: Option<HealthCheck>, args: &HealthArgs) -> Result<Option
     }
 }
 
-fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthArgs) -> Result<()> {
+/// A number of backups to keep, as typed.
+///
+/// Zero is refused rather than stored: it would remove every backup the
+/// moment it is taken, which makes `--backup` a no-op that still costs a tar
+/// of the whole directory. Removing them all is a command, not a setting.
+fn keep_from(keep: u32, name: &str) -> Result<u32> {
+    if keep == 0 {
+        bail!("--keep-backups 0 would remove every backup the moment it is taken - to remove them all once, run `turnout backup prune {name} --keep 0`");
+    }
+    Ok(keep)
+}
+
+fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthArgs, keep_backups: Option<u32>) -> Result<()> {
     let Parts { app, server, credential, path } = parts;
     // Read before anything is asked: a bad flag must fail at once, not after
     // three pickers.
     let url = url.map(url_from).transpose()?.flatten();
     let health = health_from(None, health)?;
+    let keep_backups = keep_backups.map(|keep| keep_from(keep, name.as_deref().unwrap_or("TARGET"))).transpose()?;
     let mut targets = store::load_targets()?;
     let apps = store::load_apps()?;
     let servers = store::load_servers()?;
@@ -194,6 +209,7 @@ fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthA
         path: path_name,
         url,
         health,
+        keep_backups,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -236,6 +252,7 @@ pub fn offer_to_save(app: &str, server: &str, credential: &str, path: &str) -> R
         path: path.to_string(),
         url: None,
         health: None,
+        keep_backups: None,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -262,6 +279,12 @@ pub struct TargetView {
     pub address: Option<String>,
     /// How a deploy proves it worked; `null` when it is not checked.
     pub health: Option<HealthView>,
+    /// How many backups of its deploy directory the stand keeps - the
+    /// default filled in.
+    pub keep_backups: u32,
+    /// Whether that number is the default rather than the target's own.
+    #[serde(skip)]
+    keeps_default: bool,
 }
 
 /// A health check as the views report it: every key always there, and the
@@ -311,6 +334,8 @@ pub fn views() -> Result<Vec<TargetView>> {
             path: target.path,
             url: target.url,
             health: target.health.map(HealthView::from),
+            keep_backups: target.keep_backups.unwrap_or(crate::remote::DEFAULT_KEEP_BACKUPS),
+            keeps_default: target.keep_backups.is_none(),
         })
         .collect())
 }
@@ -359,18 +384,32 @@ fn show(name: &str, format: Format) -> Result<()> {
                 ),
                 None => format!("  Health:     not checked - turnout target edit {} --health /health", target.name),
             },
+            format!(
+                "  Backups:    keeps the newest {}{}",
+                target.keep_backups,
+                if target.keeps_default { " (the default)" } else { "" }
+            ),
         ]
         .join("\n")
     })
 }
 
-fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Option<String>, url: Option<String>, health: &HealthArgs) -> Result<()> {
+fn edit(
+    name: &str,
+    server: Option<String>,
+    credential: Option<String>,
+    path: Option<String>,
+    url: Option<String>,
+    health: &HealthArgs,
+    keep_backups: Option<u32>,
+) -> Result<()> {
     let mut targets = store::load_targets()?;
     let index = targets.iter().position(|t| t.name == name).ok_or_else(|| unknown(name))?;
     // Read before anything is written: a bad flag must not leave half an edit.
     let url = url.map(url_from).transpose()?;
     let check = health.any().then(|| health_from(targets[index].health.clone(), health)).transpose()?;
-    if server.is_none() && credential.is_none() && path.is_none() && url.is_none() && check.is_none() {
+    let keep_backups = keep_backups.map(|keep| keep_from(keep, name)).transpose()?;
+    if server.is_none() && credential.is_none() && path.is_none() && url.is_none() && check.is_none() && keep_backups.is_none() {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
         let apps = store::load_apps()?;
         let app = apps
@@ -415,6 +454,9 @@ fn edit(name: &str, server: Option<String>, credential: Option<String>, path: Op
         }
         if let Some(check) = check {
             target.health = check;
+        }
+        if let Some(keep) = keep_backups {
+            target.keep_backups = Some(keep);
         }
     }
     store::save_targets(&targets)?;

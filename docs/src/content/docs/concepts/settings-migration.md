@@ -19,6 +19,14 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 7: targets keep a number of backups
+
+**v0.25.0** lets a [target](/turnout/reference/target/#backups) say how many backups its stand keeps, and every backup turnout leaves prunes the older ones down to that number. The field is optional, so nothing is rewritten.
+
+What changes, again, is who may read the directory: a turnout older than v0.25 editing such a target would drop the number, and the next prune would cut the stand back to the default of 5 against your word. After the bump it refuses the directory instead.
+
+The same release starts `deploys/` in the data directory - one record per deploy and the builds a [rollback](/turnout/reference/rollback/) sends again. It is new rather than changed, so it needs no step of its own.
+
 ## Schema 6: targets can be checked
 
 **v0.24.0** lets a [target](/turnout/reference/target/) carry a health check and an address of its own. Both are optional, so nothing in the directory is rewritten and no copy is set aside - the step says what changed and moves the version on.

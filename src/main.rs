@@ -10,6 +10,7 @@ mod envfile;
 mod front;
 mod gateway;
 mod health;
+mod history;
 mod jar;
 mod job;
 mod journal;
@@ -157,11 +158,32 @@ fn main() {
             },
         ),
         cli::Command::Backup {
+            command:
+                Some(cli::BackupCommand::Prune {
+                    target,
+                    server,
+                    credential,
+                    path,
+                    keep,
+                    format,
+                }),
+            ..
+        } => commands::backup::prune(target, remote::Overrides { server, credential, path }, keep, format),
+        cli::Command::Backup {
+            command: None,
             target,
             server,
             credential,
             path,
         } => commands::backup::backup(target, remote::Overrides { server, credential, path }),
+        cli::Command::History {
+            name,
+            limit,
+            show,
+            diff,
+            format,
+        } => commands::history::run(name, limit, show, diff, format),
+        cli::Command::Rollback { target, to } => commands::rollback::run(target, to),
         cli::Command::Restore {
             target,
             server,

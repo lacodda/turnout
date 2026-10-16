@@ -14,6 +14,9 @@ Every command that reports something takes `--json` and prints the same thing as
 | [`pass list --json`](/turnout/reference/pass/#list) | The credentials, as `credential list --json` |
 | [`cookie list --json`](/turnout/reference/cookie/#list) | The jars the gateway holds, by cookie name, with their expiry and the stand's last answer |
 | [`restore --list --json`](/turnout/reference/backup/) | The backups of a target, newest first |
+| [`backup prune --json`](/turnout/reference/backup/#backup-prune) | What a prune removed and how many are left |
+| [`history --json`](/turnout/reference/history/) / `history --show N --json` | An array of deploys / one deploy: target, build (version, commit, `dirty`), outcome, the restart and the check, whether its build is still kept |
+| [`history --diff A B --json`](/turnout/reference/history/#the-commits-between-two-deploys) | The two ends and the commits `added` and `removed` between them |
 | [`deploy --diff --json`](/turnout/reference/deploy/#before-writing---diff) | What a deploy would change, per target: files to add, update and leave, and the bytes it adds |
 
 ```bash
@@ -29,7 +32,7 @@ The text and the JSON are made from one value. A command builds what it knows in
 
 - **Every key is always there.** Something absent is `null`, an empty list is `[]` - never a missing key. A script can index without checking first.
 - **A list is an array of what `show` prints for one.** `app list --json` is `[...]` of the objects `app show NAME --json` prints; an empty catalog is `[]`, not a sentence.
-- **Times are ISO 8601 in UTC**, `2026-10-04T09:12:44Z`; how long something ran is for the reader to work out.
+- **Times are ISO 8601 in UTC**, `2026-10-04T09:12:44Z`; how long ago something happened is for the reader to work out. A duration turnout measured - how long a deploy took - is a number of `seconds`.
 - **Names are the catalog's names**; enumerations are lowercase words with underscores (`session_expired`, `not_answering`).
 - **Secrets never appear** - a credential says whether a secret is stored (`secret_stored`), the cookie list names cookies without their values, and the gateway's control token is not in any of it.
 

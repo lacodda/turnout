@@ -9,7 +9,7 @@ sidebar:
 turnout deploy [TARGET...] [-s SERVER] [-C CREDENTIAL] [-p PATH] [-n] [-b] [-c] [-A] [--diff [--json]] [-o] [-v | -d | --foreground]
 ```
 
-Builds the app, uploads the artifacts to the target directory over SFTP, restarts the service and - when the target says how - checks that the stand works, rolling it back when it does not. One command, using the same apps, servers, credentials and paths as everything else.
+Builds the app, uploads the artifacts to the target directory over SFTP, restarts the service and - when the target says how - checks that the stand works, rolling it back when it does not. Every deploy is recorded with its build, so [`history`](/turnout/reference/history/) shows what went where and [`rollback`](/turnout/reference/rollback/) sends an earlier build again. One command, using the same apps, servers, credentials and paths as everything else.
 
 ## Options
 
@@ -19,7 +19,7 @@ Builds the app, uploads the artifacts to the target directory over SFTP, restart
 | `-C, --credential <NAME>` | Credential for this run only, overriding the target's |
 | `-p, --path <NAME>` | Named path for this run only, overriding the target's |
 | `-n, --no-build` | Skip the build step and upload what is already built |
-| `-b, --backup` | Archive the remote directory before touching it |
+| `-b, --backup` | Archive the remote directory before touching it; the older backups beyond what the target keeps are removed |
 | `-c, --clear` | Empty the remote directory before uploading |
 | `-A, --no-archive` | Upload file by file instead of packing the artifacts into one archive |
 | `--diff` | Show what the deploy would change on the server, and write nothing - see [Before writing](#before-writing---diff) |
@@ -35,14 +35,15 @@ Builds the app, uploads the artifacts to the target directory over SFTP, restart
 2. **Build.** The app's `build` command runs (skip with `--no-build`); a failing build aborts the deploy, printing the output that explains why. While it succeeds the build shows a loader and its elapsed time, the same way [`turnout build`](/turnout/reference/run/) does - see [the quiet console](/turnout/concepts/quiet-console/). `--verbose` streams it instead.
 3. **Plan.** The artifact directory is walked to count files and bytes, so the upload can report a percentage and an ETA. An empty artifact directory aborts the deploy before anything is sent. A deploy that did not build checks whether a source changed since the last build - see [A build older than its sources](#a-build-older-than-its-sources).
 4. **Connect.** SSH to the server's host and port as the credential's user, with the credential's key file or the password stored in the keyring under its name.
-5. **Backup** *(with `--backup`, or when the target has a health check)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/). A first deploy, whose directory is not there yet, has nothing to back up.
+5. **Backup** *(with `--backup`, or when the target has a health check)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/). A first deploy, whose directory is not there yet, has nothing to back up. A backup that stays prunes the older ones down to what the stand [keeps](/turnout/reference/backup/#how-many-are-kept).
 6. **Clear** *(only with `--clear`)*: the target directory is emptied.
 7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
 8. **Restart.** If the path has a post-write command, it runs on the server **in the deploy directory** and its output is shown - a command does not need its own `cd` to reach the files it just received. It runs detached from the SSH connection, so a dropped connection does not kill it - see [A restart that outlives the connection](#a-restart-that-outlives-the-connection).
 9. **Check** *(when the target has a health check)*: the stand is asked until it works or the wait runs out; if it does not, the deploy is **rolled back** - see [Health check and rollback](#health-check-and-rollback).
+10. **Record.** The deploy is written down under a number, whatever its outcome - see [The record](#the-record).
 
 :::note[Interrupted after the upload]
-A deploy that fails between the upload and the restart says so explicitly: the files are already on the server, but the service is still running what it had. Run `turnout deploy` again, or restart by hand if the new files are already good enough.
+A deploy that fails between the upload and the restart says so explicitly: the files are already on the server, but the service is still running what it had. Run `turnout deploy` again, or restart by hand if the new files are already good enough. [`turnout history`](/turnout/reference/history/) shows such a deploy as `uploaded, restart failed`, with what the restart printed.
 :::
 
 ## Health check and rollback
@@ -74,6 +75,25 @@ error: the health check failed: ... - rolled back to 20261013-101500.tar.gz: the
 - **The stand is asked again** after the rollback. If the old build works, the deploy broke it; if the old build fails as well, the cause is somewhere else, and the error says so.
 - **A first deploy** has nothing to roll back to - the directory was not there before it. A failed check says so and leaves the files in place.
 - The deploy exits with an error either way. In the [background](#in-the-background) that is a `myapp deploy failed` [notification](/turnout/concepts/notifications/) whose line names the rollback.
+
+## The record
+
+```
+└ Deploy #14 of 'myapp' to 'prod' finished
+```
+
+Every deploy that reaches the server is recorded on this machine: when, which target, the project's version and git commit (and whether the working tree matched it), the size, how long the server's part took, how it ended, what the restart printed and what the check answered. A deploy that dies in the build is not - nothing reached a stand.
+
+The build itself is kept beside the record when the deploy left files on the server - the archive that went out, named by its SHA-256, so two targets of one build share it. The last 10 deploys to each stand keep theirs; that is how far back [`turnout rollback`](/turnout/reference/rollback/) can go.
+
+```bash
+turnout history myapp-prod          # the table
+turnout history --show 14           # one deploy, with the restart's output
+turnout history --diff 12 14        # the commits between two deploys
+turnout rollback myapp-prod         # back to the deploy before what runs
+```
+
+A record that cannot be written - a full disk on your side - is a warning, not a failed deploy: the stand got what it got either way.
 
 ## Before writing: `--diff`
 

@@ -153,6 +153,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
                 path: path_name.clone(),
                 url: None,
                 health: None,
+                keep_backups: None,
             });
             targets.sort_by(|a, b| a.name.cmp(&b.name));
             name

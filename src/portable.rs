@@ -23,6 +23,10 @@ use crate::model::{App, Credential, Group, Server, Target};
 
 /// Bumped when the shape below changes in a way an older turnout cannot read.
 ///
+/// 5 since v0.25.0: a target can say how many backups its stand keeps. An
+/// older turnout would import it without the number, and prune that stand's
+/// backups down to its default - schema 7's reason, again.
+///
 /// 4 since v0.24.0: a target can carry a health check and an address. A file
 /// with them imported by an older turnout would arrive without the check and
 /// deploy unchecked, so that turnout has to refuse it - the same reason the
@@ -30,7 +34,7 @@ use crate::model::{App, Credential, Group, Server, Target};
 ///
 /// 3 since v0.11.0: the deploy target is a named entity of its own, and the
 /// server no longer carries the app-to-path map a v0.10 turnout would look for.
-const FORMAT_VERSION: u32 = 4;
+const FORMAT_VERSION: u32 = 5;
 
 /// Argon2id parameters. Deliberately above the crate defaults: this guards a
 /// file that can be copied and attacked offline for as long as an attacker
@@ -188,6 +192,7 @@ impl Snapshot {
                     path: path.to_string(),
                     url: None,
                     health: None,
+                    keep_backups: None,
                 });
             }
         }

@@ -43,7 +43,7 @@ _turnout_dynamic() {
         return
     fi
 
-    local kind=""
+    local kind="" extra=""
     case "${COMP_WORDS[1]}" in
         use)
             # `use TARGET SERVER`: first word is an app or a group, second a server.
@@ -64,9 +64,18 @@ _turnout_dynamic() {
             # Named deploy targets - as many as the deploy goes to - or apps.
             [[ ${COMP_CWORD} -ge 2 ]] && kind="targets"
             ;;
-        backup|restore)
+        restore|rollback)
             # A named deploy target, or an app to use its target on the bound server.
             [[ ${COMP_CWORD} -eq 2 ]] && kind="targets"
+            ;;
+        backup)
+            # `backup [TARGET]`, or `backup prune [TARGET]`.
+            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="targets"; extra="prune"
+            elif [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" == "prune" ]]; then kind="targets"; fi
+            ;;
+        history)
+            # The deploys of a target or an app.
+            [[ ${COMP_CWORD} -eq 2 ]] && kind="openable"
             ;;
         run)
             # `run COMMAND [APP]`
@@ -109,7 +118,7 @@ _turnout_dynamic() {
     esac
 
     if [[ -n "${kind}" ]]; then
-        COMPREPLY=( $(compgen -W "$(_turnout_names "${kind}")" -- "${cur}") )
+        COMPREPLY=( $(compgen -W "${extra} $(_turnout_names "${kind}")" -- "${cur}") )
         return 0
     fi
     _turnout "$@"

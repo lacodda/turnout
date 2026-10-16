@@ -80,7 +80,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.24.1  ~/.local/share/lacodda/turnout
+turnout 0.25.0  ~/.local/share/lacodda/turnout
 
 Apps
   api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
@@ -118,6 +118,7 @@ prod-eu · gw ok · 2 dev
 - **A hand on the server.** `turnout ssh web-prod` opens a session with host, port, user and key from the catalogs, in the deploy directory, the password already on the clipboard; `turnout exec web-prod -- docker compose ps` runs one command there and hands back its exit code.
 - **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore. Artifacts travel as a single archive instead of thousands of round trips. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
 - **A deploy that checks itself.** Give a target a health check and a deploy asks the stand after the restart - and rolls it back when it does not answer. `--diff` shows what would change before anything is written; `deploy web-stage web-prod` ships one build to both; a long restart survives a dropped connection.
+- **A history of deploys, and the way back.** Every deploy is recorded with its version, commit and how it ended - files uploaded but the restart failed included, with what the restart said. `turnout history` lists them, `history --diff 12 14` shows the commits between two, and `turnout rollback` sends the build before back to the stand. Server backups are pruned to what each stand keeps.
 - **Portable settings.** `export` writes your apps, servers, credentials, paths, targets and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
 - **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
 - **One window onto it all.** `status` shows where every app points, the gateway, running jobs and the latest actions, with clickable addresses; `status --short` puts `prod · gw ok · 2 dev` into a starship or tmux line; `use -` goes back to the stand before. Every command that reports takes `--json`.
@@ -185,12 +186,12 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.24.1, in daily use. Everything above works today: stands and switching
+v0.25.0, in daily use. Everything above works today: stands and switching
 between them, the gateway and what it notices about them, secrets in the OS
 keyring, the quiet console, jobs in the background with a notification when
 they are done, `status` for a person, a prompt and a script, `doctor` for the
-day something does not work, and build and deploy from any directory - checked
-and rolled back when it fails. What landed in each version:
+day something does not work, and build and deploy from any directory - checked,
+recorded, and rolled back when it fails. What landed in each version:
 [the Releases page](https://github.com/lacodda/turnout/releases).
 
 ## Documentation

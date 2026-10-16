@@ -4152,3 +4152,272 @@ fn the_server_doctor_names_the_step_a_deploy_would_stop_at() {
         .failure()
         .stderr(predicate::str::contains("cannot be used with"));
 }
+
+/// Run git in `dir` the way a test needs it: no global identity, no signing.
+fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// A deploy record as a deploy writes it, in `deploys/` of the data directory.
+fn write_deploy(data: &std::path::Path, record: serde_json::Value) {
+    let deploys = data.join("deploys");
+    std::fs::create_dir_all(&deploys).unwrap();
+    let id = record["id"].as_u64().unwrap();
+    std::fs::write(deploys.join(format!("{id:06}.json")), serde_json::to_vec_pretty(&record).unwrap()).unwrap();
+}
+
+fn a_deploy(id: u64, outcome: &str, commit: Option<&str>) -> serde_json::Value {
+    let mut record = serde_json::json!({
+        "id": id,
+        "at": "2026-10-16T12:00:00Z",
+        "app": "myapp",
+        "target": "myapp-staging",
+        "server": "staging",
+        "credential": "deploy",
+        "path": "wwwroot",
+        "dir": "/var/www/myapp",
+        "files": 124,
+        "bytes": 2_400_000,
+        "millis": 12_400,
+        "outcome": outcome,
+        "version": "1.4.0",
+    });
+    if let Some(sha) = commit {
+        record["commit"] = serde_json::json!({ "sha": sha, "dirty": false });
+    }
+    record
+}
+
+/// The history reads the records back: a table, one deploy in full, JSON,
+/// and the commits between two deploys asked of the app's own repository.
+#[test]
+fn history_lists_shows_and_compares_deploys() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .arg("history")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No deploys recorded yet"));
+
+    git_in(&project, &["init", "-q"]);
+    std::fs::write(project.join("index.html"), "v1").unwrap();
+    git_in(&project, &["add", "."]);
+    git_in(&project, &["commit", "-q", "--no-verify", "-m", "first page"]);
+    let first = git_in(&project, &["rev-parse", "HEAD"]);
+    std::fs::write(project.join("index.html"), "v2").unwrap();
+    git_in(&project, &["commit", "-q", "--no-verify", "-am", "a better page"]);
+    let second = git_in(&project, &["rev-parse", "HEAD"]);
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+
+    write_deploy(dir.path(), a_deploy(1, "deployed", Some(&first)));
+    let mut partial = a_deploy(2, "partial", Some(&second));
+    partial["restart"] = serde_json::json!({
+        "command": "docker compose up -d --build",
+        "ok": false,
+        "output": "`docker compose up -d --build` exited with 1: no space left on device",
+    });
+    partial["error"] = serde_json::json!("`docker compose up -d --build` exited with 1: no space left on device");
+    write_deploy(dir.path(), partial);
+    let mut other = a_deploy(3, "deployed", None);
+    other["app"] = serde_json::json!("api");
+    other["target"] = serde_json::json!("api-staging");
+    write_deploy(dir.path(), other);
+
+    let table = String::from_utf8(turnout(dir.path()).arg("history").assert().success().get_output().stdout.clone()).unwrap();
+    let lines: Vec<&str> = table.lines().collect();
+    assert_eq!(lines.len(), 4, "{table}");
+    assert!(
+        lines[1].contains("myapp-staging") && lines[1].contains(&first[..7]) && lines[1].ends_with("deployed"),
+        "{table}"
+    );
+    assert!(lines[2].ends_with("uploaded, restart failed"), "files out, service on the old: {table}");
+    assert!(lines[3].contains("api-staging"), "{table}");
+
+    turnout(dir.path()).args(["history", "myapp", "-n", "1"]).assert().success().stdout(
+        predicate::str::contains("restart failed")
+            .and(predicate::str::contains("first page").not())
+            .and(predicate::str::contains("api").not()),
+    );
+    turnout(dir.path())
+        .args(["history", "--show", "#2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restart:   docker compose up -d --build (failed)").and(predicate::str::contains("no space left on device")));
+    let json: serde_json::Value = serde_json::from_slice(&turnout(dir.path()).args(["history", "--json"]).assert().success().get_output().stdout).unwrap();
+    assert_eq!(json[1]["outcome"], "partial");
+    assert_eq!(json[1]["restart"]["ok"], false);
+    assert_eq!(json[0]["build_kept"], false);
+    assert!(json[2]["commit"].is_null() && json[2]["rollback_of"].is_null(), "every key, always: {json:#}");
+
+    turnout(dir.path())
+        .args(["history", "--diff", "1", "2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 commit").and(predicate::str::contains("a better page")));
+    turnout(dir.path())
+        .args(["history", "--diff", "2", "1"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#1 does not have 1 commit #2 had").and(predicate::str::contains("a better page")));
+    turnout(dir.path())
+        .args(["history", "--diff", "1", "3"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("commits compare within one app"));
+    turnout(dir.path())
+        .args(["history", "--show", "9"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no deploy #9"));
+}
+
+/// Every reason a rollback cannot send a build is said before a server is
+/// dialled: nothing earlier, a build no longer kept, a deploy that never went
+/// through, a number that is not there.
+#[test]
+fn rollback_says_why_it_cannot_send_a_build() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_path(dir.path());
+    add_credential(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["rollback", "myapp-staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to roll back"));
+
+    let mut first = a_deploy(1, "deployed", None);
+    first["build"] = serde_json::json!("0".repeat(64));
+    write_deploy(dir.path(), first);
+    turnout(dir.path())
+        .args(["rollback", "myapp-staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the build of #1").and(predicate::str::contains("no earlier deploy")));
+
+    write_deploy(dir.path(), a_deploy(2, "deployed", None));
+    write_deploy(dir.path(), a_deploy(3, "rolled_back", None));
+    turnout(dir.path())
+        .args(["rollback", "myapp-staging"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the build #1 sent is no longer kept"));
+    turnout(dir.path())
+        .args(["rollback", "--to", "3"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("#3 never went through"));
+    turnout(dir.path())
+        .args(["rollback", "--to", "7"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no deploy #7"));
+
+    // A path that moved since would send the build somewhere it never ran.
+    turnout(dir.path())
+        .args(["path", "edit", "wwwroot", "--dir", "/srv/elsewhere"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["rollback", "--to", "1"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("somewhere it never ran"));
+}
+
+/// How many backups a stand keeps is the target's to say; zero is refused,
+/// since removing them all is a command and not a setting.
+#[test]
+fn a_target_says_how_many_backups_it_keeps() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    add_path(dir.path());
+    add_credential(dir.path());
+    turnout(dir.path()).args(["app", "add", "myapp", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+            "--keep-backups",
+            "0",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("backup prune"));
+    turnout(dir.path())
+        .args([
+            "target",
+            "add",
+            "--app",
+            "myapp",
+            "--server",
+            "staging",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["target", "show", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backups:    keeps the newest 5 (the default)"));
+    turnout(dir.path())
+        .args(["target", "edit", "myapp-staging", "--keep-backups", "3"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["target", "show", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Backups:    keeps the newest 3").and(predicate::str::contains("default").not()));
+    let json: serde_json::Value = serde_json::from_slice(
+        &turnout(dir.path())
+            .args(["target", "show", "myapp-staging", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(json["keep_backups"], 3);
+    // `backup prune` is a subcommand, and a bare `backup NAME` still backs up.
+    turnout(dir.path())
+        .args(["backup", "prune", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--keep"));
+}

@@ -7,7 +7,7 @@ Every action that changes state appends a line to `journal.jsonl` in the [data d
 
 ```json
 {"at":"2026-08-08T22:06:55Z","action":"use","app":"web","server":"staging"}
-{"at":"2026-08-08T22:07:31Z","action":"deploy","app":"web","server":"staging","detail":"142 files"}
+{"at":"2026-08-08T22:07:31Z","action":"deploy","app":"web","server":"staging","detail":"#14 · 142 files"}
 ```
 
 One object per line, so it is `tail`-able, `grep`-able and `jq`-able without a parser:
@@ -23,6 +23,8 @@ The five most recent entries also show up at the end of [`turnout status`](/turn
 The journal records **that** something happened, never the values involved. There are no secrets, no logins, no command output and no file contents in it - `turnout pass` is not journaled at all. Entries carry a timestamp, an action, the entity names and a short note like a file count or a backup name.
 
 That is a design rule, not a filter: nothing in the writing path ever receives a secret to begin with. It means the file is safe to read, attach to a bug report or hand to an assistant.
+
+A deploy's whole story - its build, its commit, what the restart printed - is in the [deploy history](/turnout/reference/history/) instead, under the number the journal line names. That record keeps command output the way a job's log does, so it stays out of the journal.
 
 ## Size
 

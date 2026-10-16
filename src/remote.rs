@@ -31,6 +31,9 @@ pub struct Resolved {
     /// Why the target's health check is not part of this run, when it has one
     /// and an override moved the run to another stand.
     pub unchecked: Option<String>,
+    /// How many backups the stand keeps: the target's word, else
+    /// [`DEFAULT_KEEP_BACKUPS`].
+    pub keep_backups: u32,
 }
 
 impl Resolved {
@@ -208,10 +211,14 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         )),
         _ => None,
     };
-    let (address, health) = if same_stand {
-        (target.address(&server), target.health.clone())
+    let (address, health, keep_backups) = if same_stand {
+        (
+            target.address(&server),
+            target.health.clone(),
+            target.keep_backups.unwrap_or(DEFAULT_KEEP_BACKUPS),
+        )
     } else {
-        (server.url.clone(), None)
+        (server.url.clone(), None, DEFAULT_KEEP_BACKUPS)
     };
     Ok(Resolved {
         app,
@@ -224,6 +231,7 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         address,
         health,
         unchecked,
+        keep_backups,
     })
 }
 
@@ -290,6 +298,7 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         target: None,
         health: None,
         unchecked: None,
+        keep_backups: DEFAULT_KEEP_BACKUPS,
     })
 }
 
@@ -448,6 +457,104 @@ pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, nam
 /// Delete one backup archive.
 pub fn remove_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<()> {
     exec(session, &dialect.remove_file(&join_remote(&backups_dir(deploy_dir), name))).map(|_| ())
+}
+
+/// Backups a stand keeps when its target names no number (ADR 0028).
+pub const DEFAULT_KEEP_BACKUPS: u32 = 5;
+
+/// Whether a listing entry is one of our archives: `YYYYMMDD-HHMMSS.tar.gz`.
+///
+/// The backups directory belongs to the user: a note left in it must never
+/// be restored as if it were an archive, nor pruned as if it were ours.
+pub fn is_backup_name(entry: &str) -> bool {
+    let Some(stem) = entry.strip_suffix(".tar.gz") else {
+        return false;
+    };
+    let bytes = stem.as_bytes();
+    bytes.len() == 15 && bytes[8] == b'-' && stem.chars().enumerate().all(|(i, c)| if i == 8 { c == '-' } else { c.is_ascii_digit() })
+}
+
+/// Our archives in a directory listing, newest first.
+///
+/// The names are fixed-width timestamps, so string order is time order - no
+/// date parsing, and no dependence on the order the server listed them in
+/// (`dir /b` and `ls -1` do not agree on that).
+pub fn backups_in(listing: &str) -> Vec<String> {
+    let mut names: Vec<String> = listing.lines().map(str::trim).filter(|line| is_backup_name(line)).map(str::to_string).collect();
+    names.sort_unstable_by(|a, b| b.cmp(a));
+    names
+}
+
+/// The backups of a deploy directory, newest first; none when the backups
+/// directory is not there yet.
+pub fn list_backups(session: &Session, dialect: Dialect, deploy_dir: &str) -> Result<Vec<String>> {
+    let backups = backups_dir(deploy_dir);
+    check_quotable(dialect, &[&backups])?;
+    Ok(backups_in(&exec(session, &dialect.list_dir(&backups))?))
+}
+
+/// What a prune did.
+pub struct Pruned {
+    /// The archives that went, newest first.
+    pub removed: Vec<String>,
+    /// How many are left.
+    pub kept: usize,
+}
+
+/// Remove all but the newest `keep` backups of a deploy directory.
+///
+/// The directory is listed again afterwards and the report says what is
+/// gone by that listing: `del` on a Windows server answers success whatever
+/// happened, and a prune that claims a removal it did not make is the kind
+/// of report that fills a disk.
+pub fn prune_backups(session: &Session, dialect: Dialect, deploy_dir: &str, keep: u32) -> Result<Pruned> {
+    let before = list_backups(session, dialect, deploy_dir)?;
+    let doomed = before.get(keep as usize..).unwrap_or_default();
+    if doomed.is_empty() {
+        return Ok(Pruned {
+            removed: Vec::new(),
+            kept: before.len(),
+        });
+    }
+    let backups = backups_dir(deploy_dir);
+    let paths: Vec<String> = doomed.iter().map(|name| join_remote(&backups, name)).collect();
+    remove_paths(session, dialect, &paths)?;
+    let after = list_backups(session, dialect, deploy_dir)?;
+    let removed: Vec<String> = before.iter().filter(|name| !after.contains(name)).cloned().collect();
+    if let Some(stuck) = doomed.iter().find(|name| after.contains(name)) {
+        bail!(
+            "could not remove the backup {stuck} from {backups} - removed {} of {}",
+            removed.len(),
+            doomed.len()
+        );
+    }
+    Ok(Pruned { removed, kept: after.len() })
+}
+
+/// How long one removal command may grow: well under `cmd.exe`'s 8191
+/// characters, which is the tightest line any server here has.
+const REMOVE_LINE: usize = 6_000;
+
+/// Delete files on the server, in as few commands as the line allows. A
+/// file that is not there is not an error.
+pub fn remove_paths(session: &Session, dialect: Dialect, paths: &[String]) -> Result<()> {
+    let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+    check_quotable(dialect, &refs)?;
+    let mut chunk: Vec<&str> = Vec::new();
+    let mut length = 0;
+    for path in refs {
+        if !chunk.is_empty() && length + path.len() + 3 > REMOVE_LINE {
+            exec(session, &dialect.remove_files(&chunk))?;
+            chunk.clear();
+            length = 0;
+        }
+        length += path.len() + 3;
+        chunk.push(path);
+    }
+    if !chunk.is_empty() {
+        exec(session, &dialect.remove_files(&chunk))?;
+    }
+    Ok(())
 }
 
 /// Whether the deploy directory is there yet - a first deploy creates it, and

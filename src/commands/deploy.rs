@@ -1,11 +1,12 @@
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::Serialize;
 
 use crate::artifact::{self, Artifact, Plan};
 use crate::detached::Remote;
+use crate::history::{self, Outcome};
 use crate::job;
 use crate::model::{HealthCheck, Probe};
 use crate::progress::{self, Step, Transfer, human_bytes, human_duration, rate};
@@ -90,7 +91,8 @@ pub fn run(names: Vec<String>, overrides: remote::Overrides, flags: Flags) -> Re
         no_archive: flags.no_archive,
     };
     for (index, target) in targets.iter().enumerate() {
-        if let Err(err) = deploy_one(target, artifact_for(&artifacts, target), &options, flags.open) {
+        let shipment = Shipment::of(artifact_for(&artifacts, target));
+        if let Err(err) = deploy_one(target, &shipment, &options, After { open: flags.open, offer: true }) {
             let rest: Vec<String> = targets[index + 1..].iter().map(label).collect();
             if !rest.is_empty() {
                 // A deploy is often staging first, production second: going
@@ -116,7 +118,7 @@ fn artifact_for<'a>(artifacts: &'a [Artifact], target: &Resolved) -> &'a Artifac
 
 /// What a target is called in a report: its name, or `app → server` for a
 /// tuple nobody named.
-fn label(target: &Resolved) -> String {
+pub fn label(target: &Resolved) -> String {
     target.target.clone().unwrap_or_else(|| format!("{} → {}", target.app.name, target.server.name))
 }
 
@@ -159,6 +161,9 @@ fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<V
             bail!("app '{0}' has no artifact directory - set it with `turnout app edit {0} --dist DIR`", app.name);
         };
         let project = crate::utils::project_dir(Path::new(&app.path))?;
+        // Before the build: a build tool that writes outside the ignored
+        // directories would otherwise make every deploy look dirty.
+        let source = history::source_of(&project);
         let build = app.commands.get("build").filter(|_| !no_build);
         if let Some(build) = build {
             eprintln!("[{}] {build}", app.name);
@@ -193,7 +198,9 @@ fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<V
         if build.is_none() {
             warn_if_stale(app, &project, &local, &plan);
         }
-        artifacts.push(Artifact::new(&app.name, plan));
+        let mut artifact = Artifact::new(&app.name, plan);
+        artifact.source = source;
+        artifacts.push(artifact);
     }
     Ok(artifacts)
 }
@@ -222,32 +229,97 @@ fn warn_if_stale(app: &crate::model::App, project: &Path, local: &Path, plan: &P
     ));
 }
 
-/// Deploy one target: the frame, the work, and what follows a success.
-fn deploy_one(target: &Resolved, artifact: &Artifact, options: &Options, open: bool) -> Result<()> {
+/// What a deploy sends.
+pub struct Shipment<'a> {
+    pub artifact: &'a Artifact,
+    /// Files newer builds left on the stand that this one does not have: a
+    /// rollback removes them once its own files are up.
+    pub remove: Vec<String>,
+    /// The deploy whose build this one sends again.
+    pub rollback_of: Option<u64>,
+}
+
+impl<'a> Shipment<'a> {
+    /// A build going out for the first time.
+    pub fn of(artifact: &'a Artifact) -> Self {
+        Self {
+            artifact,
+            remove: Vec::new(),
+            rollback_of: None,
+        }
+    }
+}
+
+/// What follows a deploy that went through.
+pub struct After {
+    /// Open the stand in the browser.
+    pub open: bool,
+    /// Offer to save a route nobody named as a target.
+    pub offer: bool,
+}
+
+/// What the server's part of a deploy did, as far as it got: what the error
+/// explains and the record keeps.
+struct Report {
+    reached: Reached,
+    restart: Option<history::Restart>,
+    check: Option<history::Check>,
+}
+
+impl Default for Report {
+    fn default() -> Self {
+        Self {
+            reached: Reached::BeforeUpload,
+            restart: None,
+            check: None,
+        }
+    }
+}
+
+/// Deploy one target: the frame, the work, its record, and what follows a
+/// success.
+pub fn deploy_one(target: &Resolved, shipment: &Shipment, options: &Options, after: After) -> Result<()> {
     let (app, server) = (&target.app, &target.server);
     // The frame opens after the build on purpose: the build tool's raw output
     // streams above it, and the checklist below covers only our own phases.
-    let heading = match &target.target {
-        Some(name) => format!("Deploying {name}: {} → {}", app.name, server.name),
-        None => format!("Deploying {} → {}", app.name, server.name),
+    let heading = match (shipment.rollback_of, &target.target) {
+        (Some(id), _) => format!("Rolling back {} to #{id}: {} → {}", label(target), app.name, server.name),
+        (None, Some(name)) => format!("Deploying {name}: {} → {}", app.name, server.name),
+        (None, None) => format!("Deploying {} → {}", app.name, server.name),
     };
     progress::intro(heading);
     if let Some(unchecked) = &target.unchecked {
         progress::warn(unchecked);
     }
     let connect = || remote::connect(&target.server, &target.credential);
-    let mut reached = Reached::BeforeUpload;
-    match deploy_over_ssh(target, artifact, options, &mut reached, &connect) {
+    let at = crate::output::iso8601(SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_secs()).unwrap_or(0));
+    let clock = Instant::now();
+    let mut report = Report::default();
+    let result = deploy_over_ssh(target, shipment, options, &mut report, &connect);
+    let outcome = match (&result, report.reached) {
+        (Ok(_), _) => Outcome::Deployed,
+        (Err(_), Reached::RolledBack) => Outcome::RolledBack,
+        (Err(_), Reached::Uploaded) => Outcome::Partial,
+        (Err(_), Reached::BeforeUpload) => Outcome::Failed,
+    };
+    let number = keep_record(target, shipment, &report, outcome, at, clock.elapsed(), result.as_ref().err())
+        .map(|id| format!(" #{id}"))
+        .unwrap_or_default();
+    match result {
         Ok(files) => {
             let what = target.target.clone().unwrap_or_else(|| app.name.clone());
-            crate::journal::record("deploy", Some(&what), Some(&server.name), Some(&format!("{files} files")));
-            progress::outro(format!("Deploy of '{}' to '{}' finished", app.name, server.name));
+            let detail = match number.trim_start() {
+                "" => format!("{files} files"),
+                number => format!("{number} · {files} files"),
+            };
+            crate::journal::record("deploy", Some(&what), Some(&server.name), Some(&detail));
+            progress::outro(format!("Deploy{number} of '{}' to '{}' finished", app.name, server.name));
             // Only once it worked: offering to remember a target that just
             // failed would be saving a route nobody has driven.
-            if target.target.is_none() {
+            if after.offer && target.target.is_none() {
                 offer_target(target)?;
             }
-            if open {
+            if after.open {
                 println!("Opening {}", target.address);
                 crate::front::open_in_browser(&target.address)?;
             }
@@ -255,11 +327,73 @@ fn deploy_one(target: &Resolved, artifact: &Artifact, options: &Options, open: b
         }
         Err(err) => {
             // Closes the frame so the error prints on a clean line below it.
-            progress::outro_error(format!("Deploy of '{}' to '{}' failed", app.name, server.name));
-            match reached.note(&target.path) {
+            progress::outro_error(format!("Deploy{number} of '{}' to '{}' failed", app.name, server.name));
+            match report.reached.note(&target.path) {
                 Some(note) => Err(err.context(note)),
                 None => Err(err),
             }
+        }
+    }
+}
+
+/// Write the deploy's record, and keep its build when it left files on the
+/// stand - what a later rollback sends again. Returns its number.
+///
+/// Best-effort: the deploy happened either way, and a record that could not
+/// be written must not turn a deploy that went out into an error.
+fn keep_record(
+    target: &Resolved,
+    shipment: &Shipment,
+    report: &Report,
+    outcome: Outcome,
+    at: String,
+    took: Duration,
+    error: Option<&anyhow::Error>,
+) -> Option<u64> {
+    let attempt = || -> Result<u64> {
+        let store = history::Store::open()?;
+        let artifact = shipment.artifact;
+        let build = if outcome.wrote() {
+            let digest = artifact.digest()?.to_string();
+            store.keep_build(&digest, artifact.archive()?)?;
+            Some(digest)
+        } else {
+            None
+        };
+        let mut record = history::Record {
+            id: 0,
+            at,
+            app: target.app.name.clone(),
+            target: target.target.clone(),
+            server: target.server.name.clone(),
+            credential: target.credential.name.clone(),
+            path: target.path.name.clone(),
+            dir: target.path.dir.clone(),
+            files: artifact.plan.files,
+            bytes: artifact.plan.bytes,
+            millis: took.as_millis() as u64,
+            outcome,
+            error: error.map(|err| history::brief(&format!("{err:#}"))),
+            version: artifact.source.version.clone(),
+            commit: artifact.source.commit.clone(),
+            restart: report.restart.clone(),
+            check: report.check.clone(),
+            build,
+            rollback_of: shipment.rollback_of,
+        };
+        let id = store.add(&mut record)?;
+        // Housekeeping, so it may fail quietly: an extra build on disk until
+        // the next deploy tidies up is no reason to warn about this one.
+        if let Ok(records) = store.all() {
+            let _ = store.prune_builds(&records);
+        }
+        Ok(id)
+    };
+    match attempt() {
+        Ok(id) => Some(id),
+        Err(err) => {
+            progress::warn(&format!("this deploy was not recorded in the history: {err:#}"));
+            None
         }
     }
 }
@@ -360,10 +494,12 @@ fn offer_target(target: &Resolved) -> Result<()> {
     }
 }
 
-struct Options {
-    backup: bool,
-    clear: bool,
-    no_archive: bool,
+/// How a deploy treats the stand.
+#[derive(Default)]
+pub struct Options {
+    pub backup: bool,
+    pub clear: bool,
+    pub no_archive: bool,
 }
 
 /// Why a backup is taken, which decides what becomes of it.
@@ -379,11 +515,13 @@ enum Kept {
 
 /// Every phase that talks to the server, in checklist order.
 ///
-/// `reached` is written as the deploy passes each point of no return, so the
-/// caller can describe the state a failure left behind. `connect` opens the
-/// session, and opens it again if it drops while the restart runs.
-fn deploy_over_ssh(target: &Resolved, artifact: &Artifact, options: &Options, reached: &mut Reached, connect: &dyn Fn() -> Result<Session>) -> Result<u64> {
+/// `report` is written as the deploy passes each point of no return, so the
+/// caller can describe the state a failure left behind, and keeps what the
+/// restart and the check said. `connect` opens the session, and opens it
+/// again if it drops while the restart runs.
+fn deploy_over_ssh(target: &Resolved, shipment: &Shipment, options: &Options, report: &mut Report, connect: &dyn Fn() -> Result<Session>) -> Result<u64> {
     let (server, path) = (&target.server, &target.path);
+    let artifact = shipment.artifact;
     let where_to = target.connection_label();
     let step = Step::start(format!("Connecting to {where_to} ..."));
     let mut session = connect()?;
@@ -404,13 +542,16 @@ fn deploy_over_ssh(target: &Resolved, artifact: &Artifact, options: &Options, re
         Some(kept) => back_up(&session, dialect, &path.dir, kept)?,
         None => None,
     };
+    if kept == Some(Kept::Asked) && backup.is_some() {
+        crate::commands::backup::keep_only(&session, dialect, target);
+    }
     if options.clear {
         let step = Step::start(format!("Clearing {} ...", path.dir));
         remote::exec(&session, &dialect.clear_dir(&path.dir))?;
         step.done(format!("Cleared {}", path.dir));
         // Emptying the directory is itself a change to the stand: failing after
         // this leaves it serving nothing, which the note has to cover.
-        *reached = Reached::Uploaded;
+        report.reached = Reached::Uploaded;
     }
 
     let files = match archive_upload(&session, dialect, &path.dir, artifact, options.no_archive)? {
@@ -419,10 +560,23 @@ fn deploy_over_ssh(target: &Resolved, artifact: &Artifact, options: &Options, re
         // packing, or the server has no tar - send the files one by one.
         None => upload(&session, &path.dir, &artifact.plan)?,
     };
-    *reached = Reached::Uploaded;
+    report.reached = Reached::Uploaded;
+
+    if !shipment.remove.is_empty() {
+        let count = shipment.remove.len();
+        let plural = if count == 1 { "" } else { "s" };
+        let step = Step::start(format!("Removing {count} file{plural} the newer builds added ..."));
+        let paths: Vec<String> = shipment.remove.iter().map(|file| remote::join_remote(&path.dir, file)).collect();
+        remote::remove_paths(&session, dialect, &paths)?;
+        step.done(format!("Removed {count} file{plural} the newer builds added"));
+    }
 
     let restarted = match &path.restart {
-        Some(restart) => run_restart(&mut session, dialect, path, restart, connect),
+        Some(restart) => {
+            let result = run_restart(&mut session, dialect, path, restart, connect);
+            report.restart = Some(history::Restart::new(restart, &result));
+            result.map(|_| ())
+        }
         None => Ok(()),
     };
     let Some(check) = &target.health else {
@@ -438,10 +592,15 @@ fn deploy_over_ssh(target: &Resolved, artifact: &Artifact, options: &Options, re
             }) {
                 Ok(answer) => {
                     step.done(format!("Healthy: {} - {answer}", check.describe(&target.address)));
+                    report.check = Some(history::Check { ok: true, answer });
                     Ok(())
                 }
                 Err(last) => {
                     step.clear();
+                    report.check = Some(history::Check {
+                        ok: false,
+                        answer: last.clone(),
+                    });
                     Err(format!(
                         "the health check failed: {} {last} after {}s of asking",
                         check.describe(&target.address),
@@ -465,13 +624,15 @@ fn deploy_over_ssh(target: &Resolved, artifact: &Artifact, options: &Options, re
         (Err(why), None) => bail!("{why} - and this was the first deploy to {}, so there is nothing to roll back to", path.dir),
         (Err(why), Some(name)) => {
             progress::warn(&why);
-            let after = roll_back(&mut session, dialect, target, &name, connect).with_context(|| {
+            let after = roll_back(&mut session, dialect, target, &name, connect, &mut report.reached).with_context(|| {
                 format!(
                     "{why}, and rolling back to {name} failed too - the stand is in between; the backup is in {}",
                     remote::backups_dir(&path.dir)
                 )
             })?;
-            *reached = Reached::RolledBack;
+            // The archive the stand went back to stays, as any kept backup
+            // does - and counts against what the stand keeps.
+            crate::commands::backup::keep_only(&session, dialect, target);
             bail!("{why} - rolled back to {name}: {after}")
         }
     }
@@ -497,17 +658,25 @@ fn back_up(session: &Session, dialect: Dialect, dir: &str, kept: Kept) -> Result
     Ok(Some(name))
 }
 
-/// Run the path's post-write command, with its newest line beside the spinner.
-fn run_restart(session: &mut Session, dialect: Dialect, path: &crate::model::Path, restart: &str, connect: &dyn Fn() -> Result<Session>) -> Result<()> {
+/// Run the path's post-write command, with its newest line beside the
+/// spinner; returns what it printed.
+fn run_restart(session: &mut Session, dialect: Dialect, path: &crate::model::Path, restart: &str, connect: &dyn Fn() -> Result<Session>) -> Result<String> {
     let step = Step::start(format!("Running: {restart}"));
     let output = remote::restart(session, dialect, path, restart, connect, |line| {
         step.update(format!("Running: {restart} · {line}"))
-    })?;
+    });
+    let output = match output {
+        Ok(output) => output,
+        Err(err) => {
+            step.clear();
+            return Err(err);
+        }
+    };
     step.done(format!("Restarted: {restart}"));
     if !output.trim().is_empty() {
         progress::info(output.trim_end());
     }
-    Ok(())
+    Ok(output)
 }
 
 /// Put the stand back on `backup` and ask it again; says how it answers.
@@ -515,10 +684,22 @@ fn run_restart(session: &mut Session, dialect: Dialect, path: &crate::model::Pat
 /// The second ask is what tells the two failures apart: a stand that works
 /// on the old files was broken by this deploy, and one that does not was
 /// broken before it.
-fn roll_back(session: &mut Session, dialect: Dialect, target: &Resolved, backup: &str, connect: &dyn Fn() -> Result<Session>) -> Result<String> {
+///
+/// `reached` moves to rolled back as soon as the old files are in place: a
+/// restart that then fails again leaves the stand on the old files, not on
+/// this deploy's, and the record must not say otherwise.
+fn roll_back(
+    session: &mut Session,
+    dialect: Dialect,
+    target: &Resolved,
+    backup: &str,
+    connect: &dyn Fn() -> Result<Session>,
+    reached: &mut Reached,
+) -> Result<String> {
     let path = &target.path;
     let step = Step::start(format!("Rolling back to {backup} ..."));
     remote::restore_backup(session, dialect, &path.dir, backup)?;
+    *reached = Reached::RolledBack;
     step.done(format!("Rolled back {} to {backup}", path.dir));
     if let Some(restart) = &path.restart {
         run_restart(session, dialect, path, restart, connect)?;
@@ -887,6 +1068,7 @@ mod tests {
             address: address.into(),
             health,
             unchecked: None,
+            keep_backups: remote::DEFAULT_KEEP_BACKUPS,
         }
     }
 
@@ -922,7 +1104,9 @@ mod tests {
     fn a_build(files: &[(&str, &str)]) -> (tempfile::TempDir, Artifact) {
         let root = tempfile::tempdir().unwrap();
         for (path, content) in files {
-            std::fs::write(root.path().join(path), content).unwrap();
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
         }
         // Enough files to take the archive route, as a real dist does.
         for index in 0..artifact::ARCHIVE_THRESHOLD {
@@ -969,25 +1153,42 @@ mod tests {
         };
 
         let (_v1, first) = a_build(&[("health.txt", "ok"), ("index.html", "v1")]);
-        let mut reached = Reached::BeforeUpload;
-        deploy_over_ssh(&target, &first, &options, &mut reached, &connect).expect("a healthy first deploy");
+        let mut report = Report::default();
+        deploy_over_ssh(&target, &Shipment::of(&first), &options, &mut report, &connect).expect("a healthy first deploy");
         assert!(site.join("restarted.txt").is_file(), "the restart ran in the deploy directory");
+        let restart_kept = report.restart.as_ref().expect("the record keeps the restart");
+        assert!(restart_kept.ok && restart_kept.command == restart, "{restart_kept:?}");
+        assert_eq!(
+            report.check,
+            Some(history::Check {
+                ok: true,
+                answer: "exit 0".into()
+            })
+        );
         assert!(backups(&site).is_empty(), "a first deploy has nothing to back up: {:?}", backups(&site));
 
         let (_v2, broken) = a_build(&[("health.txt", "down"), ("index.html", "v2"), ("only-in-v2.js", "x")]);
-        let mut reached = Reached::BeforeUpload;
-        let err = format!("{:#}", deploy_over_ssh(&target, &broken, &options, &mut reached, &connect).unwrap_err());
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&broken), &options, &mut report, &connect).unwrap_err()
+        );
         assert!(err.contains("the health check failed"), "{err}");
         assert!(err.contains("rolled back to"), "{err}");
         assert!(err.contains("the stand works again"), "the old build passes the check: {err}");
-        assert!(reached == Reached::RolledBack);
+        assert!(report.reached == Reached::RolledBack);
+        assert!(
+            report.check.as_ref().is_some_and(|check| !check.ok),
+            "the failed answer is kept: {:?}",
+            report.check
+        );
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1", "the first build is back");
         assert!(!site.join("only-in-v2.js").exists(), "nothing of the failed deploy stays");
         assert_eq!(backups(&site).len(), 1, "the archive the stand was rolled back to is kept");
 
         let (_v3, fixed) = a_build(&[("health.txt", "ok"), ("index.html", "v3")]);
-        let mut reached = Reached::BeforeUpload;
-        deploy_over_ssh(&target, &fixed, &options, &mut reached, &connect).expect("a healthy deploy");
+        let mut report = Report::default();
+        deploy_over_ssh(&target, &Shipment::of(&fixed), &options, &mut report, &connect).expect("a healthy deploy");
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v3");
         assert_eq!(backups(&site).len(), 1, "a rollback backup goes once the check passes: {:?}", backups(&site));
     }
@@ -1012,9 +1213,149 @@ mod tests {
             clear: false,
             no_archive: false,
         };
-        let mut reached = Reached::BeforeUpload;
-        let err = format!("{:#}", deploy_over_ssh(&target, &broken, &options, &mut reached, &connect).unwrap_err());
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&broken), &options, &mut report, &connect).unwrap_err()
+        );
         assert!(err.contains("nothing to roll back to"), "{err}");
-        assert!(reached == Reached::Uploaded, "the files are there, and the note must say so");
+        assert!(report.reached == Reached::Uploaded, "the files are there, and the note must say so");
+    }
+
+    /// A restart that fails is kept with what it said - the record of a
+    /// deploy whose files went out and whose service did not take them.
+    #[test]
+    fn a_failed_restart_is_kept_with_its_output() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let dir = server.path().join("site").display().to_string();
+        let restart = if cfg!(windows) {
+            "echo no space left & exit /b 3"
+        } else {
+            "echo no space left; exit 3"
+        };
+        let target = a_target(&dir, Some(restart), None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        let mut report = Report::default();
+        deploy_over_ssh(&target, &Shipment::of(&build), &Options::default(), &mut report, &connect).unwrap_err();
+        assert!(report.reached == Reached::Uploaded);
+        let kept = report.restart.expect("the restart is kept");
+        assert!(!kept.ok, "{kept:?}");
+        assert!(kept.output.contains("no space left") && kept.output.contains('3'), "{kept:?}");
+    }
+
+    /// A rollback whose own restart fails too still put the old files back:
+    /// the record says rolled back, not "the files are this deploy's".
+    #[test]
+    fn a_rollback_whose_restart_fails_leaves_the_old_files() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "old").unwrap();
+        let (restart, probe) = if cfg!(windows) {
+            ("exit /b 3", "findstr ok index.html")
+        } else {
+            ("exit 3", "grep -q ok index.html")
+        };
+        let check = HealthCheck {
+            probe: Probe::Command(probe.into()),
+            wait: Some(0),
+        };
+        let target = a_target(&site.display().to_string(), Some(restart), Some(check), "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "new")]);
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&build), &Options::default(), &mut report, &connect).unwrap_err()
+        );
+        assert!(err.contains("rolling back to") && err.contains("failed too"), "{err}");
+        assert!(report.reached == Reached::RolledBack, "the old files are back, whatever the restart did");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "old");
+    }
+
+    /// A rollback sends the old build again and takes away what the newer
+    /// one added - and only that: a file the app wrote on the server is not
+    /// the build's, and stays.
+    #[test]
+    fn a_rollback_puts_back_the_build_and_takes_away_the_newer_files() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let dir = site.display().to_string();
+        let target = a_target(&dir, None, None, "http://127.0.0.1:1");
+        let ship = |artifact: &Artifact| deploy_over_ssh(&target, &Shipment::of(artifact), &Options::default(), &mut Report::default(), &connect);
+
+        let (_v1, first) = a_build(&[("index.html", "v1"), ("assets/app.js", "one")]);
+        ship(&first).unwrap();
+        std::fs::create_dir_all(site.join("uploads")).unwrap();
+        std::fs::write(site.join("uploads").join("avatar.png"), "the app's own").unwrap();
+        let (_v2, second) = a_build(&[("index.html", "v2"), ("assets/app.js", "two"), ("assets/only-in-v2.js", "x")]);
+        ship(&second).unwrap();
+
+        // The two records and builds, as the deploys keep them.
+        let kept = tempfile::tempdir().unwrap();
+        let store = history::Store::at(kept.path().to_path_buf());
+        for artifact in [&first, &second] {
+            let digest = artifact.digest().unwrap().to_string();
+            store.keep_build(&digest, artifact.archive().unwrap()).unwrap();
+            let mut record = history::tests::a_record(0, &dir, Outcome::Deployed, Some(&digest));
+            store.add(&mut record).unwrap();
+        }
+        let records = store.all().unwrap();
+        let archive = std::fs::read(store.build(records[0].build.as_deref().unwrap()).unwrap()).unwrap();
+        let own = artifact::files_in(&archive).unwrap();
+        let (remove, unknown) = history::added_since(&store, &records, &records[0], &own).unwrap();
+        assert_eq!(remove, vec!["assets/only-in-v2.js"]);
+        assert!(unknown.is_empty());
+
+        let unpacked = tempfile::tempdir().unwrap();
+        artifact::unpack(&archive, unpacked.path()).unwrap();
+        let again = Artifact::packed("web", artifact::plan_upload(unpacked.path()).unwrap(), archive, history::Source::default());
+        assert_eq!(again.digest().unwrap(), first.digest().unwrap(), "the very bytes #1 sent go out again");
+        let shipment = Shipment {
+            artifact: &again,
+            remove,
+            rollback_of: Some(1),
+        };
+        deploy_over_ssh(&target, &shipment, &Options::default(), &mut Report::default(), &connect).unwrap();
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+        assert_eq!(std::fs::read_to_string(site.join("assets").join("app.js")).unwrap(), "one");
+        assert!(!site.join("assets").join("only-in-v2.js").exists(), "what only the newer build had is gone");
+        assert!(site.join("uploads").join("avatar.png").is_file(), "what the app wrote stays");
+    }
+
+    /// A deploy that leaves a backup prunes the stand's backups down to what
+    /// it keeps - the newest, and never a file that is not one of ours.
+    #[test]
+    fn a_kept_backup_prunes_the_older_ones() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "v0").unwrap();
+        let backups_dir = std::path::PathBuf::from(remote::backups_dir(&site.display().to_string()));
+        std::fs::create_dir_all(&backups_dir).unwrap();
+        for old in ["20200101-000000.tar.gz", "20200102-000000.tar.gz", "20200103-000000.tar.gz", "notes.txt"] {
+            std::fs::write(backups_dir.join(old), "old").unwrap();
+        }
+        let mut target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+        target.keep_backups = 2;
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        let options = Options {
+            backup: true,
+            ..Options::default()
+        };
+        deploy_over_ssh(&target, &Shipment::of(&build), &options, &mut Report::default(), &connect).unwrap();
+        let mut left = backups(&site);
+        left.sort();
+        assert_eq!(left.len(), 3, "{left:?}");
+        assert_eq!(left[0], "20200103-000000.tar.gz", "the newest old one stays: {left:?}");
+        assert!(left[1].starts_with("20") && left[1] > left[0], "the new backup stays: {left:?}");
+        assert_eq!(left[2], "notes.txt", "a file that is not ours is never pruned: {left:?}");
     }
 }

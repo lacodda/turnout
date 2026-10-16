@@ -30,6 +30,11 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
+/// 7 since v0.25.0: a target can say how many backups its stand keeps, and
+/// every backup turnout leaves prunes down to that. Nothing is rewritten, but
+/// an older turnout editing such a target would drop the number, and the next
+/// prune would cut the stand back to the default against its owner's word.
+///
 /// 6 since v0.24.0: a target can carry a health check and an address of its
 /// own. Nothing is rewritten - both are optional - but a turnout older than
 /// this would read such a target, drop the check without a word and deploy
@@ -48,7 +53,7 @@ use anyhow::{Context, Result, bail};
 /// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
 /// the server's own `deploy` map - which held the app-to-path relationship - is
 /// gone (ADR 0013).
-pub const CURRENT_VERSION: u32 = 6;
+pub const CURRENT_VERSION: u32 = 7;
 
 /// One step from `from` to `from + 1`.
 ///
@@ -97,6 +102,12 @@ const STEPS: &[Step] = &[
     Step {
         from: 5,
         describes: "targets can carry a health check now - an older turnout will refuse these settings rather than deploy unchecked",
+        apply: nothing_to_rewrite,
+        rewrites: false,
+    },
+    Step {
+        from: 6,
+        describes: "targets can say how many backups their stand keeps - an older turnout will refuse these settings rather than drop the number",
         apply: nothing_to_rewrite,
         rewrites: false,
     },
@@ -201,6 +212,7 @@ fn targets_from_server_deploy(dir: &Path) -> Result<()> {
                 path: path.to_string(),
                 url: None,
                 health: None,
+                keep_backups: None,
             });
         }
     }

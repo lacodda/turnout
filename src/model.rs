@@ -213,6 +213,13 @@ pub struct Target {
     /// back to what the stand ran before (schema 6, v0.24.0).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health: Option<HealthCheck>,
+    /// How many backups the stand keeps; `None` is
+    /// [`crate::remote::DEFAULT_KEEP_BACKUPS`] (schema 7, v0.25.0). Per
+    /// target, because a backup is the whole deploy directory and the disk it
+    /// fills is the stand's: a Pi and a VPS sharing a path want different
+    /// numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_backups: Option<u32>,
 }
 
 impl Target {
@@ -588,6 +595,7 @@ mod tests {
             path: "wwwroot".into(),
             url: None,
             health: None,
+            keep_backups: None,
         }
     }
 

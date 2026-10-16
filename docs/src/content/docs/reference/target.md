@@ -23,6 +23,7 @@ Before v0.11.0 this relationship lived inside the server as a map from app to pa
 ```bash
 turnout target add [NAME] [--app APP] [--server SERVER] [--credential NAME] [--path NAME]
                           [--url URL] [--health URL | --health-command CMD] [--health-wait SECS]
+                          [--keep-backups N]
 ```
 
 | Flag | Short | Description |
@@ -35,6 +36,7 @@ turnout target add [NAME] [--app APP] [--server SERVER] [--credential NAME] [--p
 | `--health` | | After a deploy, `GET` this: a path under the target's address (`/health`) or a full URL - see [Health check](#health-check) |
 | `--health-command` | | After a deploy, run this on the server, in the deploy directory, instead |
 | `--health-wait` | | How long the check keeps asking, in seconds (default 60) |
+| `--keep-backups` | | How many backups of its deploy directory the stand keeps (default 5) - see [Backups](#backups) |
 
 Anything missing is asked for on a terminal, with the server's own credential pre-selected. Every part must already exist: a target names entities, it does not create them.
 
@@ -44,7 +46,7 @@ Anything missing is asked for on a terminal, with the server's own credential pr
 
 ```bash
 turnout target list          # name, app -> server, credential and path
-turnout target show myapp-prod   # full card: the directory files land in, the address, the health check
+turnout target show myapp-prod   # full card: the directory files land in, the address, the health check, the backups kept
 ```
 
 Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
@@ -70,6 +72,7 @@ turnout target edit myapp-prod                  # interactive wizard
 | `--health` | | A URL check; empty clears the check |
 | `--health-command` | | A command check; empty clears the check |
 | `--health-wait` | | How long the check keeps asking; keeps the probe as it is |
+| `--keep-backups` | | How many backups the stand keeps |
 
 Each health flag changes its own part: a new probe keeps the wait, a wait keeps the probe. A wait with no check to belong to is refused rather than dropped.
 
@@ -104,6 +107,16 @@ A deploy that fails its check - or whose restart fails - is **rolled back**: see
 In Git Bash, a path like `/health` is rewritten into `C:/Program Files/Git/health` before turnout sees it; turnout recognizes that shape and says so. Prefix the command with `MSYS_NO_PATHCONV=1`, double the slash (`--health //health`, stored as `/health`), or use PowerShell.
 
 A run that overrides the server or the path (`deploy myapp-prod --path other`) goes to a different stand, so the target's check is not asked there, and the deploy says so.
+
+## Backups
+
+```bash
+turnout target edit myapp-pi --keep-backups 3
+```
+
+Every backup turnout leaves on a stand - `backup`, `deploy --backup`, a checked deploy rolled back to its backup - prunes the older ones down to this number afterwards (5 when the target says nothing). It lives on the target and not on the path because the disk is the stand's: the same path deployed to a Pi and to a VPS wants a different count. `0` is refused - it would remove each backup the moment it is taken; [`turnout backup prune TARGET --keep 0`](/turnout/reference/backup/#backup-prune) removes them all once.
+
+`show` prints the number in force, and `--json` carries it as `keep_backups` with the default filled in.
 
 ## rename
 

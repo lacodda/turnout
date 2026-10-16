@@ -151,6 +151,24 @@ impl Dialect {
         }
     }
 
+    /// Delete several files in one command, saying nothing about the ones
+    /// that were not there.
+    ///
+    /// On Windows every `/` becomes `\`: `del` reads a slash as the start of
+    /// a switch, and the relative paths of a build are written with slashes.
+    pub fn remove_files(&self, paths: &[&str]) -> String {
+        match self {
+            Dialect::Posix => {
+                let quoted: Vec<String> = paths.iter().map(|path| self.quote(path)).collect();
+                format!("rm -f -- {}", quoted.join(" "))
+            }
+            Dialect::Windows => {
+                let quoted: Vec<String> = paths.iter().map(|path| self.quote(&path.replace('/', "\\"))).collect();
+                format!("(del /f /q {} >nul 2>&1 & (call ))", quoted.join(" "))
+            }
+        }
+    }
+
     /// Unpack a gzipped tar into a directory.
     ///
     /// Both arms call `tar`. Windows has shipped bsdtar as `tar.exe` since

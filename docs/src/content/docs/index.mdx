@@ -94,7 +94,7 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 		A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it is up and speaks again only when something breaks. A failure prints its output on the spot, every job's output is kept in a log file, and `-v` still gives you everything.
 	</Card>
 	<Card title="Deploy" icon="cloud-download">
-		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Artifacts travel as one archive, to Linux and Windows servers alike.
+		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Every deploy is recorded with its version and commit - `history` lists them, `rollback` sends an earlier build back. Artifacts travel as one archive, to Linux and Windows servers alike.
 	</Card>
 	<Card title="Portable settings" icon="seti:config">
 		`export` writes your apps, servers, credentials, paths and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase.

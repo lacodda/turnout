@@ -99,7 +99,10 @@ pub fn pack(plan: &Plan) -> Result<Vec<u8>> {
 pub struct Artifact {
     pub app: String,
     pub plan: Plan,
+    /// The version and commit it was built from, for the deploy's record.
+    pub source: crate::history::Source,
     archive: OnceCell<Vec<u8>>,
+    digest: OnceCell<String>,
 }
 
 impl Artifact {
@@ -107,8 +110,22 @@ impl Artifact {
         Self {
             app: app.to_string(),
             plan,
+            source: crate::history::Source::default(),
             archive: OnceCell::new(),
+            digest: OnceCell::new(),
         }
+    }
+
+    /// A build that was packed before - a kept one a rollback sends again.
+    /// `plan` walks its unpacked files; the archive goes out as it was, so
+    /// its digest is the one the earlier deploy recorded.
+    pub fn packed(app: &str, plan: Plan, archive: Vec<u8>, source: crate::history::Source) -> Self {
+        let artifact = Self {
+            source,
+            ..Self::new(app, plan)
+        };
+        let _ = artifact.archive.set(archive);
+        artifact
     }
 
     /// The archive, packed on first use: a deploy that goes file by file
@@ -120,6 +137,44 @@ impl Artifact {
         }
         Ok(self.archive.get().expect("the archive was just packed"))
     }
+
+    /// The SHA-256 of the archive, as lowercase hex: the name the build is
+    /// kept under.
+    pub fn digest(&self) -> Result<&str> {
+        if self.digest.get().is_none() {
+            use sha2::Digest;
+            let hash = sha2::Sha256::digest(self.archive()?);
+            let _ = self.digest.set(hash.iter().map(|byte| format!("{byte:02x}")).collect());
+        }
+        Ok(self.digest.get().expect("the digest was just taken"))
+    }
+}
+
+/// The files an archive holds, by their relative path with `/`.
+pub fn files_in(archive: &[u8]) -> Result<std::collections::BTreeSet<String>> {
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(archive));
+    let mut files = std::collections::BTreeSet::new();
+    for entry in tar.entries().context("cannot read a kept build")? {
+        let entry = entry.context("cannot read a kept build")?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().context("a kept build holds an unreadable name")?;
+        // Our own archives hold plain relative paths; anything else is not a
+        // name to hand to a remote `rm`.
+        if path.components().all(|part| matches!(part, std::path::Component::Normal(_))) {
+            files.insert(path.to_string_lossy().replace('\\', "/"));
+        }
+    }
+    Ok(files)
+}
+
+/// Unpack an archive into `into`. The tar crate refuses entries that would
+/// land outside it.
+pub fn unpack(archive: &[u8], into: &Path) -> Result<()> {
+    tar::Archive::new(flate2::read::GzDecoder::new(archive))
+        .unpack(into)
+        .with_context(|| format!("cannot unpack a kept build into {}", into.display()))
 }
 
 /// A source changed after the build that is about to be sent.

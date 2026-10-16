@@ -304,8 +304,11 @@ pub enum Command {
         #[command(flatten)]
         console: Console,
     },
-    /// Back up a target's deploy directory on the server
+    /// Back up a target's deploy directory on the server; older backups beyond what the target keeps are removed
+    #[command(args_conflicts_with_subcommands = true)]
     Backup {
+        #[command(subcommand)]
+        command: Option<BackupCommand>,
         /// Target name, or an app name to use its target on the bound server
         target: Option<String>,
         /// Target server (defaults to the app's current binding)
@@ -340,6 +343,31 @@ pub enum Command {
         /// With --list: print the backups as JSON
         #[arg(long, requires = "list")]
         json: bool,
+    },
+    /// Show the deploys made from this machine: when, where, which build, and how each ended
+    History {
+        /// Only the deploys of this target or app
+        #[arg(conflicts_with_all = ["show", "diff"])]
+        name: Option<String>,
+        /// How many of the newest deploys to list
+        #[arg(short = 'n', long, value_name = "N", default_value_t = 20)]
+        limit: usize,
+        /// One deploy in full: its build, check and the restart's output
+        #[arg(long, value_name = "DEPLOY", conflicts_with = "diff")]
+        show: Option<String>,
+        /// The commits between two deploys of one app
+        #[arg(long, num_args = 2, value_names = ["FROM", "TO"])]
+        diff: Option<Vec<String>>,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Put a stand back on the build of an earlier deploy - the one before what it runs, or the one named
+    Rollback {
+        /// Target name, or an app name to use its target on the bound server; with --to, the deploy names it
+        target: Option<String>,
+        /// The deploy whose build to send again, as `turnout history` numbers it
+        #[arg(long, value_name = "DEPLOY")]
+        to: Option<String>,
     },
     /// Print a shell completion script (source it from your shell profile)
     Completions {
@@ -381,6 +409,29 @@ pub enum Command {
     /// Refresh the cached latest release (internal, run in the background)
     #[command(hide = true)]
     CheckUpdate,
+}
+
+#[derive(Subcommand)]
+pub enum BackupCommand {
+    /// Remove all but the newest backups of a target's deploy directory
+    Prune {
+        /// Target name, or an app name to use its target on the bound server
+        target: Option<String>,
+        /// Target server (defaults to the app's current binding)
+        #[arg(short, long)]
+        server: Option<String>,
+        /// Credential to log in with (defaults to the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Named path whose backups to prune (defaults to the server's for this app)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
+        /// How many to keep (defaults to the target's --keep-backups, else 5); 0 removes them all
+        #[arg(short, long, value_name = "N")]
+        keep: Option<u32>,
+        #[command(flatten)]
+        format: Format,
+    },
 }
 
 /// Entity kinds the completion helper can list.
@@ -686,6 +737,9 @@ pub enum TargetCommand {
         url: Option<String>,
         #[command(flatten)]
         health: HealthArgs,
+        /// How many backups of its deploy directory the stand keeps (default 5)
+        #[arg(long, value_name = "N")]
+        keep_backups: Option<u32>,
     },
     /// List targets
     List {
@@ -714,6 +768,9 @@ pub enum TargetCommand {
         url: Option<String>,
         #[command(flatten)]
         health: HealthArgs,
+        /// How many backups of its deploy directory the stand keeps (default 5)
+        #[arg(long, value_name = "N")]
+        keep_backups: Option<u32>,
     },
     /// Rename a target
     Rename {
