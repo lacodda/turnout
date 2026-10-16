@@ -7,6 +7,11 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.25.0] - 2026-10-16
+
+### Features
+- Deploy history, rollback to any recorded deploy, backup retention
+
 ## [0.24.1] - 2026-10-13
 
 ### Bug Fixes
