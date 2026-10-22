@@ -12,6 +12,7 @@
 //! output and CI logs stay readable.
 
 use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use indicatif::HumanBytes;
@@ -29,13 +30,46 @@ fn is_terminal() -> bool {
     *TTY.get_or_init(|| std::io::stdout().is_terminal())
 }
 
+/// Set once the command's stdout belongs to its data.
+static DATA_ON_STDOUT: AtomicBool = AtomicBool::new(false);
+
+/// Keep stdout for the command's data: every plain progress line goes to
+/// stderr from here on.
+///
+/// Off a terminal a step prints a line, and stdout is where it went - until
+/// `restore --list --json` and `backup prune --json`, piped to a parser,
+/// started with "Connecting to ..." in front of the JSON. Each command
+/// remembering to stay quiet is how that happened; deciding it once, for
+/// every command asked for JSON, is what keeps the next one from it.
+pub fn keep_stdout_for_data() {
+    DATA_ON_STDOUT.store(true, Ordering::Relaxed);
+}
+
+/// Whether a command line asks for JSON: `--json` anywhere before `--`, after
+/// which the words belong to a remote command rather than to turnout.
+pub fn asks_for_json<S: AsRef<std::ffi::OsStr>>(args: impl IntoIterator<Item = S>) -> bool {
+    args.into_iter()
+        .map(|arg| arg.as_ref().to_os_string())
+        .take_while(|arg| arg != "--")
+        .any(|arg| arg == "--json")
+}
+
+/// One plain line off a terminal: on stdout, unless that belongs to data.
+fn plain(message: &str) {
+    if DATA_ON_STDOUT.load(Ordering::Relaxed) {
+        eprintln!("{message}");
+    } else {
+        println!("{message}");
+    }
+}
+
 /// Open the checklist frame around a multi-phase command.
 pub fn intro(title: impl Into<Cow<'static, str>>) {
     let title = title.into();
     if is_terminal() {
         let _ = cliclack::intro(title);
     } else {
-        println!("{title}");
+        plain(&title);
     }
 }
 
@@ -45,7 +79,7 @@ pub fn outro(message: impl Into<Cow<'static, str>>) {
     if is_terminal() {
         let _ = cliclack::outro(message);
     } else {
-        println!("{message}");
+        plain(&message);
     }
 }
 
@@ -64,7 +98,7 @@ pub fn info(message: &str) {
     if is_terminal() {
         let _ = cliclack::log::info(message);
     } else {
-        println!("{message}");
+        plain(message);
     }
 }
 
@@ -117,7 +151,7 @@ impl Step {
         let message = message.into();
         match self.bar {
             Some(bar) => bar.stop(message),
-            None => println!("{message}"),
+            None => plain(&message),
         }
     }
 
@@ -129,7 +163,7 @@ impl Step {
             Some(bar) => bar.clear(),
             None => {
                 if let Some(message) = &self.pending {
-                    println!("{message}");
+                    plain(message);
                 }
             }
         }
@@ -148,7 +182,7 @@ impl Transfer {
         let started = Instant::now();
         if !is_terminal() {
             let plural = if files == 1 { "" } else { "s" };
-            println!("Uploading {files} file{plural} ({}) ...", human_bytes(bytes));
+            plain(&format!("Uploading {files} file{plural} ({}) ...", human_bytes(bytes)));
             return Self { bar: None, started };
         }
         let bar = cliclack::progress_bar(bytes).with_template(BAR_TEMPLATE);
@@ -173,7 +207,7 @@ impl Transfer {
         let message = message.into();
         match self.bar {
             Some(bar) => bar.stop(message),
-            None => println!("{message}"),
+            None => plain(&message),
         }
     }
 }
@@ -231,7 +265,18 @@ pub fn rate(bytes: u64, elapsed: Duration) -> String {
 mod tests {
     use std::time::Duration;
 
-    use super::{human_bytes, human_duration, rate};
+    use super::{asks_for_json, human_bytes, human_duration, rate};
+
+    /// `--json` reserves stdout wherever turnout's own flags are - and not
+    /// when it belongs to the command run on the server after `--`.
+    #[test]
+    fn json_is_asked_for_by_turnout_flags_only() {
+        assert!(asks_for_json(["turnout", "restore", "web", "--list", "--json"]));
+        assert!(asks_for_json(["turnout", "deploy", "web", "--diff", "--json"]));
+        assert!(!asks_for_json(["turnout", "deploy", "web"]));
+        assert!(!asks_for_json(["turnout", "exec", "prod", "--", "tool", "--json"]));
+        assert!(!asks_for_json(["turnout", "restore", "--jsonish"]));
+    }
 
     /// Pins the units to the ones the transfer bar renders, so the summary
     /// line and the bar cannot drift apart.

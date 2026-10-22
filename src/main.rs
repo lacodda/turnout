@@ -42,6 +42,11 @@ use clap::Parser;
 
 fn main() {
     let cli = cli::Cli::parse();
+    // A command asked for JSON owns stdout: a progress line in front of the
+    // JSON breaks whatever it is piped to.
+    if progress::asks_for_json(std::env::args_os()) {
+        progress::keep_stdout_for_data();
+    }
     // Before anything touches the terminal: capture its state and take over
     // Ctrl+C, so an interrupt never leaves the console half-broken.
     term::init();

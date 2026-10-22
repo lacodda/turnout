@@ -35,6 +35,7 @@ The text and the JSON are made from one value. A command builds what it knows in
 - **Times are ISO 8601 in UTC**, `2026-10-04T09:12:44Z`; how long ago something happened is for the reader to work out. A duration turnout measured - how long a deploy took - is a number of `seconds`.
 - **Names are the catalog's names**; enumerations are lowercase words with underscores (`session_expired`, `not_answering`).
 - **Secrets never appear** - a credential says whether a secret is stored (`secret_stored`), the cookie list names cookies without their values, and the gateway's control token is not in any of it.
+- **stdout holds the JSON and nothing else.** A command that connects to a server still reports its steps - on stderr, whenever `--json` is on the command line ([ADR 0030](https://github.com/lacodda/turnout/blob/main/docs/adr/0030-json-owns-stdout.md)). Up to v0.25, `restore --list --json` and `backup prune --json` printed a progress line in front of their JSON.
 
 The JSON is not the catalog files. Those are storage: they change shape with the schema and are migrated when they do. The JSON is what turnout promises to whoever reads its output, and it is kept apart from storage so a migration does not break a script ([ADR 0020](https://github.com/lacodda/turnout/blob/main/docs/adr/0020-json-is-a-view-not-the-storage.md)). Fields may be added; removing or renaming one is a breaking change, named in the changelog with the way forward.
 
