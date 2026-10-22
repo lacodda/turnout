@@ -104,10 +104,11 @@ A key in that account's own `C:\Users\<name>\.ssh\authorized_keys` is ignored si
 sshd refuses a key file that anyone besides the Administrators group and SYSTEM can write to. The shared file belongs to the group - every administrator's key lives in it - and turnout sets it that way:
 
 ```
+icacls "C:\ProgramData\ssh\administrators_authorized_keys" /reset
 icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant *S-1-5-32-544:F /grant *S-1-5-18:F
 ```
 
-The two grants are the Administrators group and SYSTEM by their SIDs, because both names are translated on a localized Windows. Breaking inheritance first is the part that is easy to miss by hand - grants added on top of inherited ones still leave the file too permissive, and sshd still refuses it.
+The two grants are the Administrators group and SYSTEM by their SIDs, because both names are translated on a localized Windows. The first two steps are the ones easy to miss by hand: `/inheritance:r` drops only the entries the file inherited, so grants added on top of them still leave it too permissive - and an entry someone granted explicitly survives `/inheritance:r` altogether, which is what `/reset` is for.
 
 Granting the file to one administrator instead (`/grant "%USERNAME%":F`, which turnout itself did before v0.26) works for that administrator and locks every other one out: the next `key setup` is refused write access to the file. An administrator the file still admits opens it to the group with the first `/grant` above.
 

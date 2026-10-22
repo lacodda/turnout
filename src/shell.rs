@@ -312,18 +312,18 @@ impl Dialect {
     pub fn restrict_to_owner(&self, dir: &str, file: &str) -> String {
         match self {
             Dialect::Posix => format!("chmod 700 {} && chmod 600 {}", self.quote(dir), self.quote(file)),
-            // Break inheritance (/inheritance:r), then grant exactly the two
-            // principals sshd tolerates, both by SID. The account's comes from
-            // `whoami /user` of the session itself: a name would have to be
-            // resolved, and Windows OpenSSH sets USERDOMAIN to WORKGROUP for a
-            // local account, which resolves to nobody. whoami by its full
-            // path: a PATH with Git's `usr/bin` ahead of System32 hands the
-            // bare name to Git's whoami, which knows no `/user`. SYSTEM's name
-            // is translated on a localized Windows. `icacls` reports its own
-            // failures, and its exit code is the loop's.
+            // Grant exactly the two principals sshd tolerates, both by SID.
+            // The account's comes from `whoami /user` of the session itself:
+            // a name would have to be resolved, and Windows OpenSSH sets
+            // USERDOMAIN to WORKGROUP for a local account, which resolves to
+            // nobody. whoami by its full path: a PATH with Git's `usr/bin`
+            // ahead of System32 hands the bare name to Git's whoami, which
+            // knows no `/user`. SYSTEM's name is translated on a localized
+            // Windows. `icacls` reports its own failures, and its exit code
+            // is the loop's.
             Dialect::Windows => format!(
-                "for /f \"tokens=2 delims=,\" %s in ('%SystemRoot%\\System32\\whoami.exe /user /fo csv /nh') do @icacls {} /inheritance:r /grant *%~s:F /grant *{SYSTEM_SID}:F",
-                self.quote(file)
+                "for /f \"tokens=2 delims=,\" %s in ('%SystemRoot%\\System32\\whoami.exe /user /fo csv /nh') do @{}",
+                windows_grant_only(&self.quote(file), "*%~s:F")
             ),
         }
     }
@@ -343,12 +343,20 @@ impl Dialect {
     pub fn restrict_to_administrators(&self, file: &str) -> String {
         match self {
             Dialect::Posix => format!("chmod 600 {}", self.quote(file)),
-            Dialect::Windows => format!(
-                "icacls {} /inheritance:r /grant *{ADMINISTRATORS_SID}:F /grant *{SYSTEM_SID}:F",
-                self.quote(file)
-            ),
+            Dialect::Windows => windows_grant_only(&self.quote(file), &format!("*{ADMINISTRATORS_SID}:F")),
         }
     }
+}
+
+/// An ACL of exactly `grant` and SYSTEM on a quoted Windows path.
+///
+/// `/inheritance:r` drops only the inherited entries; anything granted
+/// explicitly stays - a runner's elevated account left `Administrators` on a
+/// file it created, and turnout before v0.26 left its single administrator on
+/// the shared key file. `/reset` turns every entry into an inherited one
+/// first, so the second call leaves nothing but the two grants.
+fn windows_grant_only(quoted: &str, grant: &str) -> String {
+    format!("(icacls {quoted} /reset >nul && icacls {quoted} /inheritance:r /grant {grant} /grant *{SYSTEM_SID}:F)")
 }
 
 /// The well-known SID of the local Administrators group.
@@ -488,34 +496,53 @@ mod tests {
         assert!(windows.contains("/grant *S-1-5-18:F"), "SYSTEM by SID: {windows}");
     }
 
-    /// Through this machine's own cmd.exe: the loop finds the account's SID,
-    /// the file ends up with that account and SYSTEM and nothing inherited,
-    /// and a file icacls cannot reach fails the command.
+    /// A key file with an entry granted explicitly - as an elevated account
+    /// leaves `Administrators` on a file it creates, or an older turnout left
+    /// its one administrator - and the ACL entries it ends up with.
     #[cfg(windows)]
-    #[test]
-    fn the_key_file_restriction_holds_in_a_real_cmd() {
+    fn restricted_through_cmd(restrict: impl FnOnce(&str) -> String) -> (tempfile::TempDir, String) {
         let stand = crate::ssh::tests::Stand::spawn_shell();
         let session = stand.session();
         let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("authorized_keys");
+        let file = dir.path().join("authorized_keys").display().to_string();
         std::fs::write(&file, "ssh-ed25519 AAAA test\n").unwrap();
-        let file = file.display().to_string();
+        let quoted = Dialect::Windows.quote(&file);
+        // Everyone, by SID: an explicit entry that inheritance rules do not touch.
+        session.exec(&format!("icacls {quoted} /grant *S-1-1-0:(R)")).unwrap();
 
-        session
-            .exec(&Dialect::Windows.restrict_to_owner(&dir.path().display().to_string(), &file))
-            .unwrap();
-        let acl = session.exec(&format!("icacls {}", Dialect::Windows.quote(&file))).unwrap();
+        session.exec(&restrict(&file)).unwrap();
+        let acl = session.exec(&format!("icacls {quoted}")).unwrap();
         assert!(!acl.contains("(I)"), "nothing inherited may stay: {acl}");
+        assert!(!acl.contains("S-1-1-0"), "nor anything granted before: {acl}");
+        let grants = acl.lines().filter(|line| line.contains(":(")).count();
+        assert_eq!(grants, 2, "the one grant and SYSTEM, nothing else: {acl}");
+        (dir, acl)
+    }
+
+    /// Through this machine's own cmd.exe: the loop finds the account's SID,
+    /// the file ends up with that account and SYSTEM and nothing else, and a
+    /// file icacls cannot reach fails the command.
+    #[cfg(windows)]
+    #[test]
+    fn the_key_file_restriction_holds_in_a_real_cmd() {
+        let (dir, acl) = restricted_through_cmd(|file| Dialect::Windows.restrict_to_owner("unused", file));
         let user = std::env::var("USERNAME").unwrap().to_lowercase();
         assert!(acl.to_lowercase().contains(&user), "the account itself is granted: {acl}");
-        let grants = acl.lines().filter(|line| line.contains(":(")).count();
-        assert_eq!(grants, 2, "the account and SYSTEM, nothing else: {acl}");
 
+        let stand = crate::ssh::tests::Stand::spawn_shell();
         let missing = dir.path().join("missing").join("authorized_keys").display().to_string();
         assert!(
-            session.exec(&Dialect::Windows.restrict_to_owner("unused", &missing)).is_err(),
+            stand.session().exec(&Dialect::Windows.restrict_to_owner("unused", &missing)).is_err(),
             "a failed icacls must fail the command"
         );
+    }
+
+    /// The shared file through cmd.exe: the Administrators group and SYSTEM,
+    /// and none of what was granted before.
+    #[cfg(windows)]
+    #[test]
+    fn the_shared_key_file_restriction_holds_in_a_real_cmd() {
+        restricted_through_cmd(|file| Dialect::Windows.restrict_to_administrators(file));
     }
 
     /// The administrators' file is shared by every administrator, so it is
@@ -525,9 +552,10 @@ mod tests {
     #[test]
     fn the_shared_key_file_belongs_to_the_administrators() {
         let windows = Dialect::Windows.restrict_to_administrators("C:\\ProgramData\\ssh\\administrators_authorized_keys");
+        let file = "\"C:\\ProgramData\\ssh\\administrators_authorized_keys\"";
         assert_eq!(
             windows,
-            "icacls \"C:\\ProgramData\\ssh\\administrators_authorized_keys\" /inheritance:r /grant *S-1-5-32-544:F /grant *S-1-5-18:F"
+            format!("(icacls {file} /reset >nul && icacls {file} /inheritance:r /grant *S-1-5-32-544:F /grant *S-1-5-18:F)")
         );
         assert!(!windows.contains("%USERNAME%"), "{windows}");
     }
