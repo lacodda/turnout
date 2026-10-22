@@ -42,10 +42,10 @@ turnout server add lab -u https://10.0.0.42 -i             # same, short form
 
 ```bash
 turnout server list         # one line per server: name, URL, label
-turnout server show prod    # full card: URL, SSH, credential, which targets land here
+turnout server show prod    # full card: URL, SSH, shell, credential, which targets land here
 ```
 
-`show` also names the apps whose allow-list has the server (**Used by**) and the apps bound to it right now (**Bound**). Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
+**Shell** is the shell that answers SSH there - `sh`, or `cmd.exe` on a [Windows server](/turnout/concepts/windows-servers/) - as turnout learned it on the first command that needed one; until then it reads *not asked yet*. `show` also names the apps whose allow-list has the server (**Used by**) and the apps bound to it right now (**Bound**). Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
 
 Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pickers/); `edit` and `remove` do the same.
 
@@ -66,6 +66,8 @@ turnout server edit lab --insecure       # accept invalid TLS certificates
 | `--credential` | `-c` | Credential used to log in here (empty value unsets it) |
 | `--insecure` | `-i` | Accept invalid TLS certificates for this server |
 | `--secure` | `-S` | Require valid TLS certificates for this server |
+
+A new `--url` or `--host` forgets the server's shell, and the next command asks again: a server pointed at another machine may answer in another language. `--host` forgets it even unchanged - that is how a machine whose sshd now starts a different shell is asked again.
 
 Who logs in:
 

@@ -5,6 +5,7 @@ use serde::Serialize;
 
 use crate::cli::{Format, ServerCommand};
 use crate::model::{Server, parse_host, validate_name, validate_url};
+use crate::shell::Dialect;
 use crate::{output, pick, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
@@ -169,6 +170,9 @@ pub struct ServerView {
     pub ssh_host: String,
     pub ssh_port: u16,
     pub ssh_host_from_url: bool,
+    /// The shell that answers SSH there, learned on the first command that
+    /// needed one; `null` until then.
+    pub shell: Option<Dialect>,
     pub credential: Option<String>,
     /// Self-signed and otherwise invalid certificates are accepted here.
     pub accept_invalid_certs: bool,
@@ -206,6 +210,7 @@ pub fn views() -> Result<Vec<ServerView>> {
             ssh_host: server.ssh_host(),
             ssh_port: server.port,
             ssh_host_from_url: server.host.is_none(),
+            shell: server.shell,
             credential: server.credential.clone(),
             accept_invalid_certs: server.accept_invalid_certs,
             // Which deploy targets land here. The server used to own this
@@ -268,6 +273,11 @@ fn show(name: &str, format: Format) -> Result<()> {
         } else {
             format!("  SSH:        {}:{}", server.ssh_host, server.ssh_port)
         });
+        lines.push(match server.shell {
+            Some(Dialect::Windows) => "  Shell:      cmd.exe".to_string(),
+            Some(Dialect::Posix) => "  Shell:      sh".to_string(),
+            None => "  Shell:      not asked yet - learned on the first command that needs it".to_string(),
+        });
         lines.push(match &server.credential {
             Some(credential) => format!("  Credential: {credential}"),
             None => format!("  Credential: none - set one with `turnout server edit {} --credential NAME`", server.name),
@@ -306,6 +316,10 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
     let no_flags = url.is_none() && label.is_none() && host.is_none() && credential.is_none() && !insecure && !secure;
+    let address = (servers[index].ssh_host(), servers[index].port);
+    // `--host` given at all, even unchanged, is how a shell that changed on
+    // the same machine (sshd's DefaultShell) is asked about again.
+    let readdressed = host.is_some();
 
     if no_flags {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
@@ -376,6 +390,13 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
         if secure {
             server.accept_invalid_certs = false;
         }
+    }
+    // The shell is the answer of the machine at that address: pointed
+    // somewhere else, the server may answer in another language, and the old
+    // answer would phrase every command for the wrong one.
+    let server = &mut servers[index];
+    if readdressed || (server.ssh_host(), server.port) != address {
+        server.shell = None;
     }
     store::save_servers(&servers)?;
     crate::journal::record("server.edit", None, Some(name), None);

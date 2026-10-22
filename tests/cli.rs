@@ -1043,6 +1043,57 @@ fn server_crud_roundtrip() {
         .stdout(predicate::str::contains("verify certificates"));
 }
 
+/// The shell a server answers with is shown, and forgotten when the server
+/// is pointed elsewhere: another machine may speak another language, and the
+/// old answer would phrase every command for the wrong one.
+#[test]
+fn a_server_shows_its_shell_and_forgets_it_when_readdressed() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    let shell = |dir: &std::path::Path| {
+        let output = turnout(dir).args(["server", "show", "staging", "--json"]).output().unwrap();
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()["shell"].clone()
+    };
+    assert_eq!(shell(dir.path()), serde_json::Value::Null);
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Shell:      not asked yet"));
+
+    // What the first connection would have learned.
+    let learn = |dir: &std::path::Path| {
+        let file = dir.join("servers.json");
+        let mut servers: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        servers[0]["shell"] = "windows".into();
+        std::fs::write(&file, serde_json::to_string_pretty(&servers).unwrap()).unwrap();
+    };
+    learn(dir.path());
+    assert_eq!(shell(dir.path()), "windows");
+    turnout(dir.path())
+        .args(["server", "show", "staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Shell:      cmd.exe"));
+
+    // A label is not an address: the answer stands.
+    turnout(dir.path()).args(["server", "edit", "staging", "--label", "Stage"]).assert().success();
+    assert_eq!(shell(dir.path()), "windows");
+    // A new address forgets it.
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--url", "https://other.example.com"])
+        .assert()
+        .success();
+    assert_eq!(shell(dir.path()), serde_json::Value::Null);
+    // And `--host`, even unchanged, is how it is asked again on the same machine.
+    learn(dir.path());
+    turnout(dir.path())
+        .args(["server", "edit", "staging", "--host", "other.example.com"])
+        .assert()
+        .success();
+    assert_eq!(shell(dir.path()), serde_json::Value::Null);
+}
+
 #[test]
 fn server_add_requires_valid_url() {
     let (dir, _) = workspace();
