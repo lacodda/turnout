@@ -7,6 +7,19 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.26.0] - 2026-10-22
+
+### Bug Fixes
+- Give Windows key files the ACL sshd expects of them
+- Keep stdout for the JSON a command was asked for
+- Reset a key file's ACL before restricting it
+
+### CI
+- Prove every push and tag against a real Windows sshd
+
+### Features
+- Show the learned shell and forget it on a new address
+
 ## [0.25.0] - 2026-10-16
 
 ### Features
