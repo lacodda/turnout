@@ -1,0 +1,46 @@
+name: Windows server
+
+# turnout against a real Windows server: OpenSSH Server on the runner,
+# answering with cmd.exe as it does out of the box, taking deploys (as one
+# archive and file by file), backups, restores, rollbacks, `exec` and
+# `key setup` for administrators and for an ordinary account. The unit tests
+# run the same commands through a real cmd.exe; this is the real sshd around
+# it - its sessions, its SFTP server, its profiles and its key files.
+#
+# Called by CI on every push and by Release and Publish on every tag, so no
+# version ships without it.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to test; empty means the caller's own
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows-server:
+    name: windows-server
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo test --test windows_server --no-run
+      - name: Stand up OpenSSH Server
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools/ci/windows-sshd.ps1
+      - name: Deploy, back up, restore, roll back and set up keys
+        run: cargo test --test windows_server -- --ignored
+      # sshd tells the client only "rejected"; why is in its own log.
+      - name: What sshd logged
+        if: failure()
+        run: Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 80 -ErrorAction SilentlyContinue | Sort-Object TimeCreated | Format-Table TimeCreated, Message -Wrap -AutoSize | Out-String -Width 400

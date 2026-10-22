@@ -15,7 +15,16 @@ on:
 permissions: {}
 
 jobs:
+  # No version reaches a registry without passing against a real Windows server.
+  windows-server:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/windows-server.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
   crates-io:
+    needs: windows-server
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -35,6 +44,7 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
   npm:
+    needs: windows-server
     runs-on: ubuntu-latest
     permissions:
       id-token: write

@@ -59,8 +59,12 @@ jobs:
             turnout-*.tar.gz
           if-no-files-found: error
 
+  # No release goes out without passing against a real Windows server.
+  windows-server:
+    uses: ./.github/workflows/windows-server.yml
+
   release:
-    needs: build
+    needs: [build, windows-server]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

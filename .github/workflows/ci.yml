@@ -36,6 +36,9 @@ jobs:
       - name: Build
         run: cargo build --release
 
+  windows-server:
+    uses: ./.github/workflows/windows-server.yml
+
   # rust-version is a promise to anyone running `cargo install`. Without a job
   # that actually builds on it, the number silently rots the first time a new
   # API is used — so read it from the manifest and hold it to it.

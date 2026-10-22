@@ -39,7 +39,7 @@ The answer is stored on the server entry, so it costs one round trip once rather
 }
 ```
 
-sshd's shell does not change on its own, so the cached answer stays valid. If it ever does change - someone repoints `DefaultShell` - remove the `shell` field from the server entry to have it probed again.
+`turnout server show` names it on its **Shell** line. sshd's shell does not change on its own, so the answer stays valid until the server is pointed somewhere else: a new `--url` or `--host` forgets it, and the next command asks again. If the shell does change on the same machine - someone repoints `DefaultShell` - give the server the address it already has (`turnout server edit prod --host HOST`), and turnout asks again.
 
 When the probe itself fails, turnout assumes POSIX. That is what every release before v0.7.0 assumed unconditionally, so a broken probe degrades to the old behavior instead of to a new failure.
 
@@ -76,7 +76,7 @@ A deploy joins commands with `&&` - create the backups directory, *then* pack; c
 - **An `if` owns the rest of its line.** `if not exist B mkdir B && tar ...` makes the `tar` part of the `if` - so when `B` already exists, nothing after it runs.
 - **`exit /b 0` ends the whole line**, not just its own command. A tolerant `del ... & exit /b 0` after a failed `tar` reports success.
 
-So every Windows command turnout sends is a self-contained group in parentheses, and the tolerant ones end in `(call )` - which sets the exit code to 0 without leaving - rather than `exit /b 0`. Up to v0.23 they were bare: on a Windows server every backup after the first was skipped, a restore did nothing, and a failed unpack read as success, while every test that compared command strings passed. Since v0.24 the chains run through a real `cmd.exe` in turnout's test suite.
+So every Windows command turnout sends is a self-contained group in parentheses, and the tolerant ones end in `(call )` - which sets the exit code to 0 without leaving - rather than `exit /b 0`. Up to v0.23 they were bare: on a Windows server every backup after the first was skipped, a restore did nothing, and a failed unpack read as success, while every test that compared command strings passed. Since v0.24 the chains run through a real `cmd.exe` in turnout's test suite, and since v0.26 through a real Windows sshd as well - see [How this is proven](#how-this-is-proven).
 
 ## A restart runs attached
 
@@ -99,4 +99,18 @@ Everything that travels over SFTP rather than through a shell has always worked 
 
 It also runs **in the deploy directory**, like on a POSIX server - but getting there takes an extra step on Windows, because `cmd.exe`'s plain `cd` will not cross drives. turnout uses `cd /d` instead, so a path on `D:` is reached correctly even when the SSH session starts on `C:`.
 
-Authentication is unchanged as well: the credential's key file, or the password in the keyring. Note that a Windows server puts an administrator's authorized keys in `%ProgramData%\ssh\administrators_authorized_keys` with strict ACLs, not in `~/.ssh/authorized_keys` - the usual reason a key that "was added" still prompts for a password.
+Authentication is unchanged as well: the credential's key file, or the password in the keyring. Note that a Windows server puts an administrator's authorized keys in `%ProgramData%\ssh\administrators_authorized_keys` with strict ACLs, not in `~/.ssh/authorized_keys` - the usual reason a key that "was added" still prompts for a password. [`turnout key setup`](/turnout/reference/key/) writes to the file sshd reads and gives it the ACL sshd accepts; [SSH access](/turnout/guides/ssh-access/#preparing-a-windows-server) has the details.
+
+## How this is proven
+
+Every push to turnout and every release tag runs it against a real Windows server: OpenSSH Server on a GitHub Actions Windows runner, answering with `cmd.exe` as it does out of the box. A version is not released or published unless the run passes.
+
+The run lives a stand's whole life through, and reads every result straight off the server's disk:
+
+- `doctor --server` finds nothing in the way, `exec` gets `cmd.exe` and passes its exit code through;
+- a deploy as one archive into a directory whose path has a space, with the restart run in that directory; `--diff`, hashing the server's files there; a deploy file by file, with `--backup`;
+- `backup`, `restore --list`, a restore of a stand broken by hand, `backup prune`;
+- a deploy that fails its health check and is rolled back; `rollback --to` an earlier deploy, removing the file a later one brought; a deploy into a `--clear`ed directory;
+- `key setup` for two administrators in turn, both keys in the shared `administrators_authorized_keys` and both signing in, and for an ordinary account, whose key goes to its own profile.
+
+The workflow is [`windows-server.yml`](https://github.com/lacodda/turnout/blob/main/.github/workflows/windows-server.yml), the test [`tests/windows_server.rs`](https://github.com/lacodda/turnout/blob/main/tests/windows_server.rs). Its first runs found what no test without a real sshd could: the shared key file was restricted to the first administrator who set up a key, locking out every other one; an ordinary account's file was granted to a name Windows OpenSSH builds as `WORKGROUP\name`, which resolves to nobody; `restore --list --json` and `backup prune --json` printed a progress line in front of their JSON; and the shell turnout had learned was invisible and outlived a change of address. It also met Windows Server 2025's `AllowGroups` - see [preparing a Windows server](/turnout/guides/ssh-access/#who-may-sign-in-at-all).

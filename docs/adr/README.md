@@ -32,4 +32,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0026](0026-a-diff-asks-the-files-not-a-manifest.md) | A diff asks the files, not a manifest | accepted |
 | [0027](0027-a-deploy-is-recorded-and-its-build-kept.md) | A deploy is recorded, and its build is kept for a rollback | accepted |
 | [0028](0028-a-stand-keeps-a-number-of-backups.md) | A stand keeps a number of backups | accepted |
+| [0029](0029-a-windows-server-is-proven-on-a-real-one.md) | A Windows server is proven on a real one | accepted |
 | [0030](0030-json-owns-stdout.md) | JSON owns stdout | accepted |
