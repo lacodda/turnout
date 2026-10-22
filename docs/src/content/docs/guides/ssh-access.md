@@ -69,7 +69,23 @@ With the key already authorized, `setup` finds it in place, skips the append, an
 
 ## Preparing a Windows server
 
-Windows OpenSSH is not Linux OpenSSH with different paths. Two things differ enough to matter.
+Windows OpenSSH is not Linux OpenSSH with different paths. Three things differ enough to matter.
+
+### Who may sign in at all
+
+On Windows Server 2025 the default `sshd_config` admits two groups and nobody else:
+
+```
+AllowGroups administrators "openssh users"
+```
+
+An ordinary deploy account outside both is refused before its password is even looked at - and SSH tells the client only that the credential was rejected, which reads exactly like a wrong password. sshd's own log says it plainly (`not allowed because none of user's groups are listed in AllowGroups`). Put the account in the second group:
+
+```powershell
+Add-LocalGroupMember -Group 'OpenSSH Users' -Member deploy
+```
+
+Older Windows versions ship no `AllowGroups` line, and an administrator is admitted either way.
 
 ### Administrators use a different file
 
@@ -85,19 +101,24 @@ A key in that account's own `C:\Users\<name>\.ssh\authorized_keys` is ignored si
 
 ### The ACL is enforced
 
-That shared file must grant nothing beyond its owner and SYSTEM. turnout sets it:
+sshd refuses a key file that anyone besides the Administrators group and SYSTEM can write to. The shared file belongs to the group - every administrator's key lives in it - and turnout sets it that way:
 
 ```
-icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant "%USERNAME%":F /grant "SYSTEM":F
+icacls "C:\ProgramData\ssh\administrators_authorized_keys" /inheritance:r /grant *S-1-5-32-544:F /grant *S-1-5-18:F
 ```
 
-Breaking inheritance first is the part that is easy to miss by hand - grants added on top of inherited ones still leave the file too permissive, and sshd still refuses it.
+The two grants are the Administrators group and SYSTEM by their SIDs, because both names are translated on a localized Windows. Breaking inheritance first is the part that is easy to miss by hand - grants added on top of inherited ones still leave the file too permissive, and sshd still refuses it.
+
+Granting the file to one administrator instead (`/grant "%USERNAME%":F`, which turnout itself did before v0.26) works for that administrator and locks every other one out: the next `key setup` is refused write access to the file. An administrator the file still admits opens it to the group with the first `/grant` above.
+
+An ordinary account's own `C:\Users\<name>\.ssh\authorized_keys` is granted to that account and SYSTEM - the account by the SID `whoami /user` reports for the session, since Windows OpenSSH sets `USERDOMAIN` to `WORKGROUP` for a local account and a name built from it resolves to nobody.
 
 ### Check the service
 
 ```powershell
 Get-Service sshd
-Get-Content C:\ProgramData\ssh\sshd_config | Select-String 'PubkeyAuthentication|administrators'
+Get-Content C:\ProgramData\ssh\sshd_config | Select-String 'PubkeyAuthentication|AllowGroups|administrators'
+Get-WinEvent -LogName 'OpenSSH/Operational' -MaxEvents 20   # why a sign-in was refused
 ```
 
 After changing `sshd_config`:

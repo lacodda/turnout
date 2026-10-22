@@ -245,7 +245,14 @@ async fn authenticate(host: &str, port: u16, user: &str, material: AuthMaterial)
     };
 
     if !ok.success() {
-        bail!("SSH authentication failed for '{user}' - the server rejected the credential");
+        // SSH gives no reason, and the two causes look the same from here: a
+        // wrong secret, or an account sshd will not let in whatever it
+        // offers. The second is the default on Windows Server 2025.
+        bail!(
+            "SSH authentication failed for '{user}' - the server rejected the credential: a wrong password or key, \
+             or an account sshd does not let in (AllowUsers/AllowGroups in sshd_config - Windows Server 2025 \
+             admits only administrators and the 'OpenSSH Users' group)"
+        );
     }
     Ok(handle)
 }

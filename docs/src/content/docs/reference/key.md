@@ -57,7 +57,7 @@ OpenSSH on Windows ships an `sshd_config` with a `Match Group administrators` bl
 C:\ProgramData\ssh\administrators_authorized_keys
 ```
 
-A key written to that account's own `~/.ssh/authorized_keys` is ignored without a word - the sign-in just keeps asking for the password. `turnout key setup` checks whether the account is an administrator and writes to the file sshd will actually read, then fixes the file's ACL, which Windows sshd is equally strict about. See [Windows servers](/turnout/concepts/windows-servers/) for the rest of what changes on that side.
+A key written to that account's own `~/.ssh/authorized_keys` is ignored without a word - the sign-in just keeps asking for the password. `turnout key setup` checks whether the account is an administrator and writes to the file sshd will actually read, then fixes the file's ACL, which Windows sshd is equally strict about: the shared file is granted to the Administrators group and SYSTEM, so every administrator can add a key to it and sshd accepts it for all of them. See [Windows servers](/turnout/concepts/windows-servers/) for the rest of what changes on that side.
 
 An `auth = agent` credential is refused: it already signs in by key, and switching it to a generated key file would trade a working login for a lesser one. To authorize an agent key on one more server, use `ssh-copy-id`, or point the credential at a key file first.
 
@@ -82,7 +82,7 @@ If the key installs but the server still will not take it, turnout names the fil
 - `PubkeyAuthentication no` in `sshd_config`.
 - On Linux: a group-writable home or `~/.ssh`, which sshd refuses (`chmod go-w ~ ~/.ssh`).
 - On Linux: `AuthorizedKeysFile` pointing somewhere other than `~/.ssh/authorized_keys`.
-- On Windows: an ACL granting more than the owner and SYSTEM, or an account that is in the administrators group after all.
+- On Windows: an ACL that lets someone besides the Administrators group and SYSTEM write to the file, or an account that is in the administrators group after all.
 
 The credential stays on its password in every one of those cases, so you can fix the server and run `setup` again.
 

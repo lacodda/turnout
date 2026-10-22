@@ -254,13 +254,36 @@ fn install(session: &Session, dialect: Dialect, placed: &AuthorizedKeysFile, pub
     }
 
     remote::exec(session, &dialect.mkdir_p(&placed.dir)).with_context(|| format!("cannot create {} on the server", placed.dir))?;
-    remote::exec(session, &dialect.append_line(&placed.file, public)).with_context(|| format!("cannot write the key to {}", placed.file))?;
+    remote::exec(session, &dialect.append_line(&placed.file, public)).with_context(|| cannot_write(placed))?;
     // sshd ignores a key file that others can write, and says so only in its
     // own log - so the permissions are part of installing, not an afterthought.
-    remote::exec(session, &dialect.restrict_to_owner(&placed.dir, &placed.file))
-        .with_context(|| format!("the key was written to {} but its permissions could not be set", placed.file))?;
+    // The administrators' file is shared, and belongs to the group rather than
+    // to whoever wrote to it first.
+    let restrict = if placed.administrators {
+        dialect.restrict_to_administrators(&placed.file)
+    } else {
+        dialect.restrict_to_owner(&placed.dir, &placed.file)
+    };
+    remote::exec(session, &restrict).with_context(|| format!("the key was written to {} but its permissions could not be set", placed.file))?;
     step.done(format!("Key installed in {}", placed.file));
     Ok(())
+}
+
+/// What to say when the key cannot be added to the file.
+///
+/// For the administrators' file the usual cause is its ACL: turnout before
+/// v0.26, and anyone following an older guide, granted it to the single
+/// administrator who set it up, which locks every other administrator out.
+/// The fix is one command, run by an administrator the file still admits.
+fn cannot_write(placed: &AuthorizedKeysFile) -> String {
+    if placed.administrators {
+        format!(
+            "cannot write the key to {0} - if it admits only some administrators, open it to the group as one it admits:\n  icacls \"{0}\" /grant *S-1-5-32-544:F",
+            placed.file
+        )
+    } else {
+        format!("cannot write the key to {}", placed.file)
+    }
 }
 
 /// What to say when the key was installed but does not sign in.
@@ -278,7 +301,7 @@ fn key_sign_in_failed(dialect: Dialect, placed: &AuthorizedKeysFile) -> String {
             reasons.push("  - sshd's AuthorizedKeysFile points somewhere else than ~/.ssh/authorized_keys".to_string());
         }
         Dialect::Windows if placed.administrators => {
-            reasons.push("  - the file's ACL still grants more than the owner and SYSTEM, which Windows sshd refuses".to_string());
+            reasons.push("  - the file's ACL lets someone besides the Administrators group and SYSTEM write to it, which Windows sshd refuses".to_string());
             reasons.push("  - the `Match Group administrators` block in %ProgramData%\\ssh\\sshd_config was removed or repointed".to_string());
         }
         Dialect::Windows => {
@@ -395,6 +418,21 @@ mod tests {
         assert!(message.contains("administrators_authorized_keys"), "{message}");
         assert!(message.contains("ACL"), "{message}");
         assert!(!message.contains("chmod"), "chmod means nothing on Windows: {message}");
+    }
+
+    /// An administrator refused write access to the shared file is told the
+    /// one command that opens it to the group; an ordinary account's own file
+    /// has no such cause.
+    #[test]
+    fn a_shared_file_that_refuses_a_write_names_the_grant() {
+        let shared = AuthorizedKeysFile::locate(Dialect::Windows, "C:\\Users\\deploy", true);
+        let message = cannot_write(&shared);
+        assert!(
+            message.contains("icacls \"C:\\ProgramData\\ssh\\administrators_authorized_keys\" /grant *S-1-5-32-544:F"),
+            "{message}"
+        );
+        let own = AuthorizedKeysFile::locate(Dialect::Windows, "C:\\Users\\deploy", false);
+        assert!(!cannot_write(&own).contains("icacls"));
     }
 
     /// A non-administrator Windows account that is refused is most often an

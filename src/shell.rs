@@ -307,17 +307,55 @@ impl Dialect {
     /// permissions are set as part of installing the key rather than left for
     /// the user to discover.
     ///
-    /// On Windows this is *not* the same file: see
-    /// [`AuthorizedKeysFile::administrators`].
+    /// On Windows this is *not* the same file for an administrator: see
+    /// [`Dialect::restrict_to_administrators`].
     pub fn restrict_to_owner(&self, dir: &str, file: &str) -> String {
         match self {
             Dialect::Posix => format!("chmod 700 {} && chmod 600 {}", self.quote(dir), self.quote(file)),
             // Break inheritance (/inheritance:r), then grant exactly the two
-            // principals sshd tolerates. `icacls` reports its own failures.
-            Dialect::Windows => format!("icacls {} /inheritance:r /grant \"%USERNAME%\":F /grant \"SYSTEM\":F", self.quote(file)),
+            // principals sshd tolerates, both by SID. The account's comes from
+            // `whoami /user` of the session itself: a name would have to be
+            // resolved, and Windows OpenSSH sets USERDOMAIN to WORKGROUP for a
+            // local account, which resolves to nobody. whoami by its full
+            // path: a PATH with Git's `usr/bin` ahead of System32 hands the
+            // bare name to Git's whoami, which knows no `/user`. SYSTEM's name
+            // is translated on a localized Windows. `icacls` reports its own
+            // failures, and its exit code is the loop's.
+            Dialect::Windows => format!(
+                "for /f \"tokens=2 delims=,\" %s in ('%SystemRoot%\\System32\\whoami.exe /user /fo csv /nh') do @icacls {} /inheritance:r /grant *%~s:F /grant *{SYSTEM_SID}:F",
+                self.quote(file)
+            ),
+        }
+    }
+
+    /// Restrict `C:\ProgramData\ssh\administrators_authorized_keys` to the
+    /// principals that own it: the Administrators group and SYSTEM.
+    ///
+    /// The file is shared - sshd reads it for *every* administrator - so it
+    /// belongs to the group, not to whichever administrator installed a key
+    /// first. Until v0.26 it was restricted to that one account: sshd still
+    /// let them in, and the next administrator to set up a key was refused
+    /// write access to the file outright. Only a second administrator on a real
+    /// Windows server showed it. The grants are by SID, because both names are
+    /// translated on a localized Windows.
+    ///
+    /// POSIX has no shared file; there it is [`Dialect::restrict_to_owner`].
+    pub fn restrict_to_administrators(&self, file: &str) -> String {
+        match self {
+            Dialect::Posix => format!("chmod 600 {}", self.quote(file)),
+            Dialect::Windows => format!(
+                "icacls {} /inheritance:r /grant *{ADMINISTRATORS_SID}:F /grant *{SYSTEM_SID}:F",
+                self.quote(file)
+            ),
         }
     }
 }
+
+/// The well-known SID of the local Administrators group.
+const ADMINISTRATORS_SID: &str = "S-1-5-32-544";
+
+/// The well-known SID of the SYSTEM account, which sshd runs as.
+const SYSTEM_SID: &str = "S-1-5-18";
 
 /// A PowerShell script as one command any Windows shell runs: `cmd.exe` has
 /// no quoting that would carry a script through intact, and base64 has
@@ -442,11 +480,56 @@ mod tests {
         assert!(posix.contains("chmod 700 '/home/pi/.ssh'"), "{posix}");
         assert!(posix.contains("chmod 600 '/home/pi/.ssh/authorized_keys'"), "{posix}");
 
-        let windows = Dialect::Windows.restrict_to_owner("C:\\ProgramData\\ssh", "C:\\ProgramData\\ssh\\administrators_authorized_keys");
+        let windows = Dialect::Windows.restrict_to_owner("C:\\Users\\deploy\\.ssh", "C:\\Users\\deploy\\.ssh\\authorized_keys");
         // Inheritance has to be broken first, or the grants sit on top of the
         // inherited ones and sshd still sees a too-permissive file.
         assert!(windows.contains("/inheritance:r"), "{windows}");
-        assert!(windows.contains("SYSTEM"), "{windows}");
+        assert!(windows.contains("/grant *%~s:F"), "the account by the SID whoami gives: {windows}");
+        assert!(windows.contains("/grant *S-1-5-18:F"), "SYSTEM by SID: {windows}");
+    }
+
+    /// Through this machine's own cmd.exe: the loop finds the account's SID,
+    /// the file ends up with that account and SYSTEM and nothing inherited,
+    /// and a file icacls cannot reach fails the command.
+    #[cfg(windows)]
+    #[test]
+    fn the_key_file_restriction_holds_in_a_real_cmd() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("authorized_keys");
+        std::fs::write(&file, "ssh-ed25519 AAAA test\n").unwrap();
+        let file = file.display().to_string();
+
+        session
+            .exec(&Dialect::Windows.restrict_to_owner(&dir.path().display().to_string(), &file))
+            .unwrap();
+        let acl = session.exec(&format!("icacls {}", Dialect::Windows.quote(&file))).unwrap();
+        assert!(!acl.contains("(I)"), "nothing inherited may stay: {acl}");
+        let user = std::env::var("USERNAME").unwrap().to_lowercase();
+        assert!(acl.to_lowercase().contains(&user), "the account itself is granted: {acl}");
+        let grants = acl.lines().filter(|line| line.contains(":(")).count();
+        assert_eq!(grants, 2, "the account and SYSTEM, nothing else: {acl}");
+
+        let missing = dir.path().join("missing").join("authorized_keys").display().to_string();
+        assert!(
+            session.exec(&Dialect::Windows.restrict_to_owner("unused", &missing)).is_err(),
+            "a failed icacls must fail the command"
+        );
+    }
+
+    /// The administrators' file is shared by every administrator, so it is
+    /// granted to the group - by SID, the name being translated on a
+    /// localized Windows - and never to the one account that ran the setup,
+    /// which would lock the next administrator out of it.
+    #[test]
+    fn the_shared_key_file_belongs_to_the_administrators() {
+        let windows = Dialect::Windows.restrict_to_administrators("C:\\ProgramData\\ssh\\administrators_authorized_keys");
+        assert_eq!(
+            windows,
+            "icacls \"C:\\ProgramData\\ssh\\administrators_authorized_keys\" /inheritance:r /grant *S-1-5-32-544:F /grant *S-1-5-18:F"
+        );
+        assert!(!windows.contains("%USERNAME%"), "{windows}");
     }
 
     /// The probe has to survive both shells, so it may not contain syntax that
