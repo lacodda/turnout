@@ -26,7 +26,7 @@ Backups are timestamped `tar.gz` archives of the target directory, stored on the
 turnout backup myapp-prod
 ```
 
-Creates `{dir}.backups/YYYYMMDD-HHMMSS.tar.gz` and prints its name. `turnout deploy --backup` does the same right before touching the remote directory. Either way, the older backups beyond what the stand keeps are removed afterwards - see [How many are kept](#how-many-are-kept).
+Creates `{dir}.backups/YYYYMMDD-HHMMSS.tar.gz` (UTC) and prints its name. A second backup within the same second is `YYYYMMDD-HHMMSS_02.tar.gz`, and so on: an archive already there is never written over. `turnout deploy --backup` does the same right before touching the remote directory. Either way, the older backups beyond what the stand keeps are removed afterwards - see [How many are kept](#how-many-are-kept).
 
 The timestamp is UTC and comes from your machine, not the server's clock, so archives taken from different places still sort next to each other correctly.
 
@@ -55,7 +55,7 @@ The number belongs to the [target](/turnout/reference/target/#backups): a backup
 turnout target edit myapp-pi --keep-backups 3
 ```
 
-Only turnout's own archives - the `YYYYMMDD-HHMMSS.tar.gz` names - are counted and removed; anything else in the directory is yours and stays. A pruned name is checked against a second listing, so a removal the server did not make is never reported as made. Without a target behind the run (an app deployed through its binding, or a run with `--server` or `--path`), the stand keeps 5.
+Only turnout's own archives - the `YYYYMMDD-HHMMSS.tar.gz` and `YYYYMMDD-HHMMSS_NN.tar.gz` names - are counted and removed; anything else in the directory is yours and stays. A pruned name is checked against a second listing, so a removal the server did not make is never reported as made. Without a target behind the run (an app deployed through its binding, or a run with `--server` or `--path`), the stand keeps 5.
 
 ## backup prune
 

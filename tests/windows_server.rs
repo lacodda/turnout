@@ -118,14 +118,6 @@ fn add_login(data: &Path, credential: &str, account: &Account) {
     assert!(output.status.success(), "{}", printed(&output));
 }
 
-/// Backup archives are named to the second; two taken within one second
-/// would share a name. Each step that takes one waits for a fresh second, so
-/// the counts below are about turnout and not about the clock.
-fn next_second() {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap();
-    std::thread::sleep(std::time::Duration::from_nanos(1_000_000_000 - u64::from(now.subsec_nanos())) + std::time::Duration::from_millis(50));
-}
-
 /// Write a build: every file with its exact bytes, nothing else in `dist`.
 fn build(dist: &Path, files: &[(&str, &str)]) {
     if dist.exists() {
@@ -318,8 +310,8 @@ fn a_windows_server_lives_through_every_kind_of_deploy() {
     assert!(site.join("restarted.txt").exists(), "{said}");
     assert_eq!(backups(&site).len(), 1, "{said}");
 
-    // A backup on request, listed newest first.
-    next_second();
+    // A backup on request, listed newest first - taken at once, in the same
+    // second as the deploy's own when the machine is quick, and kept apart.
     ok(data, &["backup", "web-win"]);
     let taken = backups(&site);
     assert_eq!(taken.len(), 2, "{taken:?}");
@@ -356,7 +348,6 @@ fn a_windows_server_lives_through_every_kind_of_deploy() {
         ],
     );
     build(&dist, BROKEN_BUILD);
-    next_second();
     let said = fails(data, &["deploy", "web-win", "--no-build"]);
     assert!(said.contains("rolled back to"), "{said}");
     assert!(said.contains("the stand works again"), "{said}");
@@ -383,7 +374,6 @@ fn a_windows_server_lives_through_every_kind_of_deploy() {
     // 5. A cleared directory keeps nothing the build does not have.
     std::fs::write(site.join("stray.txt"), "left by hand\n").unwrap();
     build(&dist, SECOND_BUILD);
-    next_second();
     ok(data, &["deploy", "web-win", "--no-build", "--clear"]);
     assert_landed(&site, SECOND_BUILD);
     assert_absent(&site, "stray.txt");

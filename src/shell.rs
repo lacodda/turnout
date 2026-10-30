@@ -208,6 +208,16 @@ impl Dialect {
         }
     }
 
+    /// Whether nothing is at `path`; the command fails if something is. The
+    /// guard in front of a write that must never overwrite.
+    pub fn nothing_at(&self, path: &str) -> String {
+        let quoted = self.quote(path);
+        match self {
+            Dialect::Posix => format!("test ! -e {quoted}"),
+            Dialect::Windows => format!("(if exist {quoted} exit /b 1)"),
+        }
+    }
+
     /// Whether `dir` is an existing directory; the command succeeds if it is.
     ///
     /// `cmd.exe`'s `if exist` says yes to a file of that name as well, unless

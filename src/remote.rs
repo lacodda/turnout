@@ -408,15 +408,38 @@ pub fn backup_name() -> String {
     format!("{year:04}{month:02}{day:02}-{:02}{:02}{:02}.tar.gz", rest / 3600, (rest % 3600) / 60, rest % 60)
 }
 
+/// The first name of `stamp`'s second that no backup in `taken` has:
+/// `20260812-181500.tar.gz`, then `20260812-181500_02.tar.gz` and on.
+///
+/// Names are per second, and two backups of one stand in one second are an
+/// ordinary script - `deploy --backup` followed by `backup`, or two checked
+/// deploys back to back. Without this the second `tar czf` wrote over the
+/// first. The suffix starts with `_`, which sorts after the `.` of a bare
+/// name, so string order stays time order and `restore` still finds the
+/// newest by sorting.
+pub fn free_backup_name(stamp: &str, taken: &[String]) -> String {
+    let stem = stamp.trim_end_matches(".tar.gz");
+    std::iter::once(format!("{stem}.tar.gz"))
+        .chain((2..).map(|n| format!("{stem}_{n:02}.tar.gz")))
+        .find(|name| !taken.contains(name))
+        .expect("an unbounded sequence has a free name")
+}
+
 /// Create a timestamped tar.gz of the deploy directory.
 ///
-/// Returns the command and the archive name; the name is known up front because
-/// this side chose it, so nothing has to be parsed back out of the output.
+/// The name is known up front because this side chose it, so nothing has to
+/// be parsed back out of the output. The chain refuses to write over an
+/// archive already there: [`free_backup_name`] avoids every name the server
+/// listed, so only another backup taken in the same instant can trip it, and
+/// that has to fail rather than replace a backup without a word.
 pub fn backup_command(dialect: Dialect, deploy_path: &str, archive_name: &str) -> String {
     let dir = deploy_path.trim_end_matches(['/', '\\']);
     let backups = backups_dir(deploy_path);
     let archive = join_remote(&backups, archive_name);
-    dialect.and_then(&dialect.mkdir_p(&backups), &dialect.tar_czf(&archive, dir))
+    dialect.and_then(
+        &dialect.mkdir_p(&backups),
+        &dialect.and_then(&dialect.nothing_at(&archive), &dialect.tar_czf(&archive, dir)),
+    )
 }
 
 /// Run the backup, explaining the one failure that surprises everyone.
@@ -426,8 +449,8 @@ pub fn backup_command(dialect: Dialect, deploy_path: &str, archive_name: &str) -
 /// regardless, which makes a bare "permission denied" from `mkdir` look
 /// arbitrary; the hint below is what actually unblocks it.
 pub fn run_backup(session: &Session, dialect: Dialect, deploy_path: &str) -> Result<String> {
-    let name = backup_name();
     check_quotable(dialect, &[deploy_path, &backups_dir(deploy_path)])?;
+    let name = free_backup_name(&backup_name(), &list_backups(session, dialect, deploy_path)?);
     exec(session, &backup_command(dialect, deploy_path, &name)).map(|_| name).map_err(|err| {
         if mentions_permission_denial(&err) {
             anyhow::anyhow!(permission_hint(dialect, deploy_path))
@@ -462,7 +485,8 @@ pub fn remove_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name
 /// Backups a stand keeps when its target names no number (ADR 0028).
 pub const DEFAULT_KEEP_BACKUPS: u32 = 5;
 
-/// Whether a listing entry is one of our archives: `YYYYMMDD-HHMMSS.tar.gz`.
+/// Whether a listing entry is one of our archives: `YYYYMMDD-HHMMSS.tar.gz`,
+/// or `YYYYMMDD-HHMMSS_NN.tar.gz` for a later one of the same second.
 ///
 /// The backups directory belongs to the user: a note left in it must never
 /// be restored as if it were an archive, nor pruned as if it were ours.
@@ -470,8 +494,13 @@ pub fn is_backup_name(entry: &str) -> bool {
     let Some(stem) = entry.strip_suffix(".tar.gz") else {
         return false;
     };
-    let bytes = stem.as_bytes();
-    bytes.len() == 15 && bytes[8] == b'-' && stem.chars().enumerate().all(|(i, c)| if i == 8 { c == '-' } else { c.is_ascii_digit() })
+    let (stamp, sequence) = match stem.split_once('_') {
+        Some((stamp, sequence)) => (stamp, Some(sequence)),
+        None => (stem, None),
+    };
+    let stamp_ok = stamp.len() == 15 && stamp.chars().enumerate().all(|(i, c)| if i == 8 { c == '-' } else { c.is_ascii_digit() });
+    let sequence_ok = sequence.is_none_or(|n| n.len() == 2 && n.chars().all(|c| c.is_ascii_digit()));
+    stamp_ok && sequence_ok
 }
 
 /// Our archives in a directory listing, newest first.
@@ -617,7 +646,7 @@ fn parent_dir(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_command, backup_name, backups_dir, join_remote, mentions_permission_denial, parent_dir};
+    use super::{backup_command, backup_name, backups_dir, free_backup_name, join_remote, mentions_permission_denial, parent_dir};
     use crate::shell::Dialect;
 
     #[test]
@@ -677,7 +706,7 @@ mod tests {
         let posix = backup_command(Dialect::Posix, "/var/www/site", "20260812-181500.tar.gz");
         assert_eq!(
             posix,
-            "mkdir -p '/var/www/site.backups' && tar czf '/var/www/site.backups/20260812-181500.tar.gz' -C '/var/www/site' ."
+            "mkdir -p '/var/www/site.backups' && test ! -e '/var/www/site.backups/20260812-181500.tar.gz' && tar czf '/var/www/site.backups/20260812-181500.tar.gz' -C '/var/www/site' ."
         );
 
         let windows = backup_command(Dialect::Windows, "C:\\inetpub\\site", "20260812-181500.tar.gz");
@@ -716,13 +745,17 @@ mod tests {
         );
 
         let first = super::run_backup(&session, dialect, &dir).unwrap();
-        // Names are per second; the second backup must not reuse the first.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // No pause: two backups in one second are an ordinary script, and the
+        // second must take a name of its own instead of writing over the first.
         std::fs::write(site.join("index.html"), "v2").unwrap();
         std::fs::write(site.join("extra.txt"), "only in v2").unwrap();
         let second = super::run_backup(&session, dialect, &dir).unwrap();
+        assert_ne!(first, second);
         let backups = std::path::PathBuf::from(super::backups_dir(&dir));
         assert!(backups.join(&first).is_file() && backups.join(&second).is_file(), "both backups exist");
+        // The guard: a name already on the server is never written over.
+        let again = super::backup_command(dialect, &dir, &first);
+        assert!(super::exec(&session, &again).is_err(), "an existing archive must stop the backup");
 
         super::restore_backup(&session, dialect, &dir, &first).unwrap();
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1", "the restore put v1 back");
@@ -742,6 +775,35 @@ mod tests {
 
         super::remove_backup(&session, dialect, &dir, &second).unwrap();
         assert!(!backups.join(&second).exists());
+    }
+
+    #[test]
+    fn a_second_backup_in_one_second_takes_the_next_name() {
+        let taken = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(free_backup_name("20261030-120000.tar.gz", &[]), "20261030-120000.tar.gz");
+        assert_eq!(
+            free_backup_name("20261030-120000.tar.gz", &taken(&["20261030-120000.tar.gz"])),
+            "20261030-120000_02.tar.gz"
+        );
+        assert_eq!(
+            free_backup_name("20261030-120000.tar.gz", &taken(&["20261030-120000.tar.gz", "20261030-120000_02.tar.gz"])),
+            "20261030-120000_03.tar.gz"
+        );
+        // Sorted as `restore` and `prune` sort them, newest first.
+        let listing = "20261030-120001.tar.gz\n20261030-120000_02.tar.gz\n20261030-120000.tar.gz\n20261030-115959.tar.gz\n";
+        assert_eq!(
+            super::backups_in(listing),
+            [
+                "20261030-120001.tar.gz",
+                "20261030-120000_02.tar.gz",
+                "20261030-120000.tar.gz",
+                "20261030-115959.tar.gz"
+            ]
+        );
+        assert!(super::is_backup_name("20261030-120000_02.tar.gz"));
+        assert!(!super::is_backup_name("20261030-120000_2.tar.gz"), "two digits");
+        assert!(!super::is_backup_name("20261030-120000_ab.tar.gz"));
+        assert!(!super::is_backup_name("20261030-120000_.tar.gz"));
     }
 
     /// The name is a sort key: `restore` picks the newest backup by sorting
