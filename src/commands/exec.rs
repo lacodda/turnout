@@ -187,8 +187,13 @@ fn clear_dev_port(app: &str, port: u16) -> Result<()> {
     let Some(holder) = crate::ports::holder(port) else {
         return Ok(());
     };
-    let pid = holder.pid.filter(|_| crate::pick::interactive());
-    if let Some(pid) = pid
+    // Its birth, with its pid: what is ended after the yes must be what was
+    // asked about.
+    let found = holder
+        .pid
+        .filter(|_| crate::pick::interactive())
+        .and_then(|pid| crate::process::birth(pid).map(|birth| (pid, birth)));
+    if let Some((pid, birth)) = found
         && crate::pick::confirm_destructive(
             format!(
                 "Dev port {port} of '{app}' is held by {}, which turnout did not start. End it?",
@@ -197,9 +202,19 @@ fn clear_dev_port(app: &str, port: u16) -> Result<()> {
             false,
         )?
     {
-        crate::commands::doctor::end_holder(pid, port)?;
-        eprintln!("[{app}] ended {} - dev port {port} is free", holder.describe());
-        return Ok(());
+        if crate::commands::doctor::end_holder(pid, birth, port)? {
+            eprintln!("[{app}] ended {} - dev port {port} is free", holder.describe());
+            return Ok(());
+        }
+        // Gone by itself while the question waited, or something else took
+        // the port: whatever holds it now was not asked about.
+        let Some(holder) = crate::ports::holder(port) else {
+            return Ok(());
+        };
+        bail!(
+            "dev port {port} of '{app}' is held by {} now, which turnout did not start and nobody was asked about - run `turnout dev {app}` again",
+            holder.describe()
+        );
     }
     bail!(
         "dev port {port} of '{app}' is held by {}, which turnout did not start - a dev server left behind, or one started by hand. \

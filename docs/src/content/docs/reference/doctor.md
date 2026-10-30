@@ -91,7 +91,7 @@ What the stand answers also goes where every answer goes: an expired session rai
 - **`.gitignore`** - the dotenv file added to the nearest one in the repository;
 - **a gateway record** whose process is gone;
 - **a binding** to a server that is not in the catalog;
-- **a process on an app's dev port** - only after a yes. turnout cannot tell a dev server left behind from one somebody is using right now, so it asks, naming the program and the pid. Off a terminal it leaves the process alone unless `--yes` is given.
+- **a process on an app's dev port** - only after a yes. turnout cannot tell a dev server left behind from one somebody is using right now, so it asks, naming the program and the pid. Off a terminal it leaves the process alone unless `--yes` is given. After the yes it looks again: a process that has gone in the meantime - its pid perhaps another program's by now - or that no longer holds the port is left alone.
 
 ```text
 ✓  web: ended node.exe (pid 4242), which held dev port 5100

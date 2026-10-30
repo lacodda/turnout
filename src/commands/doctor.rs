@@ -82,8 +82,15 @@ enum Repair {
     GatewayRecord,
     /// Drop a binding to a server that is not in the catalog.
     Unbind { app: String },
-    /// End the process holding the app's dev port - after a yes.
-    EndProcess { app: String, port: u16, pid: u32, name: String },
+    /// End the process holding the app's dev port - after a yes, and only
+    /// while the process with that pid is the one born at `birth`.
+    EndProcess {
+        app: String,
+        port: u16,
+        pid: u32,
+        birth: u64,
+        name: String,
+    },
 }
 
 impl CheckView {
@@ -647,11 +654,14 @@ fn judge_dev_port(app: &App, port: u16, running: bool, landed: Option<u16>, hold
 /// hand. `--fix` can end it when the OS says which process it is.
 fn stray(app: &App, port: u16, holder: &Holder, state: State, message: String) -> CheckView {
     let check = CheckView::new(APPS, "dev_port", state, Some(&app.name), message);
-    match holder.pid {
-        Some(pid) => check.repair(Repair::EndProcess {
+    // The birth is taken now, with the pid: it is what `--fix` asks again
+    // before it signals anything.
+    match holder.pid.and_then(|pid| process::birth(pid).map(|birth| (pid, birth))) {
+        Some((pid, birth)) => check.repair(Repair::EndProcess {
             app: app.name.clone(),
             port,
             pid,
+            birth,
             name: holder.name.clone().unwrap_or_else(|| "a process".to_string()),
         }),
         None => check.fix("end the process that holds it - the OS does not say which one it is"),
@@ -1158,8 +1168,8 @@ fn repair(checks: &[CheckView], assume_yes: bool) -> Result<Vec<String>> {
                     done.push(format!("{app}: unbound from '{server}', which is not in the catalog"));
                 }
             }
-            Repair::EndProcess { app, port, pid, name } => {
-                if let Some(line) = end_stray(app, *port, *pid, name, assume_yes)? {
+            Repair::EndProcess { app, port, pid, birth, name } => {
+                if let Some(line) = end_stray(app, *port, *pid, *birth, name, assume_yes)? {
                     done.push(line);
                 }
             }
@@ -1173,10 +1183,10 @@ fn repair(checks: &[CheckView], assume_yes: bool) -> Result<Vec<String>> {
 /// Off a terminal and without `--yes` it is left alone: ending a process
 /// found by its port is a decision, and turnout cannot tell a dev server left
 /// behind from one somebody is using right now.
-fn end_stray(app: &str, port: u16, pid: u32, name: &str, assume_yes: bool) -> Result<Option<String>> {
-    // The table is read again: the process may have gone, or another taken
+fn end_stray(app: &str, port: u16, pid: u32, birth: u64, name: &str, assume_yes: bool) -> Result<Option<String>> {
+    // Nothing to ask about when the process has gone, or another has taken
     // the port, since the check looked.
-    if ports::holder(port).and_then(|holder| holder.pid) != Some(pid) {
+    if !holds(port, pid, birth) {
         return Ok(None);
     }
     if !assume_yes && !pick::interactive() {
@@ -1186,19 +1196,38 @@ fn end_stray(app: &str, port: u16, pid: u32, name: &str, assume_yes: bool) -> Re
     if !pick::confirm_destructive(format!("End {name} (pid {pid}), which holds {app}'s dev port {port}?"), assume_yes)? {
         return Ok(None);
     }
-    end_holder(pid, port)?;
+    if !end_holder(pid, birth, port)? {
+        eprintln!("note: left {app}'s dev port {port} alone - {name} (pid {pid}) no longer holds it");
+        return Ok(None);
+    }
     Ok(Some(format!("{app}: ended {name} (pid {pid}), which held dev port {port}")))
 }
 
-/// End `pid` and wait for `port` to be let go: the next thing to happen is
-/// usually a `dev` that wants it.
-pub(crate) fn end_holder(pid: u32, port: u16) -> Result<()> {
+/// End `pid` - the process born at `birth` that was found holding `port` -
+/// and wait for the port to be let go: the next thing to happen is usually a
+/// `dev` that wants it. `false` when it no longer is that holder, and then
+/// nothing is signalled.
+///
+/// Asked right before the signal, after the yes: a prompt can wait for
+/// minutes, and the pid the table named before it may by then be another
+/// process's - one that was never asked about. Nothing in turnout signals a
+/// pid without its birth ([`process`]), and this used to.
+pub(crate) fn end_holder(pid: u32, birth: u64, port: u16) -> Result<bool> {
+    if !holds(port, pid, birth) {
+        return Ok(false);
+    }
     process::end(pid, None, process::Ending::Kill)?;
     let deadline = Instant::now() + Duration::from_secs(3);
     while ports::holder(port).is_some() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    Ok(())
+    Ok(true)
+}
+
+/// Whether `port` is held by `pid`, and `pid` is still the process born at
+/// `birth`.
+fn holds(port: u16, pid: u32, birth: u64) -> bool {
+    ports::holder(port).and_then(|holder| holder.pid) == Some(pid) && process::is_alive(pid, birth)
 }
 
 // --- the checklist on screen ------------------------------------------------------------------
@@ -1432,5 +1461,78 @@ mod tests {
         let rendered = text(&view);
         assert!(rendered.contains("┌  Server prod"), "{rendered}");
         assert!(rendered.ends_with("└  1 problem · a deploy would stop at the upload step"), "{rendered}");
+    }
+
+    /// Set for the child [`hold_a_port`] runs in.
+    const HOLDER_ENV: &str = "TURNOUT_TEST_HOLD_A_PORT";
+
+    /// Not a test of its own: the process the test below ends. That test
+    /// starts this binary again with only this one, ignored otherwise; it
+    /// listens on a port the system picks, says which, and waits to be killed.
+    #[test]
+    #[ignore = "the child process of a_port_holder_is_ended_only_while_it_is_the_one_found"]
+    fn hold_a_port() {
+        if std::env::var_os(HOLDER_ENV).is_none() {
+            return;
+        }
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        println!("holding {}", listener.local_addr().unwrap().port());
+        std::thread::sleep(Duration::from_secs(60));
+    }
+
+    /// Kills the holder when the test is over, however it ends.
+    struct Holding(std::process::Child);
+    impl Drop for Holding {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A port's holder is ended only while it is the process that was found:
+    /// the pid and the birth taken then, and still on the port. Ending one by
+    /// its pid alone signalled whatever had that pid by the time somebody
+    /// said yes.
+    #[test]
+    fn a_port_holder_is_ended_only_while_it_is_the_one_found() {
+        use std::io::BufRead;
+        let mut holding = Holding(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "commands::doctor::tests::hold_a_port",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(HOLDER_ENV, "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let stdout = std::io::BufReader::new(holding.0.stdout.take().unwrap());
+        let port: u16 = stdout
+            .lines()
+            .map_while(Result::ok)
+            // On the harness's own line: `test ...::hold_a_port ... holding 9821`.
+            .find_map(|line| line.rsplit_once("holding ").and_then(|(_, port)| port.trim().parse().ok()))
+            .expect("the holder says which port it holds");
+        let pid = holding.0.id();
+        let birth = process::birth(pid).expect("the holder is running");
+        assert!(holds(port, pid, birth), "the holder is not seen on its port");
+
+        // The same pid, born at another time: another process by now.
+        assert!(!end_holder(pid, birth.wrapping_add(1), port).unwrap());
+        assert!(process::is_alive(pid, birth), "a process was signalled on its pid alone");
+        // The same process, no longer on the port it was found on.
+        let elsewhere = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let elsewhere = elsewhere.local_addr().unwrap().port();
+        assert!(!end_holder(pid, birth, elsewhere).unwrap());
+        assert!(process::is_alive(pid, birth), "a process was signalled for a port it does not hold");
+
+        assert!(end_holder(pid, birth, port).unwrap());
+        assert!(!process::is_alive(pid, birth), "the holder outlived its end");
+        assert!(ports::holder(port).is_none(), "the port was not let go");
     }
 }
