@@ -37,9 +37,15 @@ pub fn run(command: AppCommand) -> Result<()> {
             commands,
             add_servers,
             rm_servers,
+            any_server,
         } => {
             let name = resolve(name, "Edit app")?;
-            edit(&name, path, port, env_var, env_file, dev_port, dist, commands, add_servers, rm_servers)
+            let allow = AllowList {
+                add: &add_servers,
+                remove: &rm_servers,
+                any: any_server,
+            };
+            edit(&name, path, port, env_var, env_file, dev_port, dist, commands, allow)
         }
         AppCommand::Remove { name, assume_yes } => {
             let name = resolve(name, "Remove app")?;
@@ -149,8 +155,10 @@ fn add(
             dev_port,
             dist,
             &overrides,
-            &servers,
-            &[],
+            AllowList {
+                add: &servers,
+                ..AllowList::default()
+            },
         )?;
     } else {
         let path = path.expect("without a path the run is a wizard");
@@ -167,8 +175,10 @@ fn add(
             dev_port,
             dist,
             &overrides,
-            &servers,
-            &[],
+            AllowList {
+                add: &servers,
+                ..AllowList::default()
+            },
         )?;
     }
 
@@ -314,8 +324,7 @@ fn edit(
     dev_port: Option<u16>,
     dist: Option<String>,
     overrides: Vec<String>,
-    add_servers: Vec<String>,
-    rm_servers: Vec<String>,
+    allow: AllowList,
 ) -> Result<()> {
     let mut apps = store::load_apps()?;
     let known = store::load_servers()?;
@@ -327,8 +336,7 @@ fn edit(
         && dev_port.is_none()
         && dist.is_none()
         && overrides.is_empty()
-        && add_servers.is_empty()
-        && rm_servers.is_empty();
+        && allow.is_empty();
 
     // Ports are checked against every app but this one, which is free to keep
     // the port it already holds.
@@ -351,8 +359,7 @@ fn edit(
             dev_port,
             dist,
             &overrides,
-            &add_servers,
-            &rm_servers,
+            allow,
         )?;
     }
     apps[index] = app;
@@ -423,8 +430,7 @@ fn apply_flags(
     dev_port: Option<u16>,
     dist: Option<String>,
     overrides: &[String],
-    add_servers: &[String],
-    rm_servers: &[String],
+    allow: AllowList,
 ) -> Result<()> {
     if let Some(path) = path {
         app.path = crate::utils::project_dir(&path)?.display().to_string();
@@ -452,14 +458,50 @@ fn apply_flags(
         app.dist_dir = dist;
     }
     apply_overrides(&mut app.commands, overrides)?;
-    validate_servers(add_servers, known)?;
-    for server in add_servers {
-        if !app.servers.contains(server) {
-            app.servers.push(server.clone());
-        }
+    allow.apply(app, known)
+}
+
+/// What a command asks of an app's allow-list.
+#[derive(Default)]
+struct AllowList<'a> {
+    add: &'a [String],
+    remove: &'a [String],
+    /// Lift the list: the app may use any server.
+    any: bool,
+}
+
+impl AllowList<'_> {
+    fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty() && !self.any
     }
-    app.servers.retain(|s| !rm_servers.contains(s));
-    Ok(())
+
+    /// An empty allow-list allows every server, so removing the last entry
+    /// widens "only prod" into "anything". That used to happen as a side
+    /// effect of `--rm-server`; it is refused, and asked for by name with
+    /// `--any-server` - the same rule `server remove` keeps.
+    fn apply(self, app: &mut App, known: &[Server]) -> Result<()> {
+        if self.any {
+            app.servers.clear();
+            return Ok(());
+        }
+        validate_servers(self.add, known)?;
+        for server in self.add {
+            if !app.servers.contains(server) {
+                app.servers.push(server.clone());
+            }
+        }
+        let restricted = !app.servers.is_empty();
+        app.servers.retain(|s| !self.remove.contains(s));
+        if restricted && app.servers.is_empty() {
+            bail!(
+                "removing {} would empty the allow-list of '{1}', and an empty allow-list allows any server - \
+                 to let '{1}' use any server, say so with `turnout app edit {1} --any-server`",
+                self.remove.join(", "),
+                app.name
+            );
+        }
+        Ok(())
+    }
 }
 
 fn find<'a>(apps: &'a [App], name: &str) -> Result<&'a App> {
@@ -511,7 +553,9 @@ pub(super) fn pick_servers(known: &[Server], current: &[String]) -> Result<Vec<S
     let items: Vec<&str> = known.iter().map(|s| s.name.as_str()).collect();
     let defaults: Vec<bool> = known.iter().map(|s| current.contains(&s.name)).collect();
     let picked = MultiSelect::new()
-        .with_prompt("Allowed servers (space to toggle, enter to accept)")
+        // Said in the prompt, because an empty list is not "none": it lifts
+        // the restriction altogether.
+        .with_prompt("Allowed servers (space to toggle, enter to accept; none picked allows any server)")
         .items(&items)
         .defaults(&defaults)
         .interact()?;

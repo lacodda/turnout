@@ -168,7 +168,18 @@ turnout app edit myapp --add-server prod --rm-server staging
 | `--dist` | `-d` | Build artifact directory, relative to the project path |
 | `--command` | `-c` | Set a command as `NAME=CMD`, or `NAME=` to remove it (repeatable) |
 | `--add-server` | `-a` | Allow a server (repeatable) |
-| `--rm-server` | `-r` | Disallow a server (repeatable) |
+| `--rm-server` | `-r` | Disallow a server (repeatable); emptying the allow-list this way is refused - see `--any-server` |
+| `--any-server` | | Lift the allow-list: the app may use any server |
+
+### The allow-list
+
+An app with no allow-list may use any server; one with a list may use only the servers on it - `use`, `target add`, `target edit` and a deploy all hold it to that. Because an empty list allows **every** server, a list is never emptied as a side effect: `--rm-server` that would take off the last entry is refused, and so is [`server remove`](/turnout/reference/server/#remove) of an app's only server. Lifting the restriction is said by name:
+
+```bash
+turnout app edit web --any-server
+```
+
+In the form, leaving every server unpicked lifts it the same way, and the question says so.
 
 ## remove
 

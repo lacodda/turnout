@@ -858,9 +858,12 @@ pub enum AppCommand {
         /// Allow a server (repeatable)
         #[arg(short = 'a', long = "add-server", value_name = "SERVER")]
         add_servers: Vec<String>,
-        /// Disallow a server (repeatable)
+        /// Disallow a server (repeatable); emptying the allow-list this way is refused - see --any-server
         #[arg(short = 'r', long = "rm-server", value_name = "SERVER")]
         rm_servers: Vec<String>,
+        /// Lift the allow-list: the app may use any server
+        #[arg(long, conflicts_with_all = ["add_servers", "rm_servers"])]
+        any_server: bool,
     },
     /// Remove an app from the catalog (the project on disk is not touched)
     Remove {
@@ -927,12 +930,15 @@ pub enum ServerCommand {
         #[arg(short = 'S', long)]
         secure: bool,
     },
-    /// Remove a server from the catalog; apps that allowed it are updated
+    /// Remove a server from the catalog, with its targets; apps that allowed it are updated
     Remove {
         /// Server name; picked interactively when omitted
         name: Option<String>,
         /// Skip the confirmation prompt
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
+        /// Remove it even when it is the only server an app may use - that app may then use any server
+        #[arg(short, long)]
+        force: bool,
     },
 }

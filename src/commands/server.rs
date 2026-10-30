@@ -32,9 +32,9 @@ pub fn run(command: ServerCommand) -> Result<()> {
             let name = resolve(name, "Edit server")?;
             edit(&name, url, label, host, credential, insecure, secure)
         }
-        ServerCommand::Remove { name, assume_yes } => {
+        ServerCommand::Remove { name, assume_yes, force } => {
             let name = resolve(name, "Remove server")?;
-            remove(&name, assume_yes)
+            remove(&name, assume_yes, force)
         }
     }
 }
@@ -404,10 +404,30 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
     Ok(())
 }
 
-fn remove(name: &str, assume_yes: bool) -> Result<()> {
+fn remove(name: &str, assume_yes: bool, force: bool) -> Result<()> {
     let mut servers = store::load_servers()?;
     if !servers.iter().any(|s| s.name == name) {
         return Err(unknown_server(name));
+    }
+    // An empty allow-list allows every server, so taking an app's last
+    // allowed server off it would turn "only prod" into "anything": after
+    // `server remove prod`, `use web staging` and `deploy web --server
+    // staging` went through for an app that was only ever allowed prod. That
+    // widening is refused unless asked for.
+    let mut apps = store::load_apps()?;
+    let widened: Vec<String> = apps
+        .iter()
+        .filter(|app| !app.servers.is_empty() && app.servers.iter().all(|s| s == name))
+        .map(|app| app.name.clone())
+        .collect();
+    if !widened.is_empty() && !force {
+        bail!(
+            "'{name}' is the only server {} may use: removing it would empty the allow-list, and an empty allow-list allows any server.\n\
+             Allow another server first (`turnout app edit {} --add-server NAME`), or pass --force to remove '{name}' and let {} use any server.",
+            quoted(&widened),
+            widened[0],
+            if widened.len() == 1 { "it" } else { "them" }
+        );
     }
     let confirmed = pick::confirm_destructive(format!("Remove server '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
@@ -417,7 +437,6 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     servers.retain(|s| s.name != name);
     store::save_servers(&servers)?;
 
-    let mut apps = store::load_apps()?;
     let mut touched = Vec::new();
     for app in apps.iter_mut() {
         if app.servers.iter().any(|s| s == name) {
@@ -428,6 +447,9 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     if !touched.is_empty() {
         store::save_apps(&apps)?;
         println!("Removed '{name}' from apps: {}.", touched.join(", "));
+    }
+    if !widened.is_empty() {
+        println!("{} had no other server on the allow-list and may now use any server.", quoted(&widened));
     }
 
     // Targets do not outlive it: a target names exactly one server, so without
@@ -454,6 +476,11 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     crate::journal::record("server.remove", None, Some(name), None);
     println!("Server '{name}' removed.");
     Ok(())
+}
+
+/// `'a', 'b'` - app names as a sentence lists them.
+fn quoted(names: &[String]) -> String {
+    names.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
 }
 
 fn unknown_server(name: &str) -> anyhow::Error {

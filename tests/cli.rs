@@ -1234,14 +1234,15 @@ fn app_cannot_allow_unknown_server() {
 #[test]
 fn removing_server_updates_apps() {
     let (dir, project) = workspace();
+    add_staging(dir.path());
     turnout(dir.path())
-        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .args(["server", "add", "prod", "--url", "https://prod.example.com"])
         .assert()
         .success();
     turnout(dir.path())
         .args(["app", "add", "myapp", "--path"])
         .arg(&project)
-        .args(["--server", "staging"])
+        .args(["--server", "staging", "--server", "prod"])
         .assert()
         .success();
     turnout(dir.path())
@@ -1251,6 +1252,64 @@ fn removing_server_updates_apps() {
         .stdout(predicate::str::contains("Removed 'staging' from apps: myapp"));
     turnout(dir.path())
         .args(["app", "show", "myapp"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Servers:  prod"));
+}
+
+/// An empty allow-list allows every server, so taking an app's last allowed
+/// server off it widened "only prod" into "anything": after `server remove
+/// prod`, `use web staging` went through for an app only ever allowed prod.
+/// Both ways of emptying the list refuse, and the widening is asked for.
+#[test]
+fn emptying_an_allow_list_is_asked_for_not_a_side_effect() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path())
+        .args(["server", "add", "prod", "--url", "https://prod.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--server", "prod"])
+        .assert()
+        .success();
+
+    turnout(dir.path())
+        .args(["server", "remove", "prod", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("'prod' is the only server 'web' may use").and(predicate::str::contains("--force")));
+    turnout(dir.path())
+        .args(["app", "edit", "web", "--rm-server", "prod"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("would empty the allow-list of 'web'").and(predicate::str::contains("--any-server")));
+    turnout(dir.path())
+        .args(["use", "web", "staging", "--no-check"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not allowed"));
+
+    // Asked for by name, it happens, and says so.
+    turnout(dir.path())
+        .args(["server", "remove", "prod", "--yes", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'web' had no other server on the allow-list and may now use any server"));
+    turnout(dir.path())
+        .args(["app", "show", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Servers:  any - no allow-list"));
+    turnout(dir.path())
+        .args(["app", "edit", "web", "--add-server", "staging"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["app", "edit", "web", "--any-server"]).assert().success();
+    turnout(dir.path())
+        .args(["app", "show", "web"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Servers:  any - no allow-list"));

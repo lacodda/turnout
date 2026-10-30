@@ -88,9 +88,23 @@ turnout target add --app myapp --server prod --credential prod-deploy --path www
 ## remove
 
 ```bash
-turnout server remove staging [--yes]
+turnout server remove staging [--yes] [--force]
 ```
 
-Apps that allowed this server are updated automatically - the name is removed from their allow-lists.
+| Flag | Short | Description |
+| --- | --- | --- |
+| `--yes` | `-y` | Skip the confirmation prompt |
+| `--force` | `-f` | Remove it even when it is the only server an app may use - that app may then use any server |
+
+Apps that allowed this server are updated automatically - the name is removed from their allow-lists. The [targets](/turnout/reference/target/) that land on it are removed with it, and apps bound to it are unbound.
+
+An empty allow-list allows **every** server, so a server that is the only one an app may use is not removed by default: taking it off the list would quietly turn "only prod" into "anything".
+
+```text
+error: 'prod' is the only server 'web' may use: removing it would empty the allow-list, and an empty allow-list allows any server.
+Allow another server first (`turnout app edit web --add-server NAME`), or pass --force to remove 'prod' and let it use any server.
+```
+
+With `--force` it goes, and the removal names the apps that may now use any server.
 
 Credentials and paths are left alone: they are shared, and a login that also reaches three other stands should not disappear with one of them. Remove them explicitly with [`turnout credential remove`](/turnout/reference/credential/) and [`turnout path remove`](/turnout/reference/path/).
