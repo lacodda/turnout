@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use dialoguer::Password;
 
+use crate::model::{App, Group, Target, validate_name, validate_remote_path, validate_url};
 use crate::portable::{self, Snapshot};
 use crate::{pick, secrets, store};
 
@@ -78,32 +79,51 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         None => None,
     };
 
+    // The import is the one way into the catalog that skips `add`, so every
+    // arriving entity is held to what `add` would have held it to. Without
+    // that, a group `web` here and an app `web` in the file both existed after
+    // an import, and `use web prod` silently bound only the app.
     let mut report = Report::default();
-    // Apps are saved only after their ports are settled: the import is the one
-    // way into the catalog that skips `app add`, and an older export can bring
-    // an app with no gateway port, or a port an app here already holds.
+    let mut groups = store::load_groups()?;
+    // Apps are saved only after their ports are settled: an older export can
+    // bring an app with no gateway port, or a port an app here already holds.
     let mut apps = store::load_apps()?;
-    let arrived = merge(&mut apps, snapshot.apps, |app| app.name.clone(), force, "app", &mut report, |_| Ok(()))?;
+    let arrived = merge(
+        &mut apps,
+        snapshot.apps,
+        |app| app.name.clone(),
+        force,
+        "app",
+        &mut report,
+        |app| admit_app(app, &groups),
+        |_| Ok(()),
+    )?;
     report.ports = crate::front::settle_arrivals(&mut apps, &arrived);
     if !arrived.is_empty() {
         store::save_apps(&apps)?;
     }
+    let mut servers = store::load_servers()?;
     merge(
-        &mut store::load_servers()?,
+        &mut servers,
         snapshot.servers,
         |server| server.name.clone(),
         force,
         "server",
         &mut report,
+        |server| {
+            validate_name(&server.name)?;
+            validate_url(&server.url)
+        },
         store::save_servers,
     )?;
     merge(
-        &mut store::load_groups()?,
+        &mut groups,
         snapshot.groups,
         |group| group.name.clone(),
         force,
         "group",
         &mut report,
+        |group| admit_group(group, &apps),
         store::save_groups,
     )?;
     let mut credentials = store::load_credentials()?;
@@ -115,19 +135,33 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         force,
         "credential",
         &mut report,
+        |credential| validate_name(&credential.name),
         store::save_credentials,
     )?;
+    let mut paths = store::load_paths()?;
     merge(
-        &mut store::load_paths()?,
+        &mut paths,
         snapshot.paths,
         |path| path.name.clone(),
         force,
         "path",
         &mut report,
+        |path| {
+            validate_name(&path.name)?;
+            validate_remote_path(&path.dir)
+        },
         store::save_paths,
     )?;
     // Last: a target names the four entities above, so importing it after them
-    // means a report of what arrived reads in dependency order.
+    // means a report of what arrived reads in dependency order - and an entity
+    // refused above refuses the targets that name it, rather than leaving them
+    // pointing at nothing.
+    let around = Catalog {
+        apps: &apps,
+        servers: &servers,
+        credentials: &credentials,
+        paths: &paths,
+    };
     merge(
         &mut store::load_targets()?,
         snapshot.targets,
@@ -135,6 +169,7 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         force,
         "target",
         &mut report,
+        |target| admit_target(target, &around),
         store::save_targets,
     )?;
 
@@ -166,6 +201,8 @@ struct Report {
     imported: usize,
     /// Names that already existed, kept as they were.
     skipped: Vec<String>,
+    /// Entries `add` would have refused, each with the reason.
+    refused: Vec<String>,
     secrets: usize,
     /// Credentials kept as they were here, whose secret in the file was
     /// therefore not written either.
@@ -178,7 +215,7 @@ struct Report {
 
 impl Report {
     fn print(&self) {
-        if self.imported == 0 && self.skipped.is_empty() {
+        if self.imported == 0 && self.skipped.is_empty() && self.refused.is_empty() {
             println!("The export was empty - nothing to import.");
             return;
         }
@@ -189,6 +226,12 @@ impl Report {
                 println!("  {name}");
             }
             println!("  Re-run with --force to overwrite them.");
+        }
+        if !self.refused.is_empty() {
+            println!("Refused {} item(s) this catalog cannot hold:", self.refused.len());
+            for line in &self.refused {
+                println!("  {line}");
+            }
         }
         for line in &self.ports {
             println!("  {line}");
@@ -217,9 +260,15 @@ fn quoted(names: &[String]) -> String {
 /// Add incoming items to `existing`, keeping what is already there unless
 /// `force` says otherwise, then save through `save`. Returns the names of the
 /// items written.
-fn merge<T, K, S>(existing: &mut Vec<T>, incoming: Vec<T>, key: K, force: bool, kind: &str, report: &mut Report, save: S) -> Result<Vec<String>>
+///
+/// An item about to be written is first put to `admit`, the checks `add`
+/// makes; one it fails is refused and reported with the reason, and the rest
+/// of the import goes on.
+#[allow(clippy::too_many_arguments)]
+fn merge<T, K, A, S>(existing: &mut Vec<T>, incoming: Vec<T>, key: K, force: bool, kind: &str, report: &mut Report, admit: A, save: S) -> Result<Vec<String>>
 where
     K: Fn(&T) -> String,
+    A: Fn(&T) -> Result<()>,
     S: Fn(&[T]) -> Result<()>,
 {
     if incoming.is_empty() {
@@ -228,21 +277,81 @@ where
     let mut written = Vec::new();
     for item in incoming {
         let name = key(&item);
-        match existing.iter().position(|other| key(other) == name) {
-            Some(index) if force => {
-                existing[index] = item;
-                written.push(name);
-            }
-            Some(_) => report.skipped.push(format!("{kind} '{name}'")),
-            None => {
-                existing.push(item);
-                written.push(name);
-            }
+        let at = existing.iter().position(|other| key(other) == name);
+        if at.is_some() && !force {
+            report.skipped.push(format!("{kind} '{name}'"));
+            continue;
         }
+        if let Err(reason) = admit(&item) {
+            report.refused.push(format!("{kind} '{name}': {reason:#}"));
+            continue;
+        }
+        match at {
+            Some(index) => existing[index] = item,
+            None => existing.push(item),
+        }
+        written.push(name);
     }
     report.imported += written.len();
     save(existing)?;
     Ok(written)
+}
+
+/// The catalogs a target is checked against once everything else arrived.
+struct Catalog<'a> {
+    apps: &'a [App],
+    servers: &'a [crate::model::Server],
+    credentials: &'a [crate::model::Credential],
+    paths: &'a [crate::model::Path],
+}
+
+/// What `app add` refuses: a name that is not one, a name a group already
+/// has, and a dotenv file or variable turnout could not write safely - the
+/// file is written inside the project, and a name with a slash would land
+/// outside it.
+fn admit_app(app: &App, groups: &[Group]) -> Result<()> {
+    validate_name(&app.name)?;
+    if groups.iter().any(|group| group.name == app.name) {
+        bail!("a group named '{}' exists here - app names must not clash with group names", app.name);
+    }
+    if let Some(env_var) = &app.gateway_env {
+        super::app::validate_env_name(env_var.clone())?;
+    }
+    if let Some(env_file) = &app.env_file {
+        super::app::validate_env_file(env_file.clone())?;
+    }
+    Ok(())
+}
+
+/// What `group add` refuses: a bad name, an app's name, and members that are
+/// not apps of this catalog.
+fn admit_group(group: &Group, apps: &[App]) -> Result<()> {
+    validate_name(&group.name)?;
+    if apps.iter().any(|app| app.name == group.name) {
+        bail!("an app named '{}' exists here - group names must not clash with app names", group.name);
+    }
+    if group.apps.is_empty() {
+        bail!("it has no apps");
+    }
+    if let Some(missing) = group.apps.iter().find(|member| !apps.iter().any(|app| &app.name == *member)) {
+        bail!("its member '{missing}' is not an app here");
+    }
+    Ok(())
+}
+
+/// What `target add` refuses: a bad name, and any of the four parts missing.
+fn admit_target(target: &Target, around: &Catalog) -> Result<()> {
+    validate_name(&target.name)?;
+    let parts = [
+        ("app", &target.app, around.apps.iter().any(|a| a.name == target.app)),
+        ("server", &target.server, around.servers.iter().any(|s| s.name == target.server)),
+        ("credential", &target.credential, around.credentials.iter().any(|c| c.name == target.credential)),
+        ("path", &target.path, around.paths.iter().any(|p| p.name == target.path)),
+    ];
+    if let Some((kind, name, _)) = parts.iter().find(|(_, _, present)| !present) {
+        bail!("it names {kind} '{name}', which is neither here nor imported");
+    }
+    Ok(())
 }
 
 /// Read every stored secret named by the credential catalog.
@@ -325,7 +434,7 @@ fn write_private(path: &Path, contents: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{App, Server};
+    use crate::model::Server;
 
     fn app(name: &str, path: &str) -> App {
         App {
@@ -366,6 +475,7 @@ mod tests {
             "app",
             &mut report,
             |_| Ok(()),
+            |_| Ok(()),
         )
         .unwrap();
         assert_eq!(existing.len(), 2);
@@ -387,6 +497,7 @@ mod tests {
             "app",
             &mut report,
             |_| Ok(()),
+            |_| Ok(()),
         )
         .unwrap();
         assert_eq!(existing.len(), 1);
@@ -406,6 +517,7 @@ mod tests {
             true,
             "app",
             &mut report,
+            |_| Ok(()),
             |_| Ok(()),
         )
         .unwrap();
@@ -435,6 +547,7 @@ mod tests {
             "credential",
             &mut report,
             |_| Ok(()),
+            |_| Ok(()),
         )
         .unwrap();
         assert_eq!(existing.len(), 2, "a different name is a different login");
@@ -455,9 +568,98 @@ mod tests {
             false,
             "server",
             &mut report,
+            |_| Ok(()),
             |_| panic!("nothing to save"),
         )
         .unwrap();
         assert_eq!(report.imported, 0);
+    }
+
+    /// An entry `add` would refuse is refused here too, named with the
+    /// reason, and the rest of the import still lands.
+    #[test]
+    fn an_entry_add_would_refuse_is_refused_and_named() {
+        let mut existing = Vec::new();
+        let mut report = Report::default();
+        let written = merge(
+            &mut existing,
+            vec![app("Not Valid", "/a"), app("api", "/api")],
+            |a| a.name.clone(),
+            true,
+            "app",
+            &mut report,
+            |a| admit_app(a, &[]),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(written, vec!["api".to_string()]);
+        assert_eq!(existing.len(), 1);
+        assert_eq!(report.refused.len(), 1, "{:?}", report.refused);
+        assert!(report.refused[0].starts_with("app 'Not Valid': invalid name"), "{:?}", report.refused);
+    }
+
+    /// App and group names share one namespace: `use NAME` takes either.
+    #[test]
+    fn an_app_and_a_group_cannot_share_a_name() {
+        let group = Group {
+            name: "web".into(),
+            apps: vec!["api".into()],
+        };
+        let refused = admit_app(&app("web", "/web"), std::slice::from_ref(&group)).unwrap_err().to_string();
+        assert!(refused.contains("a group named 'web' exists here"), "{refused}");
+        let refused = admit_group(&group, &[app("web", "/web"), app("api", "/api")]).unwrap_err().to_string();
+        assert!(refused.contains("an app named 'web' exists here"), "{refused}");
+        assert!(admit_group(&group, &[app("api", "/api")]).is_ok());
+        let refused = admit_group(&group, &[]).unwrap_err().to_string();
+        assert!(refused.contains("member 'api' is not an app here"), "{refused}");
+    }
+
+    /// The dotenv file is written inside the project; a name with a slash in
+    /// it would put turnout's line somewhere else on the disk.
+    #[test]
+    fn an_arriving_dotenv_file_stays_inside_the_project() {
+        let mut outside = app("web", "/web");
+        outside.env_file = Some("../../.bashrc".into());
+        assert!(admit_app(&outside, &[]).is_err());
+    }
+
+    /// A target is refused when a part it names is neither here nor arrived.
+    #[test]
+    fn a_target_needs_all_four_parts() {
+        let target = Target {
+            name: "web-prod".into(),
+            app: "web".into(),
+            server: "prod".into(),
+            credential: "deploy".into(),
+            path: "wwwroot".into(),
+            url: None,
+            health: None,
+            keep_backups: None,
+        };
+        let credential = crate::model::Credential {
+            name: "deploy".into(),
+            user: "deploy".into(),
+            auth: crate::model::Auth::Password,
+            key: None,
+        };
+        let path = crate::model::Path {
+            name: "wwwroot".into(),
+            dir: "/var/www/web".into(),
+            restart: None,
+        };
+        let apps = [app("web", "/web")];
+        let servers = [server("prod")];
+        let credentials = [credential];
+        let mut around = Catalog {
+            apps: &apps,
+            servers: &servers,
+            credentials: &credentials,
+            paths: &[],
+        };
+        let refused = admit_target(&target, &around).unwrap_err().to_string();
+        assert!(refused.contains("path 'wwwroot'"), "{refused}");
+        let paths = [path];
+        around.paths = &paths;
+        assert!(admit_target(&target, &around).is_ok());
     }
 }

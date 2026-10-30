@@ -32,6 +32,23 @@ On a fresh machine that distinction never comes up - everything is new, and the 
 
 Every entity is matched by its own name - apps, servers, credentials, paths, targets and groups alike.
 
+## What is refused
+
+An import is the one way into the catalog that does not go through `add`, so everything that arrives is held to what `add` would hold it to - `--force` included. An entry that fails is left out, named with the reason, and the rest of the file still lands:
+
+- a name that is not one (lowercase letters, digits and dashes);
+- an app whose name a group here already has, or a group whose name an app has - [`use`](/turnout/reference/use/) takes either, and could only ever reach one of them;
+- an app whose dotenv file is not a bare file name in the project, or whose variable is not a variable name;
+- a server whose URL is not `http://` or `https://`;
+- a path whose directory is not an absolute directory on a server;
+- a group with a member that is not an app here, and a target naming an app, server, credential or path that is neither here nor imported - including one refused above.
+
+```text
+Imported 6 item(s).
+Refused 1 item(s) this catalog cannot hold:
+  app 'web': a group named 'web' exists here - app names must not clash with group names
+```
+
 ## Ports
 
 An import is the one way into the catalog that does not go through [`app add`](/turnout/reference/app/), so it holds an arriving app to the same rule: every app has a [gateway port](/turnout/reference/app/#ports-turnout-hands-out) of its own.

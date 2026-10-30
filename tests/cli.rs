@@ -3026,6 +3026,39 @@ fn import_keeps_local_entries_unless_forced() {
         .stdout(predicate::str::contains("localhost:7100"));
 }
 
+/// The import holds what arrives to what `add` holds it to. It used to let an
+/// app `web` in beside a group `web` here, after which `use web prod` bound
+/// the app alone without a word - and a name `add` refuses walked in too.
+#[test]
+fn an_import_refuses_what_add_would_refuse() {
+    let (source, project) = workspace();
+    for name in ["web", "api"] {
+        turnout(source.path()).args(["app", "add", name, "--path"]).arg(&project).assert().success();
+    }
+    let file = source.path().join("export.json");
+    turnout(source.path()).args(["export", "--output"]).arg(&file).assert().success();
+    // A name no `app add` takes, as a hand-edited file carries it.
+    let text = std::fs::read_to_string(&file).unwrap().replace("\"name\": \"api\"", "\"name\": \"Not Valid\"");
+    std::fs::write(&file, text).unwrap();
+
+    let (target, other) = workspace();
+    turnout(target.path()).args(["app", "add", "docs", "--path"]).arg(&other).assert().success();
+    turnout(target.path()).args(["group", "add", "web", "--app", "docs"]).assert().success();
+    turnout(target.path())
+        .args(["import", "--force"])
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Refused 2 item(s)")
+                .and(predicate::str::contains("app 'web': a group named 'web' exists here"))
+                .and(predicate::str::contains("app 'Not Valid': invalid name")),
+        );
+    let apps = read_apps(target.path());
+    let names: Vec<&str> = apps.iter().map(|app| app["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["docs"], "nothing refused may land in the catalog");
+}
+
 /// A secret follows its credential. The import used to write every secret in
 /// the file, so a kept local `deploy` entry ended up with the other machine's
 /// password and no copy of its own anywhere.
