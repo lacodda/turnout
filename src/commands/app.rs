@@ -389,11 +389,17 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
             touched.push(group.name.clone());
         }
     }
+    // A group emptied by this removal disappears with it - and from the state
+    // too, as `group remove` takes it: left as the last switch, it made the
+    // next `use -` fail with "no app or group named" a name nobody removed.
+    let emptied: Vec<String> = groups.iter().filter(|g| g.apps.is_empty()).map(|g| g.name.clone()).collect();
     if !touched.is_empty() {
-        // A group emptied by this removal disappears with it.
         groups.retain(|g| !g.apps.is_empty());
         store::save_groups(&groups)?;
         println!("Removed '{name}' from groups: {}.", touched.join(", "));
+    }
+    if !emptied.is_empty() {
+        println!("Removed the groups it emptied: {}.", emptied.join(", "));
     }
     // A target names exactly one app; without it there is nothing left to
     // deploy, so it goes too.
@@ -407,6 +413,9 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     // Nothing points from it any more, and `use -` has nothing to go back to.
     let mut state = store::load_state()?;
     state.forget_app(name);
+    for group in &emptied {
+        state.forget_name(group);
+    }
     store::save_state(&state)?;
     crate::journal::record("app.remove", Some(name), None, None);
     println!("App '{name}' removed. The project on disk is untouched.");

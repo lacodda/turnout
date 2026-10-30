@@ -2712,6 +2712,30 @@ fn removing_an_app_updates_groups() {
         .stdout(predicate::str::contains("web").not());
 }
 
+/// A group emptied by an app's removal goes, and the state forgets it as
+/// `group remove` makes it: left as the last switch, it made the next `use -`
+/// fail with "no app or group named 'solo'".
+#[test]
+fn a_group_emptied_by_an_app_removal_is_no_last_switch() {
+    let (dir, project) = workspace();
+    add_staging(dir.path());
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path()).args(["group", "add", "solo", "--app", "web"]).assert().success();
+    turnout(dir.path()).args(["use", "solo", "staging", "--no-check"]).assert().success();
+    turnout(dir.path())
+        .args(["app", "remove", "web", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed the groups it emptied: solo"));
+    let state = std::fs::read_to_string(dir.path().join("state.json")).unwrap();
+    assert!(!state.contains("solo"), "{state}");
+    turnout(dir.path())
+        .args(["use", "-"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing to go back to"));
+}
+
 /// The completion helper feeds live names to the shell; `use` accepts apps and
 /// groups together, so `targets` must carry both.
 #[test]

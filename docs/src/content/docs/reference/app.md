@@ -188,3 +188,5 @@ turnout app remove myapp [--yes]
 ```
 
 Removes the app from the catalog only - the project on disk is never touched.
+
+The app leaves every group it was in, and a group it was the last member of goes with it; its targets go too. Neither is left behind as the last switch, so a following `turnout use -` says there is nothing to go back to rather than naming something that is gone.
