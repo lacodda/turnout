@@ -756,9 +756,12 @@ fn roll_back(
 ) -> Result<String> {
     let path = &target.path;
     let step = Step::start(format!("Rolling back to {backup} ..."));
-    remote::restore_backup(session, dialect, &path.dir, backup)?;
+    let left = remote::restore_backup(session, dialect, &path.dir, backup)?;
     *reached = Reached::RolledBack;
     step.done(format!("Rolled back {} to {backup}", path.dir));
+    if !left.is_empty() {
+        progress::warn(&remote::not_removed_note(&path.dir, &left));
+    }
     if let Some(restart) = &path.restart {
         run_restart(session, dialect, path, restart, connect)?;
     }

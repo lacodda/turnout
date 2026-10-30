@@ -151,6 +151,33 @@ impl Dialect {
         }
     }
 
+    /// Remove what can be removed inside a directory, then print the names of
+    /// what is still there, one per line. Never fails: what could not go is
+    /// the answer, not an error.
+    ///
+    /// For a restore, which must go on to unpack whatever the clearing
+    /// managed. Up to v0.26 it ran [`Dialect::clear_dir`] and unpacked only
+    /// if that succeeded: on POSIX one file `rm` could not delete stopped the
+    /// chain after everything else was gone, and the directory was left empty
+    /// with nothing restored. Listing what is left, rather than repeating the
+    /// errors, says the same in both shells.
+    pub fn clear_dir_listing_the_rest(&self, dir: &str) -> String {
+        let quoted = self.quote(dir);
+        match self {
+            Dialect::Posix => format!(
+                "sh -c {}",
+                self.quote(&format!(
+                    "[ -d {quoted} ] || exit 0; find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} + 2>/dev/null; ls -A {quoted}; exit 0"
+                ))
+            ),
+            // `dir /b /a` lists hidden entries too; on an empty directory it
+            // says "File Not Found" on stderr, which is the empty answer.
+            Dialect::Windows => {
+                format!("(del /f /q /s {quoted}\\* >nul 2>&1 & for /d %i in ({quoted}\\*) do @rd /s /q \"%i\" >nul 2>&1 & dir /b /a {quoted} 2>nul & (call ))")
+            }
+        }
+    }
+
     /// Delete a single file, saying nothing if it was not there.
     pub fn remove_file(&self, path: &str) -> String {
         let quoted = self.quote(path);

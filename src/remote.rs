@@ -468,19 +468,35 @@ pub fn run_backup(session: &Session, dialect: Dialect, deploy_path: &str) -> Res
 
 /// Put a backup back: empty the deploy directory, then unpack the archive
 /// into it. The archive is checked for first, so a wrong name empties nothing.
-pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<()> {
+///
+/// Returns the entries the emptying could not remove - a file another
+/// process holds, a directory this account may not write to. The archive is
+/// unpacked regardless: with one stuck file, refusing to unpack would leave
+/// the stand with nothing at all instead of the backup plus that file.
+pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<Vec<String>> {
     let backups = backups_dir(deploy_dir);
     check_quotable(dialect, &[deploy_dir, &backups, name])?;
     let archive = join_remote(&backups, name);
     let dir = deploy_dir.trim_end_matches(['/', '\\']);
-    exec(
+    let left = exec(
         session,
         &dialect.and_then(
             &dialect.file_exists(&archive),
-            &dialect.and_then(&dialect.clear_dir(dir), &dialect.untar(&archive, dir)),
+            &dialect.and_then(&dialect.clear_dir_listing_the_rest(dir), &dialect.untar(&archive, dir)),
         ),
+    )?;
+    Ok(left.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+}
+
+/// What to say about the entries a restore could not remove: they stay in
+/// the directory beside the backup's files.
+pub fn not_removed_note(dir: &str, left: &[String]) -> String {
+    let plural = if left.len() == 1 { "y" } else { "ies" };
+    format!(
+        "{} entr{plural} in {dir} could not be removed before the backup was unpacked, and stay beside its files: {}",
+        left.len(),
+        left.join(", ")
     )
-    .map(|_| ())
 }
 
 /// Delete one backup archive.
@@ -781,6 +797,61 @@ mod tests {
 
         super::remove_backup(&session, dialect, &dir, &second).unwrap();
         assert!(!backups.join(&second).exists());
+    }
+
+    /// One entry the clearing cannot remove must not cost the restore. Up to
+    /// v0.26 the POSIX chain stopped there - after emptying everything else -
+    /// and unpacked nothing; the Windows one went on and said nothing about
+    /// what was left. Now both unpack, and both name what stayed.
+    ///
+    /// What cannot be removed: on Windows a file this process holds open
+    /// without sharing, on POSIX a directory without write permission.
+    #[test]
+    fn a_restore_unpacks_past_what_it_could_not_remove() {
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            // root deletes through any permission, so nothing can be stuck.
+            return;
+        }
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dialect = crate::shell::read_probe(&session.exec(crate::shell::PROBE).unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let site = root.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "v1").unwrap();
+        let dir = site.display().to_string();
+        let backup = super::run_backup(&session, dialect, &dir).unwrap();
+
+        std::fs::write(site.join("index.html"), "v2").unwrap();
+        let stuck = site.join("stuck");
+        std::fs::create_dir_all(&stuck).unwrap();
+        std::fs::write(stuck.join("held.txt"), "x").unwrap();
+        #[cfg(windows)]
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(0).open(stuck.join("held.txt")).unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+
+        let left = super::restore_backup(&session, dialect, &dir, &backup);
+
+        #[cfg(windows)]
+        drop(held);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&stuck, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let left = left.expect("the restore goes on past what it could not remove");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1", "the backup was unpacked");
+        assert_eq!(left, ["stuck"], "and what stayed is named");
+        let note = super::not_removed_note(&dir, &left);
+        assert!(note.contains("1 entry") && note.contains("stuck"), "{note}");
     }
 
     #[test]

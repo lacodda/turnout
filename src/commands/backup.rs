@@ -5,7 +5,7 @@ use crate::cli::Format;
 use crate::progress::Step;
 use crate::shell::Dialect;
 use crate::ssh::Session;
-use crate::{output, remote};
+use crate::{output, progress, remote};
 
 /// The newest backup in a directory listing; anything that is not one of our
 /// archives is the user's and is never a candidate.
@@ -159,8 +159,11 @@ pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: 
         }
     };
     let step = Step::start(format!("Restoring {name} into {deploy_dir} ..."));
-    remote::restore_backup(&session, dialect, &deploy_dir, &name)?;
+    let left = remote::restore_backup(&session, dialect, &deploy_dir, &name)?;
     step.done(format!("Restored {name} into {deploy_dir}"));
+    if !left.is_empty() {
+        progress::warn(&remote::not_removed_note(&deploy_dir, &left));
+    }
     crate::journal::record("restore", Some(&target.app.name), Some(&target.server.name), Some(&name));
     if let Some(restart) = &target.path.restart {
         // The same post-write command a deploy runs, run the same way: in the

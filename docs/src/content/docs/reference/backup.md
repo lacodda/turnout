@@ -94,6 +94,8 @@ turnout restore myapp-prod --from 20260806-120000.tar.gz
 
 Restore empties the target directory, unpacks the chosen archive into it and runs the path's post-write command (the same one `deploy` uses) if there is one - so the service restarts on what was put back. The command runs the way a deploy runs it: in the deploy directory, and [detached from the connection](/turnout/reference/deploy/#a-restart-that-outlives-the-connection) on a Linux or macOS server. Before v0.24 a restore ran it in the home directory.
 
+What the emptying cannot remove - a file another process holds open, a directory the account may not write to - does not stop the restore: the archive is unpacked anyway, and a warning names the entries that stayed beside its files.
+
 A deploy to a target with a [health check](/turnout/reference/target/#health-check) does this by itself when the check fails - see [Health check and rollback](/turnout/reference/deploy/#health-check-and-rollback).
 
 `restore` puts back the **whole directory** as the backup caught it - uploads and data files in it included. To go back to an earlier **build** and leave the data as it is, use [`turnout rollback`](/turnout/reference/rollback/), which needs no backup on the server.
