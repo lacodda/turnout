@@ -23,6 +23,6 @@ Landing in the deploy directory needs the server's shell, which the catalog know
 
 ```bash
 turnout ssh web-prod       # the target: user@host, in /srv/web
-turnout ssh pi             # the server, as its own credential, in ~
+turnout ssh staging        # the server, as its own credential, in ~
 turnout ssh                # from inside a project: its bound server
 ```

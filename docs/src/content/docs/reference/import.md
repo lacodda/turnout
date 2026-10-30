@@ -13,7 +13,7 @@ turnout import turnout-export.json
 Imported 4 item(s).
 Skipped 2 item(s) that already exist:
   app 'web'
-  server 'pi'
+  server 'staging'
   Re-run with --force to overwrite them.
 Restored 2 secret(s) to the OS keyring.
 ```
@@ -103,4 +103,4 @@ An export written by any release since v0.11.0 imports into this one with nothin
 
 ## Files from turnout 0.8
 
-Exports moved to format 2 in v0.9.0, when logins and remote directories became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/). A file from 0.8 or earlier holds servers with a `user@host` inside them and no separate entities to put that in, so it is refused rather than imported into a catalog of servers nobody can log into. It is still plain JSON and still readable - use it as your reference while re-entering, as described in [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).
+Exports moved to format 2 in v0.9.0, when logins and remote directories became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/). A file from 0.8 or earlier holds servers with a `user@host` inside them and no separate entities to put that in, so it is refused rather than imported into a catalog of servers nobody can log into. It is still plain JSON and still readable - use it as your reference while re-entering, as described in [Upgrading](/turnout/guides/upgrading/#from-08-or-older).

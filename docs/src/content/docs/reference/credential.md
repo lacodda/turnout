@@ -31,7 +31,7 @@ Passing `--key` is enough to mean key authentication; `--auth` is only needed to
 ```bash
 turnout credential add                                     # wizard
 turnout credential add prod-deploy --user deploy           # password auth
-turnout credential add pi --user pi --key ~/.ssh/id_ed25519
+turnout credential add staging-key --user deploy --key ~/.ssh/id_ed25519
 turnout credential add work --user deploy --auth agent     # the SSH agent signs
 ```
 
@@ -55,9 +55,9 @@ Omit the name on a terminal and turnout offers a [picker](/turnout/concepts/pick
 ```bash
 turnout credential edit prod-deploy                        # interactive wizard
 turnout credential edit prod-deploy --user deployer
-turnout credential edit pi --key ~/.ssh/id_ed25519_new
-turnout credential edit pi --auth password --key ""        # back to a password
-turnout credential edit pi --auth agent                    # let the agent sign
+turnout credential edit staging-key --key ~/.ssh/id_ed25519_new
+turnout credential edit staging-key --auth password --key ""   # back to a password
+turnout credential edit staging-key --auth agent               # let the agent sign
 ```
 
 | Flag | Short | Description |

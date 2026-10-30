@@ -59,7 +59,7 @@ Unlike schema 1 to 2, this step runs automatically rather than refusing: schema 
 
 Sometimes the new shape needs information the old one does not contain, and inventing it would be worse than stopping. That is what happened in **v0.9.0**: a server used to carry one `user@host` and an inline directory per app, and those became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/) - named entities. turnout has no way to pick names you will still recognize six months from now.
 
-So a schema-1 directory is refused rather than converted. The refusal names what changed, sets a readable copy of the old catalogs aside in `settings-backup-v1`, and lists the commands to re-enter them with. Your original files are untouched, so installing v0.8 again puts you exactly back. The walkthrough is in [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).
+So a schema-1 directory is refused rather than converted. The refusal names what changed, sets a readable copy of the old catalogs aside in `settings-backup-v1`, and lists the commands to re-enter them with. Your original files are untouched, so installing v0.8 again puts you exactly back. The walkthrough is in [Upgrading](/turnout/guides/upgrading/#from-08-or-older).
 
 ## Your old files are kept
 

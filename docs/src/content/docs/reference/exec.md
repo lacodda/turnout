@@ -20,7 +20,7 @@ Everything after `--` is the command, joined with spaces and handed to the serve
 
 ```bash
 turnout exec web-prod -- ls -la                # in /srv/web
-turnout exec pi -- df -h                       # on the server, in ~
+turnout exec staging -- df -h                  # on the server, in ~
 turnout exec web-prod -- docker compose ps
 turnout exec web-prod --dir /var/log -- tail -n 50 web.log
 ```

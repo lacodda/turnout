@@ -49,7 +49,7 @@ fn reset(assume_yes: bool) -> Result<()> {
     println!("  - secrets already in the OS keyring are untouched, but each one has to be");
     println!("    attached to the credential that now owns it (`turnout pass set NAME`).");
     println!();
-    println!("The walkthrough is at https://lacodda.github.io/turnout/guides/upgrading-to-0-9/");
+    println!("The walkthrough is at https://lacodda.github.io/turnout/guides/upgrading/#from-08-or-older");
     println!();
     let proceed = assume_yes || Confirm::new().with_prompt("Start a fresh catalog?").default(false).interact()?;
     if !proceed {

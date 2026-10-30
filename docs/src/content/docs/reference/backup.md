@@ -54,7 +54,7 @@ A backup is the whole deploy directory, and a month of daily `deploy --backup` f
 The number belongs to the [target](/turnout/reference/target/#backups): a backup's size and the disk it fills are the stand's, so a Pi and a VPS deploying the same path keep different counts.
 
 ```bash
-turnout target edit myapp-pi --keep-backups 3
+turnout target edit myapp-staging --keep-backups 3
 ```
 
 Only turnout's own archives - the `YYYYMMDD-HHMMSS.tar.gz` and `YYYYMMDD-HHMMSS_NN.tar.gz` names - are counted and removed; anything else in the directory is yours and stays. A pruned name is checked against a second listing, so a removal the server did not make is never reported as made. Without a target behind the run (an app deployed through its binding, or a run with `--server` or `--path`), the stand keeps 5.

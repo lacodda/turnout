@@ -157,7 +157,7 @@ fn refuse_schema_1(dir: &Path) -> Result<()> {
            1. turnout setup\n  \
            2. turnout server add / credential add / path add, reading the old values from the copy\n\
          \n\
-         See https://lacodda.github.io/turnout/guides/upgrading-to-0-9/ for the walkthrough.",
+         See https://lacodda.github.io/turnout/guides/upgrading/#from-08-or-older for the walkthrough.",
         dir.display()
     )
 }

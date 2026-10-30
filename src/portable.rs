@@ -143,7 +143,7 @@ impl Snapshot {
                  remote directories into credentials and paths.\n\
                  There is no automatic conversion - the new entities need names. Open the file and re-enter it with \
                  `turnout server add`, `turnout credential add` and `turnout path add`.\n\
-                 See https://lacodda.github.io/turnout/guides/upgrading-to-0-9/",
+                 See https://lacodda.github.io/turnout/guides/upgrading/#from-08-or-older",
                 self.version
             );
         }

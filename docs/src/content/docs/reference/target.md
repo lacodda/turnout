@@ -113,7 +113,7 @@ A run that overrides the server or the path (`deploy myapp-prod --path other`) g
 ## Backups
 
 ```bash
-turnout target edit myapp-pi --keep-backups 3
+turnout target edit myapp-staging --keep-backups 3
 ```
 
 Every backup turnout leaves on a stand - `backup`, `deploy --backup`, a checked deploy rolled back to its backup - prunes the older ones down to this number afterwards (5 when the target says nothing). It lives on the target and not on the path because the disk is the stand's: the same path deployed to a Pi and to a VPS wants a different count. `0` is refused - it would remove each backup the moment it is taken; [`turnout backup prune TARGET --keep 0`](/turnout/reference/backup/#backup-prune) removes them all once.
