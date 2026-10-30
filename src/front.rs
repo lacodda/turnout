@@ -406,17 +406,95 @@ pub fn open_in_browser(url: &str) -> Result<()> {
             .with_context(|| format!("cannot write {}", std::path::Path::new(&sink).display()))?;
         return writeln!(file, "{url}").context("cannot record the opened page");
     }
-    #[cfg(windows)]
-    let status = std::process::Command::new("cmd").args(["/C", "start", "", url]).status();
-    #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("open").arg(url).status();
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let status = std::process::Command::new("xdg-open").arg(url).status();
-    let status = status.with_context(|| format!("cannot open {url}"))?;
-    if !status.success() {
-        bail!("the browser did not open {url} ({status})");
+    match opener(url)? {
+        Opener::Shell { file } => shell_open(&file).with_context(|| format!("cannot open {url}")),
+        Opener::Program { program, args } => {
+            let status = std::process::Command::new(program)
+                .args(&args)
+                .status()
+                .with_context(|| format!("cannot open {url}"))?;
+            if !status.success() {
+                bail!("the browser did not open {url} ({status})");
+            }
+            Ok(())
+        }
+    }
+}
+
+/// What opening a page runs, built apart from running it so that it can be
+/// checked.
+#[derive(Debug, PartialEq, Eq)]
+enum Opener {
+    /// `ShellExecuteW` with the URL as the file to open (Windows).
+    ///
+    /// Not `cmd /C start "" URL`, which is what opened pages until v0.26:
+    /// cmd still acts on `&`, `|`, `^` and `%VAR%` in its command line, so a
+    /// target at `https://stand.example.com/app/?tenant=a&lang=en` opened a
+    /// page cut off at the `&`, and cmd ran `lang=en` as a command of its own.
+    /// Nor `rundll32 url.dll,FileProtocolHandler URL`, which takes the raw
+    /// rest of its command line, quotes and all. The shell is handed the URL
+    /// as one string, NUL-terminated UTF-16, and passes it to the handler
+    /// registered for its scheme; no command line is built on the way.
+    Shell { file: Vec<u16> },
+    /// A program with the URL as its one argument: argv reaches it as it is,
+    /// with no shell in between.
+    Program { program: &'static str, args: Vec<String> },
+}
+
+fn opener(url: &str) -> Result<Opener> {
+    if cfg!(windows) {
+        if url.contains('\0') {
+            bail!("cannot open an address with a NUL character in it");
+        }
+        return Ok(Opener::Shell {
+            file: url.encode_utf16().chain(std::iter::once(0)).collect(),
+        });
+    }
+    let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    Ok(Opener::Program {
+        program,
+        args: vec![url.to_string()],
+    })
+}
+
+/// Open `file` - a NUL-terminated wide string - the way a double click
+/// would: with whatever handles its scheme.
+#[cfg(windows)]
+fn shell_open(file: &[u16]) -> Result<()> {
+    use windows_sys::Win32::System::Com::{COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoUninitialize};
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb: Vec<u16> = "open\0".encode_utf16().collect();
+    // SAFETY: both strings are NUL-terminated and outlive the call; every
+    // other pointer is null, which ShellExecuteW takes as "none". COM is
+    // initialised for the call, as ShellExecuteW asks - a handler may be a
+    // shell extension - and uninitialised only when this call initialised it.
+    let result = unsafe {
+        let initialised = CoInitializeEx(std::ptr::null(), (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32);
+        let result = ShellExecuteW(
+            std::ptr::null_mut(),
+            verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        );
+        if initialised >= 0 {
+            CoUninitialize();
+        }
+        result as isize
+    };
+    // Anything above 32 is success; below is an error code from the shell.
+    if result <= 32 {
+        bail!("the shell did not open it (error {result})");
     }
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn shell_open(_file: &[u16]) -> Result<()> {
+    unreachable!("only Windows opens a page through the shell")
 }
 
 #[cfg(test)]
@@ -597,6 +675,29 @@ mod tests {
     #[test]
     fn the_page_marks_code_and_escapes_markup() {
         assert_eq!(html_escape("run `turnout dev x` <now>"), "run <code>turnout dev x</code> &lt;now&gt;");
+    }
+
+    /// A page is opened with its address whole: the characters a shell acts
+    /// on - `&`, `|`, `^`, `%VAR%`, quotes - reach the browser as they are,
+    /// because no shell is in the way.
+    #[test]
+    fn a_page_is_opened_with_its_address_intact() {
+        let url = r#"https://stand.example.com/app/?tenant=a&lang=en|x^y%PATH%"z" w"#;
+        let opened = opener(url).unwrap();
+        if cfg!(windows) {
+            let expected: Vec<u16> = url.encode_utf16().chain([0]).collect();
+            assert_eq!(opened, Opener::Shell { file: expected });
+            assert!(opener("http://a.localhost/\0x").is_err(), "a NUL would cut the address short");
+        } else {
+            let program = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+            assert_eq!(
+                opened,
+                Opener::Program {
+                    program,
+                    args: vec![url.to_string()]
+                }
+            );
+        }
     }
 
     #[test]
