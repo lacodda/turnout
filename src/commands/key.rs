@@ -57,7 +57,8 @@ pub fn setup(server_name: Option<String>, credential_name: Option<String>, key_p
     check_first_sign_in(&credential)?;
 
     // 2. The key itself, still before the network: a key that cannot be
-    //    produced is not worth a round trip.
+    //    produced is not worth a round trip. A new one is made in memory
+    //    only - it goes to disk once the server has let us in (step 5).
     let key = obtain_key(&credential, key_path)?;
 
     // 3. Sign in the way that still works. This is the last time the password
@@ -75,10 +76,20 @@ pub fn setup(server_name: Option<String>, credential_name: Option<String>, key_p
         progress::info("This account is an administrator: OpenSSH reads only C:\\ProgramData\\ssh\\administrators_authorized_keys for it.");
     }
 
-    // 5. Install, unless it is already there.
+    // 5. A generated key is written now, and not before: step 1 only knows a
+    //    password is stored, not that it works. Up to v0.26 the pair was
+    //    written in step 2, so a wrong password, a server that was down or an
+    //    account sshd does not let in left a key on disk and the credential
+    //    unswitched - and the next run refused to start because the key was
+    //    in the way.
+    if let Some(private) = &key.generated {
+        write_generated(&key.path, private, &key.public)?;
+    }
+
+    // 6. Install, unless it is already there.
     install(&session, dialect, &placed, &key.public)?;
 
-    // 6. Prove it. A fresh session, key only.
+    // 7. Prove it. A fresh session, key only.
     let step = Step::start("Checking that the key signs in");
     match Session::open_with_key(&server.ssh_host(), server.port, &credential.user, &key.path, key.passphrase.as_deref()) {
         Ok(_) => step.done("The key signs in"),
@@ -91,7 +102,7 @@ pub fn setup(server_name: Option<String>, credential_name: Option<String>, key_p
         }
     }
 
-    // 7. Only now is the credential moved over.
+    // 8. Only now is the credential moved over.
     credential.auth = Auth::Key;
     credential.key = Some(key.path.clone());
     let mut credentials = store::load_credentials()?;
@@ -119,9 +130,11 @@ struct KeyInHand {
     path: String,
     public: String,
     passphrase: Option<String>,
+    /// The private half of a key generated for this setup, not on disk yet.
+    generated: Option<String>,
 }
 
-/// Find the key to install, generating one when there is none.
+/// Find the key to install, generating one in memory when there is none.
 ///
 /// A credential that already names a key file uses it - re-running the command
 /// to authorize an existing key on one more server is a normal thing to want,
@@ -141,7 +154,12 @@ fn obtain_key(credential: &Credential, key_path: Option<String>) -> Result<KeyIn
         let passphrase = secrets::get(&credential.name).ok().filter(|_| credential.auth == Auth::Key);
         let public = keysetup::public_line(&path, passphrase.as_deref(), &comment())?;
         progress::info(&format!("Using the existing key {path}"));
-        return Ok(KeyInHand { path, public, passphrase });
+        return Ok(KeyInHand {
+            path,
+            public,
+            passphrase,
+            generated: None,
+        });
     }
 
     let default = keysetup::default_key_path(&credential.name)?;
@@ -155,18 +173,30 @@ fn obtain_key(credential: &Credential, key_path: Option<String>) -> Result<KeyIn
         default.display().to_string()
     };
 
+    // Refused here, before the network, rather than when the key is written:
+    // a key already at the path is never overwritten, and finding that out
+    // after signing in would cost a round trip for nothing.
+    if std::path::Path::new(&path).exists() {
+        bail!("{path} already exists - remove it or point the credential at it instead");
+    }
     let generated = keysetup::generate(&comment())?;
-    keysetup::write_private_key(std::path::Path::new(&path), &generated.private)?;
-    // The `.pub` sibling is what every other tool reads; writing it means a key
-    // turnout generated is an ordinary key, not a turnout-only one.
-    let pub_path = format!("{path}.pub");
-    std::fs::write(&pub_path, format!("{}\n", generated.public)).with_context(|| format!("cannot write {pub_path}"))?;
-    progress::info(&format!("Generated an ed25519 key at {path}"));
     Ok(KeyInHand {
         path,
         public: generated.public,
         passphrase: None,
+        generated: Some(generated.private),
     })
+}
+
+/// Write a generated key pair to disk.
+fn write_generated(path: &str, private: &str, public: &str) -> Result<()> {
+    keysetup::write_private_key(std::path::Path::new(path), private)?;
+    // The `.pub` sibling is what every other tool reads; writing it means a key
+    // turnout generated is an ordinary key, not a turnout-only one.
+    let pub_path = format!("{path}.pub");
+    std::fs::write(&pub_path, format!("{public}\n")).with_context(|| format!("cannot write {pub_path}"))?;
+    progress::info(&format!("Generated an ed25519 key at {path}"));
+    Ok(())
 }
 
 /// The comment written into the public key: who made it, on which machine.

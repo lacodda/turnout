@@ -34,9 +34,9 @@ The server name can be omitted for a [picker](/turnout/concepts/pickers/); the c
 
 ### What it does, in order
 
-1. **Gets a key.** With no `--key` and no key on the credential, it generates an **ed25519** pair at `~/.ssh/id_ed25519_<credential>` (you are asked, and can change the path), writing the `.pub` sibling too - a key turnout makes is an ordinary key that plain `ssh` can use. A credential that already names a key file reuses it, which is how you authorize one key on a second server.
-2. **Signs in with the password.** This is the last time it is needed - which is the point.
-3. **Finds the right file.** Asks the server for the account's home directory and which shell answers, then writes to `~/.ssh/authorized_keys` - or, for a Windows administrator, somewhere else entirely (see below).
+1. **Gets a key.** With no `--key` and no key on the credential, it generates an **ed25519** pair for `~/.ssh/id_ed25519_<credential>` (you are asked, and can change the path) - in memory for now. A credential that already names a key file reuses it, which is how you authorize one key on a second server.
+2. **Signs in with the password.** This is the last time it is needed - which is the point. A wrong password, a server that does not answer or an account sshd does not let in stops the setup here, with nothing written on either machine.
+3. **Finds the right file.** Asks the server for the account's home directory and which shell answers, then writes to `~/.ssh/authorized_keys` - or, for a Windows administrator, somewhere else entirely (see below). A generated key is written to disk now, with its `.pub` sibling - a key turnout makes is an ordinary key that plain `ssh` can use.
 4. **Installs the key**, unless it is already authorized, and sets the permissions sshd insists on.
 5. **Proves it works** by opening a second, separate connection that offers *only* the key.
 6. **Switches the credential** to `auth = key` - and only if step 5 passed.

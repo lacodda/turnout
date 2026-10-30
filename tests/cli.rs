@@ -3584,6 +3584,56 @@ fn key_setup_writes_no_key_when_it_cannot_sign_in() {
         "the public half was left behind: {}",
         would_write.display()
     );
+
+    // A password stored is not a password that works: a wrong one, a server
+    // that is down, an account sshd does not let in. Here the server does not
+    // answer at all, and the key must still not be written - up to v0.26 it
+    // was, before the first connection was tried.
+    let (dead, reservation) = reserved_port();
+    drop(reservation);
+    turnout(dir.path())
+        .args([
+            "server",
+            "add",
+            "down",
+            "--url",
+            &format!("http://127.0.0.1:{dead}"),
+            "--host",
+            &format!("127.0.0.1:{dead}"),
+        ])
+        .assert()
+        .success();
+    let credential = format!("turnout-test-unreachable-{}", std::process::id());
+    turnout(dir.path())
+        .args(["credential", "add", &credential, "--user", "deploy", "--auth", "password"])
+        .assert()
+        .success();
+    turnout_secrets(dir.path())
+        .args(["pass", "set", &credential])
+        .write_stdin("stored but useless\n")
+        .assert()
+        .success();
+    let would_write = home.home_dir().join(".ssh").join(format!("id_ed25519_{credential}"));
+    assert!(!would_write.exists(), "the test's own key path must start clean: {}", would_write.display());
+
+    let attempt = turnout_secrets(dir.path())
+        .args(["key", "setup", "down", "--credential", &credential])
+        .assert()
+        .failure();
+    // The key path is in the real home: a run that wrote it anyway must not
+    // leave it there, so it is taken away before the verdict.
+    let written = would_write.exists();
+    let mut public = would_write.clone().into_os_string();
+    public.push(".pub");
+    let public_written = std::path::Path::new(&public).exists();
+    let _ = std::fs::remove_file(&would_write);
+    let _ = std::fs::remove_file(&public);
+    attempt.stderr(predicate::str::contains("cannot sign in"));
+    assert!(
+        !written && !public_written,
+        "a key was written before the server let anyone in: {}",
+        would_write.display()
+    );
 }
 
 // --- background jobs (v0.20.0) ----------------------------------------------
