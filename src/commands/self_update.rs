@@ -190,8 +190,11 @@ impl Asset {
         })
     }
 
-    /// Pull the `turnout` executable out of the archive into a temporary file
-    /// next to where it will land - a rename across filesystems would fail.
+    /// Pull the `turnout` executable out of the archive into a file in the
+    /// system's temporary directory.
+    ///
+    /// Often another filesystem than the install's, where a rename fails:
+    /// [`install_binary`] falls back to a copy for exactly that case.
     fn extract_binary(&self, archive: &[u8]) -> Result<PathBuf> {
         let wanted = if cfg!(windows) { "turnout.exe" } else { "turnout" };
         let bytes = match self.kind {

@@ -17,8 +17,8 @@ Backups are timestamped `tar.gz` archives of the target directory, stored on the
 | Flag | Short | Description |
 | --- | --- | --- |
 | `--server` | `-s` | Server for this run only, overriding the target's |
-| `--credential` | `-C` | Credential for this run only, overriding the target's |
-| `--path` | `-p` | Named path to back up, overriding the target's |
+| `--credential` | `-C` | Credential for this run only, overriding the target's (the server's when there is no target) |
+| `--path` | `-p` | Named path to back up, overriding the target's (picked on a terminal when there is no target) |
 
 ## backup
 
@@ -69,8 +69,8 @@ turnout backup prune myapp-prod --keep 0    # remove them all
 | --- | --- | --- |
 | `--keep` | `-k` | How many of the newest to keep (default: the target's `--keep-backups`, else 5); `0` removes them all |
 | `--server` | `-s` | Server for this run only, overriding the target's |
-| `--credential` | `-C` | Credential for this run only, overriding the target's |
-| `--path` | `-p` | Named path whose backups to prune, overriding the target's |
+| `--credential` | `-C` | Credential for this run only, overriding the target's (the server's when there is no target) |
+| `--path` | `-p` | Named path whose backups to prune, overriding the target's (picked on a terminal when there is no target) |
 | `--json` | | Print `{"dir", "keep", "removed", "kept"}` instead - see [JSON output](/turnout/concepts/json-output/) |
 
 The same pruning, on demand: for backups piled up before v0.25, or to free a disk now. A target that happens to be called `prune` is still reachable as `turnout backup -- prune`.
@@ -86,8 +86,8 @@ turnout restore myapp-prod --from 20260806-120000.tar.gz
 | Flag | Short | Description |
 | --- | --- | --- |
 | `--server` | `-s` | Server for this run only, overriding the target's |
-| `--credential` | `-C` | Credential for this run only, overriding the target's |
-| `--path` | `-p` | Named path to restore into, overriding the target's |
+| `--credential` | `-C` | Credential for this run only, overriding the target's (the server's when there is no target) |
+| `--path` | `-p` | Named path to restore into, overriding the target's (picked on a terminal when there is no target) |
 | `--from` | `-f` | Backup archive name (defaults to the newest) |
 | `--list` | `-l` | List available backups, newest first, and exit |
 | `--json` | | With `--list`: print `{"dir": ..., "backups": [...]}` instead - see [JSON output](/turnout/concepts/json-output/) |

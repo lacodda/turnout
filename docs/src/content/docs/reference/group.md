@@ -29,6 +29,8 @@ turnout group add contour -a web -a api          # same, short form
 | --- | --- | --- |
 | `--app` | `-a` | App to include (repeatable) |
 
+Without a name, the name and the apps are asked on a terminal. With a name, the apps come from `--app` only - a group needs at least one.
+
 Group names must not clash with app names.
 
 ## list / show

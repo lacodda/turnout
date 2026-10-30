@@ -16,8 +16,8 @@ Builds the app, uploads the artifacts to the target directory over SFTP, restart
 | Flag | Meaning |
 | --- | --- |
 | `-s, --server <SERVER>` | Server for this run only, overriding the target's |
-| `-C, --credential <NAME>` | Credential for this run only, overriding the target's |
-| `-p, --path <NAME>` | Named path for this run only, overriding the target's |
+| `-C, --credential <NAME>` | Credential for this run only, overriding the target's (the server's when there is no target) |
+| `-p, --path <NAME>` | Named path for this run only, overriding the target's (picked on a terminal when there is no target) |
 | `-n, --no-build` | Skip the build step and upload what is already built |
 | `-b, --backup` | Archive the remote directory before touching it; the older backups beyond what the target keeps are removed |
 | `-c, --clear` | Empty the remote directory before uploading |

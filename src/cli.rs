@@ -274,10 +274,10 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
-        /// Credential to log in with (defaults to the server's)
+        /// Credential for this run only, overriding the target's (the server's when there is no target)
         #[arg(short = 'C', long)]
         credential: Option<String>,
-        /// Named path to deploy into (defaults to the server's for this app)
+        /// Named path for this run only, overriding the target's (picked on a terminal when there is no target)
         #[arg(short = 'p', long)]
         path: Option<String>,
         /// Skip the build step
@@ -314,10 +314,10 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
-        /// Credential to log in with (defaults to the server's)
+        /// Credential for this run only, overriding the target's (the server's when there is no target)
         #[arg(short = 'C', long)]
         credential: Option<String>,
-        /// Named path to back up (defaults to the server's for this app)
+        /// Named path to back up, overriding the target's (picked on a terminal when there is no target)
         #[arg(short = 'p', long)]
         path: Option<String>,
     },
@@ -328,10 +328,10 @@ pub enum Command {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
-        /// Credential to log in with (defaults to the server's)
+        /// Credential for this run only, overriding the target's (the server's when there is no target)
         #[arg(short = 'C', long)]
         credential: Option<String>,
-        /// Named path to restore into (defaults to the server's for this app)
+        /// Named path to restore into, overriding the target's (picked on a terminal when there is no target)
         #[arg(short = 'p', long)]
         path: Option<String>,
         /// Backup archive name (defaults to the newest)
@@ -420,10 +420,10 @@ pub enum BackupCommand {
         /// Target server (defaults to the app's current binding)
         #[arg(short, long)]
         server: Option<String>,
-        /// Credential to log in with (defaults to the server's)
+        /// Credential for this run only, overriding the target's (the server's when there is no target)
         #[arg(short = 'C', long)]
         credential: Option<String>,
-        /// Named path whose backups to prune (defaults to the server's for this app)
+        /// Named path whose backups to prune, overriding the target's (picked on a terminal when there is no target)
         #[arg(short = 'p', long)]
         path: Option<String>,
         /// How many to keep (defaults to the target's --keep-backups, else 5); 0 removes them all
@@ -454,7 +454,7 @@ pub enum CompleteKind {
 
 #[derive(Subcommand)]
 pub enum GroupCommand {
-    /// Create a group; apps are picked interactively when not passed
+    /// Create a group; without a name, the name and its apps are asked interactively
     Add {
         /// Group name (lowercase letters, digits, dashes)
         name: Option<String>,
@@ -684,7 +684,7 @@ pub enum PathCommand {
         #[arg(short, long)]
         restart: Option<String>,
     },
-    /// Remove a path; servers that used it are updated
+    /// Remove a path, and the targets that deploy into it; the directory on the server is untouched
     Remove {
         /// Path name; picked interactively when omitted
         name: Option<String>,
