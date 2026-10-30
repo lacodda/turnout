@@ -4142,6 +4142,38 @@ fn a_background_server_says_where_it_answers_and_stop_is_silent() {
     assert_eq!(toasts(dir.path()).len(), 1, "a stopped job sent more: {:#?}", toasts(dir.path()));
 }
 
+/// The supervisor reads the mark `stop` leaves before it signals: on Windows
+/// the tree goes in no particular order, and a child that died before its
+/// supervisor let the supervisor report an end nobody asked to hear about.
+/// The mark is set by hand here and the job left to end by itself, so the
+/// order cannot decide the outcome.
+#[test]
+fn a_job_marked_as_being_stopped_ends_without_a_notification() {
+    let (dir, project) = workspace();
+    let serve = format!("echo Server listening on http://localhost:5556 && {}", pause_for(4));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("serve={serve}")])
+        .assert()
+        .success();
+    let _stops = StopsJob::new(dir.path(), "myapp", "serve");
+    turnout(dir.path()).args(["run", "serve", "myapp", "--detach"]).assert().success();
+    toasts_eventually(dir.path(), 1);
+
+    let record = dir.path().join("jobs").join("myapp.serve.json");
+    let mut entry: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&record).unwrap()).unwrap();
+    entry["stopping"] = serde_json::Value::Bool(true);
+    std::fs::write(&record, serde_json::to_string(&entry).unwrap()).unwrap();
+
+    eventually(15, "the job to end by itself", || {
+        let ps = stdout_of(dir.path(), &["ps"]);
+        if ps.contains("done") { Ok(()) } else { Err(ps) }
+    });
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    assert_eq!(toasts(dir.path()).len(), 1, "a job being stopped sent more: {:#?}", toasts(dir.path()));
+}
+
 /// A job in a terminal speaks there: no notification, whatever its outcome -
 /// but its failure is kept all the same.
 #[test]

@@ -59,6 +59,10 @@ pub struct Entry {
     /// the stands behind it. Written by the job itself, as it changes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<crate::signal::Signal>,
+    /// `stop` is ending it. Written before the first signal, so the supervisor
+    /// knows the end it is about to see was asked for.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
 }
 
 /// What a job runs.
@@ -178,6 +182,7 @@ impl Entry {
             ready: None,
             ended: None,
             signals: Vec::new(),
+            stopping: false,
         }
     }
 
@@ -434,6 +439,46 @@ fn remove_if_in(dir: &Path, key: &str, pid: u32, birth: u64) -> Result<bool> {
     }
 }
 
+/// Say that the job `pid` born at `birth` is being stopped, if the record
+/// under `key` still is that job's.
+///
+/// On Windows `stop` ends the job's whole tree at once, in no order it can
+/// choose: when the child goes before the supervisor, the supervisor saw its
+/// job end and sent the notification of an end nobody asked to hear about - a
+/// job ended by `stop` says nothing (ADR 0019). Marking the record before the
+/// first signal gives the supervisor something to read that is already there
+/// whichever process dies first.
+pub fn mark_stopping(key: &str, pid: u32, birth: u64) -> Result<()> {
+    mark_stopping_in(&jobs_dir()?, key, pid, birth)
+}
+
+fn mark_stopping_in(dir: &Path, key: &str, pid: u32, birth: u64) -> Result<()> {
+    let _slot = lock_in(dir, key)?;
+    match load_in(dir, key)? {
+        Some(mut entry) if entry.pid == pid && entry.birth == birth => {
+            entry.stopping = true;
+            save_in(dir, &entry)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Whether this process's own job is being ended by `stop`: its record says
+/// so, or is gone - `stop` removes it once the job is down.
+pub fn being_stopped(key: &str) -> bool {
+    jobs_dir().is_ok_and(|dir| being_stopped_in(&dir, key, std::process::id(), process::own_birth()))
+}
+
+fn being_stopped_in(dir: &Path, key: &str, pid: u32, birth: u64) -> bool {
+    match load_in(dir, key) {
+        Ok(Some(entry)) if entry.pid == pid && entry.birth == birth => entry.stopping,
+        // Another run's record, or none: this job's was taken away by a stop.
+        Ok(_) => true,
+        // Unreadable: no grounds to keep quiet about how the job ended.
+        Err(_) => false,
+    }
+}
+
 /// Change this process's own record, if it still is this process's.
 ///
 /// `stop` removes a record before (or while) its process dies, and the
@@ -586,6 +631,38 @@ mod tests {
         assert!(load_in(dir.path(), &key).unwrap().is_none());
         // Nothing to remove is not an error.
         assert!(!remove_if_in(dir.path(), &key, newer.pid, newer.birth).unwrap());
+    }
+
+    /// `stop` marks the job before it signals, and the supervisor reads the
+    /// mark whichever process of the tree dies first; only the judged job's
+    /// record is marked, and a record taken away counts as a stop too.
+    #[test]
+    fn a_stop_is_known_to_the_job_before_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::Command {
+            app: "myapp".into(),
+            command: "serve".into(),
+        };
+        let own = Entry::own(work, true, None);
+        let key = own.key();
+        save_in(dir.path(), &own).unwrap();
+        assert!(
+            !being_stopped_in(dir.path(), &key, own.pid, own.birth),
+            "a job nobody stops is not being stopped"
+        );
+
+        // Another process's mark does not land on this record.
+        mark_stopping_in(dir.path(), &key, own.pid.wrapping_add(1), own.birth).unwrap();
+        assert!(!being_stopped_in(dir.path(), &key, own.pid, own.birth));
+
+        mark_stopping_in(dir.path(), &key, own.pid, own.birth).unwrap();
+        assert!(being_stopped_in(dir.path(), &key, own.pid, own.birth));
+
+        remove_in(dir.path(), &key).unwrap();
+        assert!(being_stopped_in(dir.path(), &key, own.pid, own.birth), "a record stop took away");
+        // A mark on a record that is gone writes nothing back.
+        mark_stopping_in(dir.path(), &key, own.pid, own.birth).unwrap();
+        assert!(load_in(dir.path(), &key).unwrap().is_none());
     }
 
     /// A record whose process is this one reads as running; one whose birth

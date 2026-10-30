@@ -337,6 +337,7 @@ fn gateway_into_the_job_registry(dir: &Path) -> Result<()> {
         ready: None,
         ended: None,
         signals: Vec::new(),
+        stopping: false,
     };
     let jobs = dir.join("jobs");
     std::fs::create_dir_all(&jobs).with_context(|| format!("cannot create {}", jobs.display()))?;

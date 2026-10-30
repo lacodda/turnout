@@ -346,8 +346,11 @@ pub fn supervise(spec: Supervised) -> Result<()> {
             (notify::failed(&spec.app, &spec.command, "did not start", Some(&format!("{err:#}")), &places), 1)
         }
     };
-    // After the end, by nature: this notification is about the end.
-    if let Err(err) = notify::show(&toast) {
+    // After the end, by nature: this notification is about the end - unless
+    // `stop` brought it, which the person who typed `stop` knows already.
+    if registry::being_stopped(&registry::command_key(&spec.app, &spec.command)) {
+        job.note("stopped by `turnout stop` - no notification");
+    } else if let Err(err) = notify::show(&toast) {
         job.note(&format!("cannot show the notification: {err:#}"));
     }
     notify::settle();
@@ -697,6 +700,7 @@ pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
     for entry in entries {
         match entry.status() {
             Status::Running => {
+                registry::mark_stopping(&entry.key(), entry.pid, entry.birth)?;
                 end_job(&entry)?;
                 registry::remove_if(&entry.key(), entry.pid, entry.birth)?;
                 if is_gateway {
