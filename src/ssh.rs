@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, Handle, Msg};
-use russh::keys::{PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
+use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
@@ -177,7 +177,9 @@ impl Session {
 /// network, which is what makes [`authenticate`] testable against a local
 /// server.
 enum AuthMaterial {
-    Key(PrivateKeyWithHashAlg),
+    /// The key alone: which hash an RSA key signs with is the server's to
+    /// say, and it can only be asked once the connection is up.
+    Key(Arc<PrivateKey>),
     Password(String),
     /// Nothing to carry: the keys stay in the agent, which is asked for them
     /// at the moment of authentication.
@@ -226,9 +228,31 @@ fn auth_material(credential: &Credential) -> Result<AuthMaterial> {
 /// Load a private key file into auth material.
 fn key_material(path: &str, passphrase: Option<&str>) -> Result<AuthMaterial> {
     let key = load_secret_key(path, passphrase).with_context(|| format!("cannot read the key file {path}"))?;
-    // None lets russh pick the signature algorithm; only RSA needs an
-    // explicit SHA-2 choice, and ed25519 - the common case - ignores it.
-    Ok(AuthMaterial::Key(PrivateKeyWithHashAlg::new(Arc::new(key), None)))
+    Ok(AuthMaterial::Key(Arc::new(key)))
+}
+
+/// The hash an RSA key signs with on this connection; `None` for every other
+/// key, which has one signature algorithm and ignores the question.
+///
+/// For RSA, `None` means the legacy `ssh-rsa` - SHA-1 - which OpenSSH 8.8 and
+/// later refuse. Up to v0.26 every RSA key signed that way (the comment here
+/// claimed `None` let russh choose), so an RSA key never got into a current
+/// sshd. The server names the RSA hashes it takes in `server-sig-algs`, and the
+/// best of those is used. A server that names nothing predates the extension
+/// (RFC 8308) and with it SHA-2 signatures: for that one SHA-1 is right, and
+/// it is what `ssh` itself falls back to.
+async fn rsa_hash(handle: &Handle<AcceptAnyHostKey>, algorithm: Algorithm, best: &mut Option<Option<HashAlg>>) -> Result<Option<HashAlg>> {
+    if !algorithm.is_rsa() {
+        return Ok(None);
+    }
+    if best.is_none() {
+        let answer = handle
+            .best_supported_rsa_hash()
+            .await
+            .context("cannot learn which RSA signatures the server accepts")?;
+        *best = Some(answer.flatten());
+    }
+    Ok(best.flatten())
 }
 
 /// Connect and authenticate, returning the live handle.
@@ -239,7 +263,13 @@ async fn authenticate(host: &str, port: u16, user: &str, material: AuthMaterial)
         .with_context(|| format!("cannot reach {host}:{port}"))?;
 
     let ok = match material {
-        AuthMaterial::Key(key) => handle.authenticate_publickey(user, key).await.context("key authentication failed")?,
+        AuthMaterial::Key(key) => {
+            let hash = rsa_hash(&handle, key.algorithm(), &mut None).await?;
+            handle
+                .authenticate_publickey(user, PrivateKeyWithHashAlg::new(key, hash))
+                .await
+                .context("key authentication failed")?
+        }
         AuthMaterial::Password(password) => handle.authenticate_password(user, password).await.context("password authentication failed")?,
         AuthMaterial::Agent => return authenticate_with_agent(handle, user).await,
     };
@@ -271,13 +301,16 @@ async fn authenticate_with_agent(mut handle: Handle<AcceptAnyHostKey>, user: &st
     }
 
     let mut offered = Vec::new();
+    // Asked of the server at most once, and only if the agent holds an RSA key.
+    let mut best = None;
     for identity in &identities {
         let public = identity.public_key().into_owned();
         offered.push(agent::describe(identity));
+        let hash = rsa_hash(&handle, public.algorithm(), &mut best).await?;
         // Errors here are the agent failing to sign - a locked agent, a key
         // pulled out mid-run - not the server saying no. Either way the next
         // key is worth trying; what matters is whether any of them got in.
-        if let Ok(result) = handle.authenticate_publickey_with(user, public, None, &mut agent).await
+        if let Ok(result) = handle.authenticate_publickey_with(user, public, hash, &mut agent).await
             && result.success()
         {
             return Ok(handle);
@@ -464,6 +497,15 @@ pub(crate) mod tests {
         russh::keys::PrivateKey::new(KeypairData::Ed25519(pair), comment).expect("an ed25519 key from a fixed seed")
     }
 
+    /// A deterministic RSA key, for the same reason: the primes come from a
+    /// seeded generator, not from the OS and not from a key in the tree.
+    fn rsa_key(seed: u8, comment: &str) -> russh::keys::PrivateKey {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::from_seed([seed; 32]);
+        let pair = russh::keys::ssh_key::private::RsaKeypair::random(&mut rng, 2048).expect("an RSA key from a fixed seed");
+        russh::keys::PrivateKey::new(KeypairData::Rsa(pair), comment).expect("an RSA key")
+    }
+
     /// One running test server: its port, the directory SFTP writes into, and
     /// a counter of how many times the SFTP subsystem was opened.
     pub(crate) struct Stand {
@@ -529,6 +571,18 @@ pub(crate) mod tests {
                         auth_rejection_time: std::time::Duration::ZERO,
                         auth_rejection_time_initial: Some(std::time::Duration::ZERO),
                         keys: vec![ed25519_key(7, "test host key")],
+                        // What OpenSSH 8.8 and later announce: the SHA-2 RSA
+                        // signatures, and no `ssh-rsa`. `server-sig-algs` is
+                        // made from this list, so a client that reads it sees
+                        // exactly what the handler below accepts.
+                        preferred: russh::Preferred {
+                            key: std::borrow::Cow::Owned(vec![
+                                Algorithm::Ed25519,
+                                Algorithm::Rsa { hash: Some(HashAlg::Sha512) },
+                                Algorithm::Rsa { hash: Some(HashAlg::Sha256) },
+                            ]),
+                            ..Default::default()
+                        },
                         ..Default::default()
                     });
                     let socket = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind a loopback port");
@@ -625,7 +679,15 @@ pub(crate) mod tests {
                 Some(authorized) => authorized.key_data() == key.public_key.key_data(),
                 None => true,
             };
-            Ok(if user == USER && key_allowed { AuthAnswer::Accept } else { rejected() })
+            // A SHA-1 RSA signature is refused, as OpenSSH 8.8 and later
+            // refuse it: an RSA key that signs in here proves the client
+            // chose a hash the server accepts.
+            let sha1 = *key.algorithm == Algorithm::Rsa { hash: None };
+            Ok(if user == USER && key_allowed && !sha1 {
+                AuthAnswer::Accept
+            } else {
+                rejected()
+            })
         }
 
         async fn channel_open_session(
@@ -874,6 +936,23 @@ pub(crate) mod tests {
         Session::open("127.0.0.1", stand.port, USER, material).expect("key sign-in on loopback");
     }
 
+    /// An RSA key signs with a SHA-2 hash the server names. The stand refuses
+    /// `ssh-rsa` (SHA-1) as OpenSSH 8.8 does, and refuses passwords, so a pass
+    /// here is the key, signed the way a current sshd takes it. Up to v0.26
+    /// every RSA signature was SHA-1 and this sign-in failed.
+    #[test]
+    fn an_rsa_key_signs_in_where_sha1_is_refused() {
+        let stand = Stand::spawn_key_only();
+        let scratch = tempfile::tempdir().expect("a scratch directory for the key");
+        let key_path = scratch.path().join("id_rsa");
+        let openssh = rsa_key(31, "rsa client")
+            .to_openssh(russh::keys::ssh_key::LineEnding::LF)
+            .expect("serialize the key");
+        std::fs::write(&key_path, openssh.as_bytes()).expect("write the key file");
+
+        Session::open_with_key("127.0.0.1", stand.port, USER, &key_path.display().to_string(), None).expect("the RSA key signs in with SHA-2");
+    }
+
     /// The check that ends `turnout key setup` has to prove the *key* works,
     /// which it can only do on a connection the password could not have opened.
     /// So the stand here refuses passwords outright, the way a hardened sshd
@@ -975,6 +1054,21 @@ pub(crate) mod tests {
 
         agent.with_env(|| {
             Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent).expect("the agent key signs in");
+        });
+    }
+
+    /// An RSA key in the agent is asked for a SHA-2 signature too: the agent
+    /// signs with whatever hash the request names, and a request naming none
+    /// gets SHA-1, which the stand refuses as OpenSSH 8.8 does.
+    #[cfg(unix)]
+    #[test]
+    fn an_rsa_key_in_the_agent_signs_in_where_sha1_is_refused() {
+        let key = rsa_key(32, "agent rsa key");
+        let stand = Stand::spawn_authorizing(key.public_key().clone());
+        let agent = AgentStand::spawn(vec![key]);
+
+        agent.with_env(|| {
+            Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Agent).expect("the agent's RSA key signs in with SHA-2");
         });
     }
 
