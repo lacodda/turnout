@@ -11,7 +11,7 @@
 //! The values go to the gateway's memory through its control channel (ADR
 //! 0021) and nowhere else: not to a file, not to the journal, not back out.
 
-use std::io::{IsTerminal, Read};
+use std::io::Read;
 
 use anyhow::{Context, Result, bail};
 
@@ -22,16 +22,16 @@ use crate::{output, store};
 
 pub fn run(command: CookieCommand) -> Result<()> {
     match command {
-        CookieCommand::Set { app, server } => set(app, server),
+        CookieCommand::Set { app, server, stdin } => set(app, server, stdin),
         CookieCommand::List { format } => list(format),
         CookieCommand::Clear { app, server } => clear(app, server),
     }
 }
 
-fn set(app: Option<String>, server: Option<String>) -> Result<()> {
+fn set(app: Option<String>, server: Option<String>, stdin: bool) -> Result<()> {
     let (app, server) = target(app, server)?;
     let gateway = gateway()?;
-    let (text, source) = copied()?;
+    let (text, source) = copied(stdin)?;
     let cookies = parse(&text).with_context(|| format!("no cookies in {source}"))?;
     let names: Vec<String> = cookies.iter().map(|(name, _)| name.clone()).collect();
     control::set_jar(control_of(&gateway)?, &app, &server, cookies)?;
@@ -120,21 +120,20 @@ fn control_of(gateway: &Gateway) -> Result<&crate::registry::Control> {
         .context("this gateway was started by an older turnout and takes no cookies - restart it: `turnout gateway stop`, then `turnout gateway start`")
 }
 
-/// The text to read cookies from, and where it came from: standard input when
-/// something is piped in, the clipboard otherwise.
+/// The text to read cookies from, and where it came from: standard input
+/// with `--stdin`, the clipboard otherwise.
 ///
-/// "Piped in" means there is text there, not merely that standard input is
-/// not a terminal: a shell started by an IDE or a task runner has no terminal
-/// and nothing on its input either, and the clipboard is what was meant.
-fn copied() -> Result<(String, &'static str)> {
-    if !std::io::stdin().is_terminal() {
+/// Asked for, never guessed. Standard input used to be read whenever it was
+/// not a terminal, with the clipboard as the fallback when nothing came - but
+/// an IDE task or a task runner keeps standard input open with nothing on
+/// it, and nothing never came: `cookie set` waited for the end of it forever.
+fn copied(stdin: bool) -> Result<(String, &'static str)> {
+    if stdin {
         let mut text = String::new();
         std::io::stdin().read_to_string(&mut text).context("cannot read standard input")?;
-        if !text.trim().is_empty() {
-            return Ok((text, "standard input"));
-        }
+        return Ok((text, "standard input"));
     }
-    let text = crate::clipboard::get().context("cannot read the clipboard - copy the Cookie header first, or pipe it in")?;
+    let text = crate::clipboard::get().context("cannot read the clipboard - copy the Cookie header first, or pipe it in with --stdin")?;
     Ok((text, "the clipboard"))
 }
 

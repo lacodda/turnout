@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 
 mod common;
-use common::{clipboard, toast_file, turnout, turnout_process};
+use common::{clipboard, clipboard_file, toast_file, turnout, turnout_process};
 
 /// The notifications turnout has sent in this data directory, oldest first.
 fn toasts(data_dir: &std::path::Path) -> Vec<serde_json::Value> {
@@ -4796,7 +4796,7 @@ fn cookie_set_hands_a_browser_session_to_the_gateway() {
     turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
 
     turnout(dir.path())
-        .args(["cookie", "set", "myapp"])
+        .args(["cookie", "set", "myapp", "--stdin"])
         .write_stdin("Cookie: sid=from-the-browser")
         .assert()
         .failure()
@@ -4814,7 +4814,7 @@ fn cookie_set_hands_a_browser_session_to_the_gateway() {
 
     let copied = "curl 'https://stand.example.com/api/me' -H 'accept: */*' -b 'sid=from-the-browser; lang=en'";
     turnout(dir.path())
-        .args(["cookie", "set", "myapp"])
+        .args(["cookie", "set", "myapp", "--stdin"])
         .write_stdin(copied)
         .assert()
         .success()
@@ -4839,7 +4839,7 @@ fn cookie_set_hands_a_browser_session_to_the_gateway() {
     assert!(!journal.contains("from-the-browser"), "the session leaked into the journal: {journal}");
 
     turnout(dir.path())
-        .args(["cookie", "set", "myapp"])
+        .args(["cookie", "set", "myapp", "--stdin"])
         .write_stdin("sid=x; Path=/; HttpOnly")
         .assert()
         .failure()
@@ -4852,6 +4852,23 @@ fn cookie_set_hands_a_browser_session_to_the_gateway() {
         .assert()
         .success()
         .stdout(predicate::str::contains("holds no cookies"));
+
+    // Without --stdin the clipboard is read, and standard input is left
+    // alone: an IDE task keeps it open with nothing on it, and `cookie set`
+    // used to wait for the end of it forever.
+    std::fs::write(clipboard_file(dir.path()), "Cookie: sid=from-the-clipboard").unwrap();
+    let mut waiting = turnout_process(dir.path())
+        .args(["cookie", "set", "myapp"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let _open_input = waiting.stdin.take();
+    let mut waiting = ChildGuard(waiting);
+    wait_until("cookie set to return with standard input open", || waiting.0.try_wait().unwrap().is_some());
+    assert!(waiting.0.wait().unwrap().success());
+    assert_eq!(get("/echo-cookie"), "sid=from-the-clipboard");
 }
 
 /// The control channel answers turnout and nobody else: a request without

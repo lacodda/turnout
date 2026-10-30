@@ -6,7 +6,7 @@ sidebar:
 ---
 
 ```bash
-turnout cookie set [APP] [--server SERVER]
+turnout cookie set [APP] [--server SERVER] [--stdin]
 turnout cookie list [--json]
 turnout cookie clear [APP] [--server SERVER]
 ```
@@ -35,14 +35,16 @@ The next request `myapp` makes through the gateway carries that session.
 | Flag | Short | Description |
 | --- | --- | --- |
 | `--server` | `-s` | The stand the cookies belong to (defaults to the app's current binding) |
+| `--stdin` | | Read the copied text from standard input instead of the clipboard |
 
-`APP` defaults to the app of the current directory. The text is read from standard input when something is piped in, and from the clipboard otherwise:
+`APP` defaults to the app of the current directory. The text is read from the clipboard, or from standard input when `--stdin` says so:
 
 ```bash
-pbpaste | turnout cookie set myapp                   # macOS
-Get-Clipboard | turnout cookie set myapp             # PowerShell
-turnout cookie set myapp < copied-request.txt
+turnout cookie set myapp --stdin < copied-request.txt
+some-tool --print-cookie | turnout cookie set myapp --stdin
 ```
+
+Standard input is read only when asked for. An IDE task or a task runner keeps standard input open with nothing on it, and a `cookie set` that read it whenever it was not a terminal waited there for good.
 
 `set` replaces what the gateway held for that app on that stand - the browser's `Cookie` header is the whole session, and an old cookie mixed into a new session is how sessions break. A `Set-Cookie` header (what a server *answers* with) is refused: it carries attributes, not the session a request sends.
 

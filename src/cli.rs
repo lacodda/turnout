@@ -516,15 +516,18 @@ pub enum GatewayCommand {
 pub enum CookieCommand {
     /// Replace the app's cookies for its stand with ones copied from a browser
     ///
-    /// Reads the copied text from standard input when it is piped, otherwise
-    /// from the clipboard: the `Cookie` request header, or a whole request
-    /// copied as cURL from the browser's developer tools.
+    /// Reads the copied text from the clipboard, or from standard input with
+    /// `--stdin`: the `Cookie` request header, or a whole request copied as
+    /// cURL from the browser's developer tools.
     Set {
         /// App name (defaults to the app of the current directory)
         app: Option<String>,
         /// The stand the cookies belong to (defaults to the app's current one)
         #[arg(short, long)]
         server: Option<String>,
+        /// Read the copied text from standard input instead of the clipboard
+        #[arg(long)]
+        stdin: bool,
     },
     /// Show which apps the gateway holds cookies for, by name only
     List {
