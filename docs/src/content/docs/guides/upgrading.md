@@ -32,6 +32,19 @@ An older turnout refuses settings a newer one has written, rather than reading h
 - after an update that **rewrote** files (from 0.10, 0.17 or 0.19 and earlier), the copy taken before the step is in `settings-backup-vN` - put it in place of the data directory;
 - after one that **rewrote nothing** (from 0.20 on), there is no copy: the files are what the older release wrote, plus whatever newer features you used since. If you used none - no [health check](/turnout/reference/target/#health-check) on a target for 0.20 - 0.23, no [backup count](/turnout/reference/target/#backups) for 0.24 - write the schema that release used (5 for 0.20 - 0.23, 6 for 0.24) into `meta.json`. If you did, that release cannot keep them, and refusing was right.
 
+## Scripts after 0.27
+
+0.27 changed no settings - it reads and writes the same schema and export format as 0.25 and 0.26. Four commands now refuse what they used to do quietly, and a script that relied on that needs one change each:
+
+| What a script did | What 0.27 does | What to write instead |
+| --- | --- | --- |
+| piped a header into `cookie set` | reads the clipboard; standard input only when asked | `... \| turnout cookie set APP --stdin` |
+| `server remove` of the only server an app may use | refuses: the app would silently be allowed every server | `server remove NAME --force` |
+| `app edit APP --rm-server` of its last allowed server | refuses, for the same reason | `app edit APP --any-server` to lift the list, or name the server to keep with `--server` |
+| left out `--credential` or `--path` when only one existed (`target add`, `credential remove`, `path remove`, `pass`) | refuses without a terminal, as every other picker does - a script with an empty `$NAME` used to remove the only credential | name it: `-C NAME`, `-p NAME`, or the positional name |
+
+A filesystem root - `/`, `C:\`, a bare `\\server\share` - is no longer accepted as a deploy directory anywhere: `deploy --clear` would empty it. A catalog that already holds one is refused when a deploy, backup or restore reaches it; point the path at the directory the files belong in with `turnout path edit NAME --dir DIR`. And [`import`](/turnout/reference/import/) now holds arriving entries to the checks `add` makes, naming each it refuses - which matters only for a file edited by hand.
+
 ## Exports
 
 A file written by [`turnout export`](/turnout/reference/export/) imports into any newer turnout:
