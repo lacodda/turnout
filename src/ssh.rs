@@ -64,10 +64,11 @@ pub struct Session {
 impl Session {
     /// Open a session to `server` as `credential`.
     ///
-    /// Auth order mirrors the old behaviour: an explicit key first, otherwise a
-    /// stored password. (Agent support rode on libssh2's `userauth_agent` and
-    /// is not carried over here - it can return in the key-setup stage that
-    /// needs it.)
+    /// The credential's kind is the one way in: its key file, its stored
+    /// password, or the keys of the SSH agent ([`crate::agent`]). Nothing falls
+    /// back from one to another - a refused key is not followed by the
+    /// password, which after `key setup` is still stored but no longer meant
+    /// to be used.
     ///
     /// The credential is resolved to [`AuthMaterial`] before dialing: a missing
     /// key file or an unstored password fails fast, without a network round
@@ -500,7 +501,7 @@ pub(crate) mod tests {
     use std::collections::HashMap;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
 
     use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
@@ -535,6 +536,9 @@ pub(crate) mod tests {
         port: u16,
         root: tempfile::TempDir,
         subsystem_opens: Arc<AtomicUsize>,
+        /// How many bytes of a file SFTP takes before it refuses to write;
+        /// unlimited until a test says otherwise.
+        write_limit: Arc<AtomicU64>,
     }
 
     impl Stand {
@@ -581,6 +585,8 @@ pub(crate) mod tests {
             let subsystem_opens = Arc::new(AtomicUsize::new(0));
             let served_root = root.path().to_path_buf();
             let served_opens = subsystem_opens.clone();
+            let write_limit = Arc::new(AtomicU64::new(u64::MAX));
+            let served_limit = write_limit.clone();
             let (report, learn) = mpsc::channel();
             // The server outlives every session the test opens; the thread is
             // reclaimed when the test process exits.
@@ -613,6 +619,7 @@ pub(crate) mod tests {
                     let mut factory = Factory {
                         root: served_root,
                         subsystem_opens: served_opens,
+                        write_limit: served_limit,
                         passwords_accepted,
                         authorized,
                         real_shell,
@@ -621,7 +628,18 @@ pub(crate) mod tests {
                 });
             });
             let port = learn.recv().expect("the server reports its port");
-            Self { port, root, subsystem_opens }
+            Self {
+                port,
+                root,
+                subsystem_opens,
+                write_limit,
+            }
+        }
+
+        /// From now on, refuse an SFTP write that would take a file past
+        /// `bytes` - the shape of a disk that fills up mid-upload.
+        pub(crate) fn refuse_writes_past(&self, bytes: u64) {
+            self.write_limit.store(bytes, Ordering::SeqCst);
         }
 
         /// The home directory of the account the stand signs in, for a stand
@@ -639,6 +657,7 @@ pub(crate) mod tests {
     struct Factory {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
+        write_limit: Arc<AtomicU64>,
         passwords_accepted: bool,
         /// When set, the only public key this stand accepts.
         authorized: Option<russh::keys::PublicKey>,
@@ -652,6 +671,7 @@ pub(crate) mod tests {
             TestHandler {
                 root: self.root.clone(),
                 subsystem_opens: self.subsystem_opens.clone(),
+                write_limit: self.write_limit.clone(),
                 channels: HashMap::new(),
                 passwords_accepted: self.passwords_accepted,
                 authorized: self.authorized.clone(),
@@ -663,6 +683,7 @@ pub(crate) mod tests {
     struct TestHandler {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
+        write_limit: Arc<AtomicU64>,
         channels: HashMap<ChannelId, ServerChannel<ServerMsg>>,
         passwords_accepted: bool,
         authorized: Option<russh::keys::PublicKey>,
@@ -785,6 +806,7 @@ pub(crate) mod tests {
                 root: self.root.clone(),
                 files: HashMap::new(),
                 real_paths: self.real_shell,
+                write_limit: self.write_limit.clone(),
             };
             tokio::spawn(async move {
                 russh_sftp::server::run(channel.into_stream(), handler).await;
@@ -803,6 +825,7 @@ pub(crate) mod tests {
         root: PathBuf,
         files: HashMap<String, std::fs::File>,
         real_paths: bool,
+        write_limit: Arc<AtomicU64>,
     }
 
     impl TestSftp {
@@ -847,6 +870,9 @@ pub(crate) mod tests {
         }
 
         async fn write(&mut self, id: u32, handle: String, offset: u64, data: Vec<u8>) -> Result<Status, Self::Error> {
+            if offset + data.len() as u64 > self.write_limit.load(Ordering::SeqCst) {
+                return Err(StatusCode::Failure);
+            }
             let file = self.files.get_mut(&handle).ok_or(StatusCode::Failure)?;
             file.seek(SeekFrom::Start(offset))
                 .and_then(|_| file.write_all(&data))
@@ -976,10 +1002,6 @@ pub(crate) mod tests {
         Session::open_with_key("127.0.0.1", stand.port, USER, &key_path.display().to_string(), None).expect("the RSA key signs in with SHA-2");
     }
 
-    /// The check that ends `turnout key setup` has to prove the *key* works,
-    /// which it can only do on a connection the password could not have opened.
-    /// So the stand here refuses passwords outright, the way a hardened sshd
-    /// does: a pass means the key was accepted and nothing else was.
     /// A real SSH agent, in-process on a loopback socket.
     ///
     /// russh ships an agent server as well as a client, so the agent side of
@@ -1200,6 +1222,10 @@ pub(crate) mod tests {
         assert!(matches!(material, AuthMaterial::Agent), "{material:?}");
     }
 
+    /// The check that ends `turnout key setup` has to prove the *key* works,
+    /// which it can only do on a connection the password could not have opened.
+    /// So the stand here refuses passwords outright, the way a hardened sshd
+    /// does: a pass means the key was accepted and nothing else was.
     #[test]
     fn a_named_key_file_signs_in_where_the_password_cannot() {
         let stand = Stand::spawn_key_only();

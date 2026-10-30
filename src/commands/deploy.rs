@@ -879,8 +879,9 @@ fn compare_all(targets: &[Resolved], artifacts: &[Artifact], clear: bool, json: 
 /// into a single stream plus one `tar` invocation.
 ///
 /// The archive lands in a temporary file and is deleted afterwards, including
-/// when unpacking fails - a stray multi-megabyte tarball next to the site is
-/// its own kind of bug.
+/// when the upload or the unpacking fails - a stray multi-megabyte tarball
+/// next to the site is its own kind of bug. Up to v0.26 an upload that failed
+/// part-way left it there.
 fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifact: &Artifact, no_archive: bool, reached: &mut Reached) -> Result<Option<u64>> {
     let plan = &artifact.plan;
     if !artifact::should_archive(plan.files, no_archive) {
@@ -918,9 +919,12 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifa
     let transfer = Transfer::start(1, sent);
     // Chunked so the bar earns its keep: crediting every byte after the fact
     // would leave it at zero for exactly as long as the upload takes.
-    session
-        .upload_bytes(archive, &remote_archive, |chunk| transfer.advance(chunk))
-        .with_context(|| format!("cannot upload the archive to {remote_archive}"))?;
+    if let Err(err) = session.upload_bytes(archive, &remote_archive, |chunk| transfer.advance(chunk)) {
+        // Best-effort, as below: what arrived of the archive is no use to
+        // anyone, and would outlive the error message.
+        let _ = remote::exec(session, &dialect.remove_file(&remote_archive));
+        return Err(err).with_context(|| format!("cannot upload the archive to {remote_archive}"));
+    }
     let elapsed = transfer.elapsed();
     transfer.done(format!(
         "Uploaded {} in {} · {}",
@@ -938,8 +942,8 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifa
         &dialect.and_then(&dialect.untar(&remote_archive, remote_root), &dialect.remove_file(&remote_archive)),
     );
     if let Err(err) = unpack {
-        // Best-effort: the upload already failed, and a leftover archive would
-        // outlive the error message.
+        // Best-effort: the unpacking already failed, and a leftover archive
+        // would outlive the error message.
         let _ = remote::exec(session, &dialect.remove_file(&remote_archive));
         step.clear();
         return Err(err).context("cannot unpack the archive on the server");
@@ -954,14 +958,13 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifa
 /// containers, and finding out mid-deploy would leave an archive behind and
 /// nothing unpacked.
 ///
-/// The probe is asked in the server's own dialect. The previous one was
-/// `command -v tar >/dev/null 2>&1`, which `cmd.exe` cannot run at all - so a
-/// Windows server always answered "no tar" no matter what it had installed. It
-/// had bsdtar in System32 the whole time.
-/// No dialect parameter on purpose: the fix was to stop asking in shell syntax
-/// at all. `tar --version` is a plain program invocation that both bsdtar and
-/// GNU tar answer, and running a program is the one thing every shell does the
-/// same way.
+/// The probe is the same in every dialect, and has no dialect parameter on
+/// purpose. The previous one was `command -v tar >/dev/null 2>&1`, which
+/// `cmd.exe` cannot run at all - so a Windows server always answered "no tar"
+/// no matter what it had installed; it had bsdtar in System32 the whole time.
+/// The fix was to stop asking in shell syntax: `tar --version` is a plain
+/// program invocation that both bsdtar and GNU tar answer, and running a
+/// program is the one thing every shell does the same way.
 fn remote_has_tar(session: &Session) -> bool {
     remote::exec(session, "tar --version").is_ok()
 }
@@ -1372,6 +1375,28 @@ mod tests {
         };
         deploy_over_ssh(&target, &Shipment::of(&build), &options, &mut Report::default(), &connect).expect("clearing nothing is not a failure");
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+    }
+
+    /// An archive upload that fails part-way - a disk filling up - takes what
+    /// arrived of the archive with it. Up to v0.26 it stayed in the deploy
+    /// directory, where a web server could hand it out.
+    #[test]
+    fn a_failed_archive_upload_leaves_no_archive() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        stand.refuse_writes_past(16);
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&build), &Options::default(), &mut report, &connect).unwrap_err()
+        );
+        assert!(err.contains("cannot upload the archive"), "{err}");
+        assert!(report.reached == Reached::BeforeUpload, "nothing of the build reached the site");
+        assert!(!site.join(".turnout-upload.tar.gz").exists(), "the partial archive is gone");
     }
 
     /// A file of the build lands under the deploy directory in that

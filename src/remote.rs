@@ -318,8 +318,8 @@ fn check_deploy_dir(path: &crate::model::Path) -> Result<()> {
 /// Open a session to `server` as `credential`.
 ///
 /// The transport lives in [`crate::ssh`]; this is the entry the rest of the
-/// remote layer calls. Auth order: the credential's key file when it uses one,
-/// otherwise the stored password.
+/// remote layer calls. The credential's kind - key file, stored password or
+/// SSH agent - is the one way it signs in (see [`Session::connect`]).
 pub fn connect(server: &Server, credential: &Credential) -> Result<Session> {
     Session::connect(server, credential)
 }
