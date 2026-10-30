@@ -1,0 +1,129 @@
+{
+  "version": 4,
+  "exported_by": "turnout 0.24.0",
+  "apps": [
+    {
+      "name": "api",
+      "path": "C:\\dev\\api",
+      "commands": {
+        "build": "cargo build --release"
+      },
+      "gateway_port": 7100,
+      "servers": []
+    },
+    {
+      "name": "web",
+      "path": "C:\\dev\\web",
+      "commands": {
+        "build": "npm run build",
+        "dev": "npm run dev"
+      },
+      "dist_dir": "dist",
+      "gateway_port": 7150,
+      "gateway_env": "VITE_API_URL",
+      "env_file": ".env.local",
+      "dev_port": 5150,
+      "servers": [
+        "staging",
+        "prod"
+      ]
+    }
+  ],
+  "servers": [
+    {
+      "name": "lab",
+      "url": "https://lab.example.com",
+      "port": 22,
+      "accept_invalid_certs": true
+    },
+    {
+      "name": "prod",
+      "url": "https://app.example.com",
+      "host": "deploy.example.com",
+      "port": 2222,
+      "accept_invalid_certs": false,
+      "credential": "ci-key"
+    },
+    {
+      "name": "staging",
+      "label": "Staging",
+      "url": "https://staging.example.com",
+      "port": 22,
+      "accept_invalid_certs": false,
+      "credential": "deploy"
+    }
+  ],
+  "credentials": [
+    {
+      "name": "agent-login",
+      "user": "ops",
+      "auth": "agent"
+    },
+    {
+      "name": "ci-key",
+      "user": "ci",
+      "auth": "key",
+      "key": "C:\\dev\\keys\\id_ed25519"
+    },
+    {
+      "name": "deploy",
+      "user": "deploy",
+      "auth": "password"
+    }
+  ],
+  "paths": [
+    {
+      "name": "api-dir",
+      "dir": "/srv/api"
+    },
+    {
+      "name": "site",
+      "dir": "/var/www/site",
+      "restart": "systemctl restart site"
+    }
+  ],
+  "groups": [
+    {
+      "name": "everything",
+      "apps": [
+        "web",
+        "api"
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "name": "api-prod",
+      "app": "api",
+      "server": "prod",
+      "credential": "deploy",
+      "path": "api-dir",
+      "health": {
+        "command": "curl -fsS localhost:8080/health"
+      }
+    },
+    {
+      "name": "web-staging",
+      "app": "web",
+      "server": "staging",
+      "credential": "deploy",
+      "path": "site",
+      "url": "https://web.staging.example.com",
+      "health": {
+        "url": "/health",
+        "wait": 30
+      }
+    }
+  ],
+  "secrets": {
+    "kdf": {
+      "algorithm": "argon2id",
+      "salt": "Lm3NA0NLo29AH3dNxUELqA==",
+      "memory_kib": 65536,
+      "iterations": 3,
+      "parallelism": 4
+    },
+    "nonce": "EmTkGswP1IJlGH1n",
+    "ciphertext": "IrhzM6w9vagX8EHlTgQjPQ9WHg34FDwX7F0B58PTCwGekOQAlnKD0fbDzhUEjDZ5sbWHm7H9HZ2SDxDXpF5Cq05OwB8rL7sW0Pl7OL+rFQ=="
+  }
+}

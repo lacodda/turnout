@@ -99,3 +99,13 @@ tokio-tungstenite = { version = "0.30.0", default-features = false, features = [
 # that dominates target/debug. Full debug info is a one-line revert when needed.
 [profile.dev]
 debug = 1
+
+# The export's key derivation is slow by design (64 MiB, 3 passes), and
+# unoptimised it is slower still by an order of magnitude: every test that
+# seals or opens an export pays it. Optimising the two crates that do the work
+# keeps the debug build's own code debuggable.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

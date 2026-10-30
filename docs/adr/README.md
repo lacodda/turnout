@@ -35,3 +35,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0029](0029-a-windows-server-is-proven-on-a-real-one.md) | A Windows server is proven on a real one | accepted |
 | [0030](0030-json-owns-stdout.md) | JSON owns stdout | accepted |
 | [0031](0031-dependabot-is-off.md) | Dependabot is off on purpose | accepted |
+| [0032](0032-every-release-leaves-its-export-behind.md) | Every release leaves its export behind | accepted |

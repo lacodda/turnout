@@ -1,0 +1,117 @@
+{
+  "version": 3,
+  "exported_by": "turnout 0.13.1",
+  "apps": [
+    {
+      "name": "api",
+      "path": "C:\\dev\\api",
+      "commands": {
+        "build": "cargo build --release"
+      },
+      "servers": []
+    },
+    {
+      "name": "web",
+      "path": "C:\\dev\\web",
+      "commands": {
+        "build": "npm run build",
+        "dev": "npm run dev"
+      },
+      "dist_dir": "dist",
+      "gateway_port": 7150,
+      "servers": [
+        "staging",
+        "prod"
+      ]
+    }
+  ],
+  "servers": [
+    {
+      "name": "lab",
+      "url": "https://lab.example.com",
+      "port": 22,
+      "accept_invalid_certs": true
+    },
+    {
+      "name": "prod",
+      "url": "https://app.example.com",
+      "host": "deploy.example.com",
+      "port": 2222,
+      "accept_invalid_certs": false,
+      "credential": "ci-key"
+    },
+    {
+      "name": "staging",
+      "label": "Staging",
+      "url": "https://staging.example.com",
+      "port": 22,
+      "accept_invalid_certs": false,
+      "credential": "deploy"
+    }
+  ],
+  "credentials": [
+    {
+      "name": "agent-login",
+      "user": "ops",
+      "auth": "agent"
+    },
+    {
+      "name": "ci-key",
+      "user": "ci",
+      "auth": "key",
+      "key": "C:\\dev\\keys\\id_ed25519"
+    },
+    {
+      "name": "deploy",
+      "user": "deploy",
+      "auth": "password"
+    }
+  ],
+  "paths": [
+    {
+      "name": "api-dir",
+      "dir": "/srv/api"
+    },
+    {
+      "name": "site",
+      "dir": "/var/www/site",
+      "restart": "systemctl restart site"
+    }
+  ],
+  "groups": [
+    {
+      "name": "everything",
+      "apps": [
+        "web",
+        "api"
+      ]
+    }
+  ],
+  "targets": [
+    {
+      "name": "api-prod",
+      "app": "api",
+      "server": "prod",
+      "credential": "deploy",
+      "path": "api-dir"
+    },
+    {
+      "name": "web-staging",
+      "app": "web",
+      "server": "staging",
+      "credential": "deploy",
+      "path": "site"
+    }
+  ],
+  "secrets": {
+    "kdf": {
+      "algorithm": "argon2id",
+      "salt": "hX13qvCz1lUOp6jPvF/gNw==",
+      "memory_kib": 65536,
+      "iterations": 3,
+      "parallelism": 4
+    },
+    "nonce": "mFyPcK8chDwZ4do5",
+    "ciphertext": "SmbjGdu5MA1c+2DMBSuR+2gUd+g0CrVCqr3Tk7stYrNoc2wka5SXzI/HwDP5j9jcE+FuudvARr4/qoccIUJbcV+r5rj6+i3n6F9quR+Xrw=="
+  }
+}
