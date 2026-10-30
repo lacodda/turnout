@@ -138,9 +138,18 @@ impl Job {
     /// user asked for still runs; losing a build over a read-only log
     /// directory would be absurd.
     pub fn claim(app: &str, command: &str, detached: bool) -> Result<Self> {
+        let log = registry::log_path(&registry::command_key(app, command));
+        Self::claim_in(&registry::jobs_dir()?, log, app, command, detached)
+    }
+
+    /// [`Job::claim`], with the records in `jobs` and the log at `log`.
+    fn claim_in(jobs: &Path, log: Result<PathBuf>, app: &str, command: &str, detached: bool) -> Result<Self> {
         let key = registry::command_key(app, command);
-        ensure_free(&key)?;
-        let (log_path, file) = match open_log(&key) {
+        // The look and the write under one lock: two claims at once used to
+        // both see the slot free, and the second record overwrote the first.
+        let _slot = registry::lock_in(jobs, &key)?;
+        ensure_free_in(jobs, &key)?;
+        let (log_path, file) = match log.and_then(|path| open_log(&path).map(|file| (path, file))) {
             Ok((path, file)) => (path, Some(file)),
             Err(err) => {
                 progress::warn(&format!("cannot write the job log: {err:#}"));
@@ -151,7 +160,7 @@ impl Job {
             app: app.to_string(),
             command: command.to_string(),
         };
-        registry::save(&Entry::own(work, detached, file.as_ref().map(|_| log_path.clone())))?;
+        registry::save_in(jobs, &Entry::own(work, detached, file.as_ref().map(|_| log_path.clone())))?;
         Ok(Self {
             key,
             log_path,
@@ -258,8 +267,16 @@ impl Job {
 }
 
 /// Refuse to start the job under `key` while it is running.
+///
+/// An early word only, for a command to stop before it prints anything: the
+/// answer can change the moment after. [`Job::claim`] asks again under the
+/// slot's lock, and that answer is the one that holds.
 pub fn ensure_free(key: &str) -> Result<()> {
-    if let Some(entry) = registry::load(key)?
+    ensure_free_in(&registry::jobs_dir()?, key)
+}
+
+fn ensure_free_in(jobs: &Path, key: &str) -> Result<()> {
+    if let Some(entry) = registry::load_in(jobs, key)?
         && entry.is_running()
     {
         bail!(
@@ -272,13 +289,11 @@ pub fn ensure_free(key: &str) -> Result<()> {
     Ok(())
 }
 
-fn open_log(key: &str) -> Result<(PathBuf, std::fs::File)> {
-    let path = registry::log_path(key)?;
+fn open_log(path: &Path) -> Result<std::fs::File> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
-    let file = std::fs::File::create(&path).with_context(|| format!("cannot write {}", path.display()))?;
-    Ok((path, file))
+    std::fs::File::create(path).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// What a job runs.
@@ -855,6 +870,35 @@ mod tests {
         let mut job = scratch_job(other.path());
         assert_eq!(job.close_with(None, false, |_| {}), None);
         assert_eq!(job.kept(), None);
+    }
+
+    /// Two claims of one job at once: one gets it, the other is told the job
+    /// runs. The look and the write were two steps with nothing around them,
+    /// so two `turnout dev web` started together both saw the slot free, both
+    /// truncated the log, and the second record overwrote the first.
+    #[test]
+    fn two_claims_of_one_job_never_both_win() {
+        let dir = tempfile::tempdir().unwrap();
+        let jobs = dir.path().join("jobs");
+        let log = dir.path().join("logs").join("myapp.dev.log");
+        // The first claim, caught between its look and its write: it holds
+        // the slot.
+        let slot = registry::lock_in(&jobs, "myapp.dev").unwrap();
+        let second = std::thread::spawn({
+            let jobs = jobs.clone();
+            move || Job::claim_in(&jobs, Ok(log), "myapp", "dev", false).map(|_| ())
+        });
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(!second.is_finished(), "the second claim went ahead while the first held the slot");
+        // The first one writes its record and lets go, as `claim` does.
+        let work = Work::Command {
+            app: "myapp".into(),
+            command: "dev".into(),
+        };
+        registry::save_in(&jobs, &Entry::own(work, false, None)).unwrap();
+        drop(slot);
+        let error = second.join().unwrap().unwrap_err().to_string();
+        assert!(error.contains("myapp dev is already running"), "{error}");
     }
 
     /// Verbose and a pipe both mean "stream"; the wanted mode only survives on

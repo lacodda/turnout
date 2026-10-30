@@ -299,7 +299,7 @@ pub fn load(key: &str) -> Result<Option<Entry>> {
 /// A record that does not parse is reported and treated as absent: it is one
 /// job's problem, and refusing every command over it would be the wrong
 /// trade - but saying nothing would hide a running job from `ps` and `stop`.
-fn load_in(dir: &Path, key: &str) -> Result<Option<Entry>> {
+pub(crate) fn load_in(dir: &Path, key: &str) -> Result<Option<Entry>> {
     let path = record_path(dir, key);
     match std::fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str(&text) {
@@ -341,13 +341,62 @@ pub fn list() -> Result<Vec<Entry>> {
 /// Written aside and renamed over, so a reader never sees half a record and a
 /// crash mid-write leaves the previous one intact.
 pub fn save(entry: &Entry) -> Result<()> {
-    let dir = jobs_dir()?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    save_in(&jobs_dir()?, entry)
+}
+
+pub(crate) fn save_in(dir: &Path, entry: &Entry) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     let key = entry.key();
-    let path = record_path(&dir, &key);
+    let path = record_path(dir, &key);
     let aside = dir.join(format!("{key}.json.{}.tmp", std::process::id()));
     std::fs::write(&aside, serde_json::to_string_pretty(entry)?).with_context(|| format!("cannot write {}", aside.display()))?;
     std::fs::rename(&aside, &path).with_context(|| format!("cannot write {}", path.display()))
+}
+
+/// How long a turnout waits for another to let go of a job slot. The slot is
+/// held for a look and a write, milliseconds; this is for a machine under load.
+const SLOT_PATIENCE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// A job slot held by this process for a moment - while it is, no other
+/// turnout claims the slot or takes its record away. Let go when dropped.
+///
+/// Each record has one writer at a time, but deciding whether to write is a
+/// read first: "is this job running?", then the claim. Two `turnout dev web`
+/// started together both read "no", both truncated the same log, and the
+/// second record overwrote the first. A look and the write that depends on
+/// it happen under this lock.
+///
+/// An OS lock on `jobs/KEY.lock` (`flock` on Unix, `LockFileEx` on Windows)
+/// rather than a file whose existence is the lock: the OS lets go of it when
+/// its process dies, however it dies, so no lock is ever left stale for the
+/// next turnout to judge by a pid. The file itself stays; removing it while
+/// another process waits on it would hand two processes two different locks.
+pub(crate) struct Slot {
+    _file: std::fs::File,
+}
+
+pub(crate) fn lock_in(dir: &Path, key: &str) -> Result<Slot> {
+    std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    let path = dir.join(format!("{key}.lock"));
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("cannot open {}", path.display()))?;
+    let started = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(Slot { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) if started.elapsed() < SLOT_PATIENCE => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(std::fs::TryLockError::WouldBlock) => anyhow::bail!(
+                "the record of {key} stayed locked by another turnout for {}s ({})",
+                SLOT_PATIENCE.as_secs(),
+                path.display()
+            ),
+            Err(std::fs::TryLockError::Error(err)) => return Err(err).with_context(|| format!("cannot lock {}", path.display())),
+        }
+    }
 }
 
 /// Remove the record under `key`, if any.
