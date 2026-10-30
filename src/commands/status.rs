@@ -546,6 +546,7 @@ mod tests {
             command: Some(command.into()),
             state: "running",
             exit_code: None,
+            never_ran: false,
             pid: Some(1),
             port: None,
             address: None,

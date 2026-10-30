@@ -204,7 +204,23 @@ impl Job {
     }
 
     fn finish(&self, code: Option<i32>) {
-        let _ = registry::update_own(&self.key, |entry| entry.ended = Some(registry::Ended { at: registry::now(), code }));
+        self.end(code, false);
+    }
+
+    /// The program could not be started: the record says so, rather than
+    /// claiming a run that never happened or a process that was killed.
+    fn never_ran(&self) {
+        self.end(None, true);
+    }
+
+    fn end(&self, code: Option<i32>, never_ran: bool) {
+        let _ = registry::update_own(&self.key, |entry| {
+            entry.ended = Some(registry::Ended {
+                at: registry::now(),
+                code,
+                never_ran,
+            })
+        });
     }
 }
 
@@ -296,18 +312,21 @@ impl Outcome {
 /// what to print when it is.
 pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode, label: &str, job: &mut Job, mut ready: Option<Ready<'_>>) -> Result<Outcome> {
     let command_line = program.describe();
-    let mut command = program.command()?;
-    command.current_dir(dir);
-    for (name, value) in env {
-        command.env(name, value);
-    }
-    command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = match command.spawn() {
+    let spawned = program.command().and_then(|mut command| {
+        command.current_dir(dir);
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        command.spawn().with_context(|| format!("cannot run '{command_line}'"))
+    });
+    let mut child = match spawned {
         Ok(child) => child,
         Err(err) => {
-            // The record must not go on claiming a run that never started.
-            job.finish(None);
-            return Err(err).with_context(|| format!("cannot run '{command_line}'"));
+            // The record must not go on claiming a run that never started,
+            // nor read as one that was killed.
+            job.never_ran();
+            return Err(err);
         }
     };
     crate::term::confine(&child);

@@ -33,7 +33,7 @@ web deploy    failed (exit 1)  -      -     -                      1m ago
 - **STATE**
   - `running` - the process is alive; `(bg)` marks a job started with `--detach` or by `gateway start`, and no mark means it runs in somebody's terminal.
   - `ready` - a server job (`dev`, a custom command) announced that it is up - see [the quiet console](/turnout/concepts/quiet-console/#commands-that-keep-running).
-  - `done` / `failed (exit N)` - the job ended by itself, with that exit code; `failed (killed)` when a signal ended it.
+  - `done` / `failed (exit N)` - the job ended by itself, with that exit code; `failed (killed)` when a signal ended it; `failed (did not start)` when its program could not be started at all - its directory is gone, or there is no shell to run it with. The job's log says which.
   - `gone` - the process is no longer there and never said how it ended: killed from outside, a crash, a reboot. `turnout stop NAME` clears the row.
 - **PID** - the process that owns the job: the supervisor of a background job, the `turnout` in a terminal, the gateway itself.
 - **PORT / ADDRESS** - for `dev`, the app's dev port and its address through the [front door](/turnout/reference/gateway/#the-front-door) when the gateway runs (`http://localhost:PORT` when it does not); for a custom server command, the address it announced; for the gateway, its door.
@@ -57,6 +57,7 @@ Running jobs come first. A finished row stays until the next run of the same com
     "command": "dev",
     "state": "ready",
     "exit_code": null,
+    "never_ran": false,
     "pid": 31412,
     "port": 5100,
     "address": "http://web.localhost",
@@ -68,5 +69,5 @@ Running jobs come first. A finished row stays until the next run of the same com
 ]
 ```
 
-`state` is one of `ready`, `running`, `done`, `failed`, `gone`; `exit_code` is set once a job ended by itself. Times are ISO 8601 in UTC. See [JSON output](/turnout/concepts/json-output/) for the rules every command's JSON follows.
+`state` is one of `ready`, `running`, `done`, `failed`, `gone`; `exit_code` is set once a job ended by itself. `never_ran` is `true` for a `failed` job whose program never started, which therefore has no exit code either. Times are ISO 8601 in UTC. See [JSON output](/turnout/concepts/json-output/) for the rules every command's JSON follows.
 

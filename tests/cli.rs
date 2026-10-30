@@ -3444,6 +3444,19 @@ fn a_job_that_cannot_start_leaves_the_reason_in_its_log() {
     assert_eq!(sent[0]["title"], "myapp ghost failed");
     assert!(sent[0]["body"].as_str().unwrap().contains("cannot run 'echo never'"), "{sent:#?}");
     assert!(sent[0]["note"].as_str().unwrap().starts_with("did not start"), "{sent:#?}");
+
+    // `ps` says what the notification said - not "killed", which is what a
+    // record with no exit code read as until v0.27.
+    turnout(dir.path())
+        .arg("ps")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("failed (did not start)"));
+    let listed: serde_json::Value = serde_json::from_slice(&turnout(dir.path()).args(["ps", "--json"]).output().unwrap().stdout).unwrap();
+    let ghost = listed.as_array().unwrap().iter().find(|job| job["job"] == "myapp ghost").unwrap();
+    assert_eq!(ghost["state"], "failed", "{ghost:#}");
+    assert_eq!(ghost["never_ran"], true, "{ghost:#}");
+    assert_eq!(ghost["exit_code"], serde_json::Value::Null, "{ghost:#}");
 }
 
 /// `TURNOUT_DETACH` sends the commands it names to the background - on a

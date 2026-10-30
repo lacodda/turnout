@@ -23,7 +23,7 @@ use crate::job::{self, Mode, Program};
 use crate::notify;
 use crate::process::{self, Ending};
 use crate::progress::{human_duration, human_span};
-use crate::registry::{self, Entry, Status, Work};
+use crate::registry::{self, Entry, Exit, Status, Work};
 use crate::store;
 
 /// How long the supervisor gets to claim its record before the start is
@@ -224,7 +224,8 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
             break;
         };
         let Some(ended) = entry.ended else { continue };
-        if ended.code == Some(0) {
+        let exit = ended.exit();
+        if exit == Exit::Code(0) {
             println!("{title} finished at once - see its output with `turnout logs {title}`");
             return Ok(());
         }
@@ -240,8 +241,8 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
             }
             let _ = writeln!(stderr, "full output: {}", log.display());
         }
-        eprintln!("error: {title} failed at once ({})", describe_code(ended.code));
-        std::process::exit(ended.code.filter(|code| *code != 0).unwrap_or(1));
+        eprintln!("error: {title} failed at once ({})", exit.describe());
+        std::process::exit(exit.code().filter(|code| *code != 0).unwrap_or(1));
     }
 
     crate::journal::record("job.detach", Some(spec.app), None, Some(spec.command));
@@ -388,8 +389,11 @@ pub struct JobView {
     /// `ready` (a server that came up), `running`, `done`, `failed` or `gone`.
     pub state: &'static str,
     /// The exit code of a job that ended by itself; `null` while it runs, and
-    /// for one that was killed or vanished.
+    /// for one that was killed, vanished or never ran.
     pub exit_code: Option<i32>,
+    /// The program could not be started at all - a missing directory, no
+    /// shell to run it with. Such a job is `failed` with no exit code.
+    pub never_ran: bool,
     pub pid: Option<u32>,
     pub port: Option<u16>,
     pub address: Option<String>,
@@ -429,9 +433,10 @@ pub fn views() -> Result<Vec<JobView>> {
                 command,
                 state: state_word(entry, status),
                 exit_code: match status {
-                    Status::Exited(code) => code,
+                    Status::Exited(exit) => exit.code(),
                     _ => None,
                 },
+                never_ran: status == Status::Exited(Exit::NeverRan),
                 pid: running.then_some(entry.pid),
                 port,
                 address,
@@ -480,9 +485,10 @@ fn table(jobs: &[JobView]) -> String {
                 .and_then(since)
                 .map_or_else(|| "-".to_string(), |span| format!("{span} ago"))
         };
-        let mut state = match (job.state, job.exit_code) {
-            ("failed", code) => format!("failed ({})", describe_code(code)),
-            (word, _) => word.to_string(),
+        let mut state = match job.state {
+            "failed" if job.never_ran => format!("failed ({})", Exit::NeverRan.describe()),
+            "failed" => format!("failed ({})", describe_code(job.exit_code)),
+            word => word.to_string(),
         };
         if job.background && job.is_running() {
             state.push_str(" (bg)");
@@ -521,14 +527,15 @@ fn state_word(entry: &Entry, status: Status) -> &'static str {
     match status {
         Status::Running if entry.ready.is_some() => "ready",
         Status::Running => "running",
-        Status::Exited(Some(0)) => "done",
+        Status::Exited(Exit::Code(0)) => "done",
         Status::Exited(_) => "failed",
         Status::Gone => "gone",
     }
 }
 
+/// How a job that ran ended: its exit code, or the signal that took it.
 fn describe_code(code: Option<i32>) -> String {
-    code.map_or_else(|| "killed".to_string(), |code| format!("exit {code}"))
+    code.map_or(Exit::Killed, Exit::Code).describe()
 }
 
 /// Where a running job can be reached: its port and the address to use.

@@ -104,8 +104,52 @@ pub struct Ready {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Ended {
     pub at: u64,
-    /// The exit code; `None` when the process died by a signal.
+    /// The exit code; `None` when the process died by a signal, or never ran.
     pub code: Option<i32>,
+    /// The program never started: its directory was missing, or there was no
+    /// shell to run it with. A record from before v0.27 says only `code: None`
+    /// for this, and reads as killed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub never_ran: bool,
+}
+
+impl Ended {
+    pub fn exit(&self) -> Exit {
+        match (self.never_ran, self.code) {
+            (true, _) => Exit::NeverRan,
+            (false, Some(code)) => Exit::Code(code),
+            (false, None) => Exit::Killed,
+        }
+    }
+}
+
+/// How a job that ended by itself ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Exit {
+    /// It ran and returned this code.
+    Code(i32),
+    /// It ran and was ended by a signal.
+    Killed,
+    /// It never ran at all.
+    NeverRan,
+}
+
+impl Exit {
+    pub fn code(self) -> Option<i32> {
+        match self {
+            Exit::Code(code) => Some(code),
+            Exit::Killed | Exit::NeverRan => None,
+        }
+    }
+
+    /// What `ps`, a notification and a failed `--detach` call it.
+    pub fn describe(self) -> String {
+        match self {
+            Exit::Code(code) => format!("exit {code}"),
+            Exit::Killed => "killed".to_string(),
+            Exit::NeverRan => "did not start".to_string(),
+        }
+    }
 }
 
 /// Where a job stands right now.
@@ -114,7 +158,7 @@ pub enum Status {
     /// The owning process is alive.
     Running,
     /// It ended by itself and said how.
-    Exited(Option<i32>),
+    Exited(Exit),
     /// The process is gone without saying how: killed from outside, a crash,
     /// a reboot.
     Gone,
@@ -146,7 +190,7 @@ impl Entry {
 
     pub fn status(&self) -> Status {
         if let Some(ended) = &self.ended {
-            return Status::Exited(ended.code);
+            return Status::Exited(ended.exit());
         }
         if process::is_alive(self.pid, self.birth) {
             Status::Running
@@ -416,7 +460,11 @@ mod tests {
                 at: 5,
                 url: Some("http://a.localhost".into()),
             });
-            entry.ended = Some(Ended { at: 9, code: None });
+            entry.ended = Some(Ended {
+                at: 9,
+                code: None,
+                never_ran: false,
+            });
             entry.signals = vec![crate::signal::Signal {
                 kind: crate::signal::Kind::StandDown,
                 app: "web".into(),
@@ -447,7 +495,36 @@ mod tests {
         assert_eq!(entry.status(), Status::Running);
         entry.birth = entry.birth.wrapping_add(1);
         assert_eq!(entry.status(), Status::Gone);
-        entry.ended = Some(Ended { at: now(), code: Some(3) });
-        assert_eq!(entry.status(), Status::Exited(Some(3)));
+        entry.ended = Some(Ended {
+            at: now(),
+            code: Some(3),
+            never_ran: false,
+        });
+        assert_eq!(entry.status(), Status::Exited(Exit::Code(3)));
+        entry.ended = Some(Ended {
+            at: now(),
+            code: None,
+            never_ran: false,
+        });
+        assert_eq!(entry.status(), Status::Exited(Exit::Killed));
+        entry.ended = Some(Ended {
+            at: now(),
+            code: None,
+            never_ran: true,
+        });
+        assert_eq!(entry.status(), Status::Exited(Exit::NeverRan));
+        assert_eq!(Exit::NeverRan.describe(), "did not start");
+
+        // A record of a turnout before v0.27 has no `never_ran`, and one that
+        // ran never writes it.
+        let old: Ended = serde_json::from_str(r#"{"at": 1, "code": null}"#).unwrap();
+        assert_eq!(old.exit(), Exit::Killed);
+        let ran = serde_json::to_string(&Ended {
+            at: 1,
+            code: Some(0),
+            never_ran: false,
+        })
+        .unwrap();
+        assert!(!ran.contains("never_ran"), "{ran}");
     }
 }
