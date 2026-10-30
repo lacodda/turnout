@@ -1335,6 +1335,25 @@ mod tests {
         }
     }
 
+    /// `--clear` on a first deploy: the directory is not there yet, and an
+    /// absent directory is already clear. Up to v0.26 `find` failed on it on
+    /// every POSIX server, and with it the deploy.
+    #[test]
+    fn a_first_deploy_may_clear_a_directory_that_is_not_there() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("new-site");
+        let target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        let options = Options {
+            clear: true,
+            ..Options::default()
+        };
+        deploy_over_ssh(&target, &Shipment::of(&build), &options, &mut Report::default(), &connect).expect("clearing nothing is not a failure");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+    }
+
     /// A deploy that fails before its first write left the stand as it was,
     /// and the backup taken to roll back to goes with it.
     #[test]

@@ -128,11 +128,20 @@ impl Dialect {
     /// both. On POSIX that means `find -mindepth 1`; on Windows, the pair of
     /// `del` and `rd` that between them cover files and subdirectories.
     ///
-    /// Both arms tolerate an empty directory rather than reporting failure.
+    /// Both arms tolerate an empty directory rather than reporting failure,
+    /// and a directory that is not there at all: it has nothing in it. Up to
+    /// v0.26 the POSIX arm ran `find` on it regardless, which exits 1 for a
+    /// missing directory - so `deploy --clear` failed on every first deploy
+    /// to a POSIX server. The test runs under `sh` so that the `||` stays
+    /// inside this one command, whatever chain it is put in and whatever the
+    /// login shell is.
     pub fn clear_dir(&self, dir: &str) -> String {
         let quoted = self.quote(dir);
         match self {
-            Dialect::Posix => format!("find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"),
+            Dialect::Posix => format!(
+                "sh -c {}",
+                self.quote(&format!("[ ! -d {quoted} ] || find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"))
+            ),
             // `del /q /s` empties the files, `for /d ... rd /s /q` the
             // subdirectories. The trailing `(call )` keeps "nothing to
             // delete" from surfacing as a failed deploy step: it sets the
@@ -640,6 +649,7 @@ mod tests {
         let posix = Dialect::Posix.clear_dir("/var/www/site");
         assert!(posix.contains("-mindepth 1"), "{posix}");
         assert!(!posix.contains("rm -rf '/var/www/site'"), "the directory itself must not be removed: {posix}");
+        assert!(posix.starts_with("sh -c "), "the `||` stays inside one command: {posix}");
 
         let windows = Dialect::Windows.clear_dir("C:\\site");
         assert!(windows.contains("\\*"), "only the contents are targeted: {windows}");
