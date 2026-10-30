@@ -354,10 +354,36 @@ pub fn settle_arrivals(apps: &mut [App], arriving: &[String]) -> Vec<String> {
     notes
 }
 
-/// A pinned dev port belongs to one app, like a gateway port.
-pub fn ensure_dev_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()> {
-    if let Some(other) = apps.iter().find(|a| a.name != this && a.dev_port == Some(port)) {
-        bail!("dev port {port} is already used by app '{}' - pick another", other.name);
+/// A port pinned by hand belongs to one app, whichever kind it is pinned as.
+///
+/// Gateway and dev ports share one list: [`free_port`] hands out no number
+/// any app holds as either kind (ADR 0016), and a pinned port is held to the
+/// same rule. Each kind used to be checked against its own kind only, so
+/// `app edit web --dev-port 7100` took another app's gateway port, and the
+/// gateway's listener and the dev server fought over it. `this` is the app
+/// being added or edited: keeping the port it holds is not a clash. Its own
+/// two ports are [`ensure_own_ports_differ`]'s.
+pub fn ensure_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()> {
+    for other in apps.iter().filter(|app| app.name != this) {
+        let (kind, flag) = if other.gateway_port == Some(port) {
+            ("gateway port", "--port")
+        } else if other.dev_port == Some(port) {
+            ("dev port", "--dev-port")
+        } else {
+            continue;
+        };
+        bail!(
+            "port {port} is already used by app '{0}' as its {kind} - pick another, or move '{0}' first with `turnout app edit {0} {flag} PORT`",
+            other.name
+        );
+    }
+    Ok(())
+}
+
+/// An app's gateway listener and its dev server cannot share one port.
+pub fn ensure_own_ports_differ(app: &str, gateway_port: Option<u16>, dev_port: Option<u16>) -> Result<()> {
+    if let Some(port) = gateway_port.filter(|port| Some(*port) == dev_port) {
+        bail!("port {port} would be both the gateway port and the dev port of '{app}' - the listener and the dev server cannot share it");
     }
     Ok(())
 }
@@ -446,9 +472,28 @@ mod tests {
         let picked = dev_port_for(&apps, "new").unwrap();
         assert!(picked >= 5102, "{picked}");
         assert!(DEV_PORTS.contains(&picked));
-        assert!(ensure_dev_port_is_free(&apps, 5100, "web").is_ok());
-        let error = ensure_dev_port_is_free(&apps, 5100, "new").unwrap_err().to_string();
-        assert!(error.contains("already used by app 'web'"), "{error}");
+        assert!(ensure_port_is_free(&apps, 5100, "web").is_ok());
+        let error = ensure_port_is_free(&apps, 5100, "new").unwrap_err().to_string();
+        assert!(error.contains("already used by app 'web' as its dev port"), "{error}");
+    }
+
+    /// A pinned port is checked against both kinds, as a handed-out one is:
+    /// a dev port on another app's gateway port, or the other way round, put
+    /// the gateway's listener and a dev server on one port.
+    #[test]
+    fn a_pinned_port_clashes_with_either_kind() {
+        let apps = [app("web", Some(5100), Some(7100))];
+        let error = ensure_port_is_free(&apps, 7100, "api").unwrap_err().to_string();
+        assert!(error.contains("already used by app 'web' as its gateway port"), "{error}");
+        assert!(error.contains("turnout app edit web --port PORT"), "{error}");
+        let error = ensure_port_is_free(&apps, 5100, "api").unwrap_err().to_string();
+        assert!(error.contains("as its dev port"), "{error}");
+        assert!(error.contains("--dev-port PORT"), "{error}");
+        assert!(ensure_port_is_free(&apps, 7100, "web").is_ok(), "an app keeps what it holds");
+
+        assert!(ensure_own_ports_differ("web", Some(7100), Some(7100)).is_err());
+        assert!(ensure_own_ports_differ("web", Some(7100), Some(5100)).is_ok());
+        assert!(ensure_own_ports_differ("web", None, None).is_ok());
     }
 
     #[test]

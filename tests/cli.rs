@@ -319,6 +319,49 @@ fn app_add_refuses_a_port_another_app_holds() {
     turnout(dir.path()).args(["app", "edit", "web", "--port", "7001"]).assert().success();
 }
 
+/// Gateway and dev ports share one list, pinned by hand as when handed out.
+/// Each kind used to be checked against its own kind only: a dev port on
+/// another app's gateway port was accepted, and the gateway's listener and
+/// the dev server fought over it.
+#[test]
+fn a_pinned_port_is_checked_against_both_kinds() {
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7150", "--dev-port", "5150"])
+        .assert()
+        .success();
+    for (flag, port, kind) in [("--dev-port", "7150", "gateway port"), ("--port", "5150", "dev port")] {
+        turnout(dir.path())
+            .args(["app", "add", "api", "--path"])
+            .arg(&project)
+            .args([flag, port])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(format!("port {port} is already used by app 'web' as its {kind}")));
+    }
+    turnout(dir.path()).args(["app", "add", "api", "--path"]).arg(&project).assert().success();
+    for (flag, port) in [("--dev-port", "7150"), ("--port", "5150")] {
+        turnout(dir.path())
+            .args(["app", "edit", "api", flag, port])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("already used by app 'web'"));
+    }
+    // An app's own two ports are one list too - and a swap is not a clash.
+    turnout(dir.path())
+        .args(["app", "edit", "web", "--dev-port", "7150"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("both the gateway port and the dev port of 'web'"));
+    turnout(dir.path())
+        .args(["app", "edit", "web", "--port", "5150", "--dev-port", "7150"])
+        .assert()
+        .success();
+    assert_eq!(gateway_port_of(dir.path(), "web"), 5150);
+}
+
 #[test]
 fn gateway_refuses_a_port_two_apps_share() {
     let (dir, project) = workspace();
@@ -750,7 +793,7 @@ fn dev_gets_a_port_once_and_hands_it_over() {
         .args(["--dev-port", &port.to_string()])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(format!("dev port {port} is already used by app 'myapp'")));
+        .stderr(predicate::str::contains(format!("port {port} is already used by app 'myapp' as its dev port")));
     turnout(dir.path()).args(["app", "edit", "myapp", "--dev-port", "0"]).assert().success();
     turnout(dir.path())
         .args(["app", "show", "myapp"])

@@ -171,7 +171,10 @@ fn ask_dev_port(app: &mut App, around: &Surroundings) -> Result<()> {
         return Ok(());
     }
     let port: u16 = answer.parse().context("port must be a number")?;
-    crate::front::ensure_dev_port_is_free(&around.others, port, &app.name)?;
+    // The check `--dev-port` gets: no port another app holds as either kind,
+    // and not this app's own gateway port.
+    crate::front::ensure_port_is_free(&around.others, port, &app.name)?;
+    crate::front::ensure_own_ports_differ(&app.name, app.gateway_port, Some(port))?;
     app.dev_port = Some(port);
     Ok(())
 }

@@ -410,28 +410,24 @@ fn apply_flags(
     if let Some(path) = path {
         app.path = crate::utils::project_dir(&path)?.display().to_string();
     }
-    if let Some(port) = port {
-        // 0 hands the port back, as `--dev-port 0` does: an app that should
-        // talk to a stand directly, with no gateway listener of its own.
-        let wanted = (port != 0).then_some(port);
-        if let Some(port) = wanted {
-            ensure_port_is_free(others, port, &app.name)?;
-        }
-        app.gateway_port = wanted;
+    // Both ports are settled before either is checked against the app's own
+    // other one, so `--port 5100 --dev-port 7100` swaps the two cleanly.
+    // 0 hands a port back: a gateway port for an app that should talk to a
+    // stand directly, with no listener of its own; a dev port for the next
+    // `dev` to assign afresh.
+    let gateway_port = port.map_or(app.gateway_port, |port| (port != 0).then_some(port));
+    let pinned_dev_port = dev_port.map_or(app.dev_port, |port| (port != 0).then_some(port));
+    for pinned in [port, dev_port].into_iter().flatten().filter(|port| *port != 0) {
+        crate::front::ensure_port_is_free(others, pinned, &app.name)?;
     }
+    crate::front::ensure_own_ports_differ(&app.name, gateway_port, pinned_dev_port)?;
+    app.gateway_port = gateway_port;
+    app.dev_port = pinned_dev_port;
     if let Some(env_var) = env_var {
         app.gateway_env = Some(validate_env_name(env_var)?);
     }
     if let Some(env_file) = env_file {
         app.env_file = Some(validate_env_file(env_file)?);
-    }
-    if let Some(dev_port) = dev_port {
-        // 0 hands the port back: the next `dev` assigns a fresh one.
-        let wanted = (dev_port != 0).then_some(dev_port);
-        if let Some(port) = wanted {
-            crate::front::ensure_dev_port_is_free(others, port, &app.name)?;
-        }
-        app.dev_port = wanted;
     }
     if dist.is_some() {
         app.dist_dir = dist;
@@ -548,19 +544,4 @@ fn assign_gateway_port(apps: &[App], name: &str) -> Result<Option<u16>> {
             crate::front::GATEWAY_PORTS
         )
     })
-}
-
-/// A gateway port belongs to exactly one app.
-///
-/// Two apps on one port used to be accepted here and only surface as the
-/// gateway dying on its second `bind` - after `start` had reported success.
-/// `this` is the app being added or edited, so keeping its own port is fine.
-fn ensure_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()> {
-    if let Some(other) = apps.iter().find(|a| a.name != this && a.gateway_port == Some(port)) {
-        bail!(
-            "port {port} is already used by app '{0}' - pick another, or move '{0}' first with `turnout app edit {0} --port PORT`",
-            other.name
-        );
-    }
-    Ok(())
 }

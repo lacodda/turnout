@@ -37,7 +37,11 @@ With `NAME` or `--path` missing, the [wizard](#the-wizard) walks every field of 
 
 A new app is given a **gateway port** from `7100-7199` straight away - the first of the range no app holds and nothing on the machine is listening on. It is assigned at this point rather than on first use because the number goes into the app's [dotenv file](#how-the-app-learns-the-gateway-address) immediately, which is what lets `pnpm dev` from an IDE reach the stand without turnout in the loop.
 
-A gateway port belongs to exactly one app: `add` and `edit` refuse a port another app already holds and name that app. Two apps on one port would leave the gateway unable to bind the second listener.
+A port belongs to exactly one app and one use: `add`, `edit` and the form refuse a port another app already holds - **as either kind**, gateway or dev - and name that app and which of its ports it is. Two apps on one port would leave the gateway unable to bind the second listener, and a dev port on a gateway port puts the listener and the dev server on one number. An app's own two ports differ too; passing both flags at once swaps them cleanly.
+
+```text
+error: port 7100 is already used by app 'web' as its gateway port - pick another, or move 'web' first with `turnout app edit web --port PORT`
+```
 
 `--port PORT` pins a specific one, and `turnout app edit NAME --port 0` hands it back - an app with no gateway port has no listener of its own and no address to carry, which is what you want for a project that talks to its stand directly.
 
@@ -85,7 +89,7 @@ Commands can also name the address inline: `{gateway}` in a command line is repl
 
 ## The app's address
 
-Every app answers at `http://NAME.localhost` through the gateway's [front door](/turnout/reference/gateway/#the-front-door), whatever port its dev server took. The port behind the name is the app's **dev port**: assigned from `5100-5199` on the first `turnout dev` and kept from then on, or pinned with `--dev-port` (a project that insists on 3000, say). `--dev-port 0` hands an assigned port back; the next `dev` picks a fresh one. Like a gateway port, a dev port belongs to one app.
+Every app answers at `http://NAME.localhost` through the gateway's [front door](/turnout/reference/gateway/#the-front-door), whatever port its dev server took. The port behind the name is the app's **dev port**: assigned from `5100-5199` on the first `turnout dev` and kept from then on, or pinned with `--dev-port` (a project that insists on 3000, say). `--dev-port 0` hands an assigned port back; the next `dev` picks a fresh one. Like a gateway port, a dev port belongs to one app - and is never another app's gateway port.
 
 `dev` hands the port to the server as the `PORT` variable and as `{port}` in the command line. Vite does not read `PORT`, so a Vite project's detected dev command already ends in `--port {port}` (`pnpm dev --port {port}`, `npm run dev -- --port {port}`); a project registered before that gets the same with `turnout app edit myapp --command "dev=pnpm dev --port {port}"`.
 
