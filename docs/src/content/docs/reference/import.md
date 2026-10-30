@@ -30,7 +30,22 @@ On a fresh machine that distinction never comes up - everything is new, and the 
 
 `--force` is the opposite instruction: incoming entries win. Use it when the file is the source of truth, for instance restoring a backup over a setup you no longer trust.
 
-Every entity is matched by its own name - apps, servers, credentials, paths and groups alike.
+Every entity is matched by its own name - apps, servers, credentials, paths, targets and groups alike.
+
+## Ports
+
+An import is the one way into the catalog that does not go through [`app add`](/turnout/reference/app/), so it holds an arriving app to the same rule: every app has a [gateway port](/turnout/reference/app/#ports-turnout-hands-out) of its own.
+
+- An app that **arrives without a gateway port** - from an export written before v0.18.0, when the port was a question you could leave empty - is given one from 7100-7199.
+- An app that **arrives on a port an app here already holds** - the other machine handed out the same number - moves to a free one. The app already here keeps its number, because its dotenv file carries it.
+- A **dev port** an app here already uses is dropped from the arriving app; its next `turnout dev` picks a free one.
+
+The import names each app it moved:
+
+```text
+Imported 9 item(s).
+  'web' moved to gateway port 7101 - 7150 is 'docs''s on this machine
+```
 
 ## Secrets
 
@@ -55,6 +70,10 @@ printf '%s' "$PASSPHRASE" | turnout import backup.json
 An export written by a newer turnout is refused rather than half-read, with the version it needs. Format 4 (v0.24.0) is why: its targets can carry a [health check](/turnout/reference/target/#health-check), and an older turnout importing one would drop the check and deploy unchecked. Format 5 (v0.25.0) for the same reason: a target can say how many [backups its stand keeps](/turnout/reference/target/#backups), and an older turnout would drop the number and prune to its default.
 
 The [deploy history](/turnout/reference/history/) does not travel: it is a record of what this machine did, not configuration.
+
+## Files from older versions
+
+An export written by any release since v0.11.0 imports into this one with nothing lost. That is not a promise kept by reading the code: the repository holds the file each of those releases wrote, made by its own binary, and every build imports all of them and checks that each entity and each field comes back as it left.
 
 ## Files from turnout 0.8
 

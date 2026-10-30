@@ -79,15 +79,15 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
     };
 
     let mut report = Report::default();
-    merge(
-        &mut store::load_apps()?,
-        snapshot.apps,
-        |app| app.name.clone(),
-        force,
-        "app",
-        &mut report,
-        store::save_apps,
-    )?;
+    // Apps are saved only after their ports are settled: the import is the one
+    // way into the catalog that skips `app add`, and an older export can bring
+    // an app with no gateway port, or a port an app here already holds.
+    let mut apps = store::load_apps()?;
+    let arrived = merge(&mut apps, snapshot.apps, |app| app.name.clone(), force, "app", &mut report, |_| Ok(()))?;
+    report.ports = crate::front::settle_arrivals(&mut apps, &arrived);
+    if !arrived.is_empty() {
+        store::save_apps(&apps)?;
+    }
     merge(
         &mut store::load_servers()?,
         snapshot.servers,
@@ -155,6 +155,8 @@ struct Report {
     /// Names that already existed, kept as they were.
     skipped: Vec<String>,
     secrets: usize,
+    /// Ports an arriving app was given or gave up, one line per app.
+    ports: Vec<String>,
 }
 
 impl Report {
@@ -171,6 +173,9 @@ impl Report {
             }
             println!("  Re-run with --force to overwrite them.");
         }
+        for line in &self.ports {
+            println!("  {line}");
+        }
         if self.secrets > 0 {
             println!("Restored {} secret(s) to the OS keyring.", self.secrets);
         }
@@ -178,30 +183,34 @@ impl Report {
 }
 
 /// Add incoming items to `existing`, keeping what is already there unless
-/// `force` says otherwise, then save through `save`.
-fn merge<T, K, S>(existing: &mut Vec<T>, incoming: Vec<T>, key: K, force: bool, kind: &str, report: &mut Report, save: S) -> Result<()>
+/// `force` says otherwise, then save through `save`. Returns the names of the
+/// items written.
+fn merge<T, K, S>(existing: &mut Vec<T>, incoming: Vec<T>, key: K, force: bool, kind: &str, report: &mut Report, save: S) -> Result<Vec<String>>
 where
     K: Fn(&T) -> String,
     S: Fn(&[T]) -> Result<()>,
 {
     if incoming.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
+    let mut written = Vec::new();
     for item in incoming {
         let name = key(&item);
         match existing.iter().position(|other| key(other) == name) {
             Some(index) if force => {
                 existing[index] = item;
-                report.imported += 1;
+                written.push(name);
             }
             Some(_) => report.skipped.push(format!("{kind} '{name}'")),
             None => {
                 existing.push(item);
-                report.imported += 1;
+                written.push(name);
             }
         }
     }
-    save(existing)
+    report.imported += written.len();
+    save(existing)?;
+    Ok(written)
 }
 
 /// Read every stored secret named by the credential catalog.

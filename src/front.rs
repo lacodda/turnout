@@ -290,6 +290,70 @@ fn free_port(range: std::ops::RangeInclusive<u16>, apps: &[App], held: Option<u1
         .find(|port| std::net::TcpListener::bind(("127.0.0.1", *port)).is_ok())
 }
 
+/// Give the apps that just arrived in `apps` ports this catalog can hold:
+/// each its own gateway port, and no dev port another app already uses.
+///
+/// An import is the one way into the catalog that skips `app add`, so it is
+/// where an export from before v0.18 brings an app with no gateway port (the
+/// state the schema 4 migration put an end to), and an export from before
+/// v0.13.1 - or simply from another machine - brings a port some app here
+/// already holds. The apps already here keep their numbers: their dotenv
+/// files carry them. An arriving app that clashes takes a free gateway port,
+/// and loses a clashing dev port, which its next `dev` assigns again.
+///
+/// Returns what was changed, one line per app, for the import to report.
+pub fn settle_arrivals(apps: &mut [App], arriving: &[String]) -> Vec<String> {
+    let mut notes = Vec::new();
+    let mut settled: Vec<bool> = apps.iter().map(|app| !arriving.contains(&app.name)).collect();
+    for index in 0..apps.len() {
+        if settled[index] {
+            continue;
+        }
+        let holder = |port: u16, apps: &[App], settled: &[bool]| {
+            apps.iter()
+                .enumerate()
+                .find(|(other, app)| *other != index && settled[*other] && (app.gateway_port == Some(port) || app.dev_port == Some(port)))
+                .map(|(_, app)| app.name.clone())
+        };
+
+        let clash = apps[index]
+            .gateway_port
+            .and_then(|port| holder(port, apps, &settled).map(|other| (port, other)));
+        if apps[index].gateway_port.is_none() || clash.is_some() {
+            let name = apps[index].name.clone();
+            match free_gateway_port(apps) {
+                Some(port) => {
+                    apps[index].gateway_port = Some(port);
+                    notes.push(match &clash {
+                        Some((old, other)) => format!("'{name}' moved to gateway port {port} - {old} is '{other}''s on this machine"),
+                        None => format!("'{name}' was given gateway port {port} - turnout assigns one to every app now"),
+                    });
+                }
+                None => {
+                    if clash.is_some() {
+                        apps[index].gateway_port = None;
+                    }
+                    notes.push(format!(
+                        "'{name}' has no gateway port - none is free in {GATEWAY_PORTS:?}; set one with `turnout app edit {name} --port PORT`"
+                    ));
+                }
+            }
+        }
+
+        if let Some(port) = apps[index].dev_port
+            && let Some(other) = holder(port, apps, &settled)
+        {
+            apps[index].dev_port = None;
+            notes.push(format!(
+                "'{}' gave up dev port {port} - '{other}' uses it here; its next `dev` picks a free one",
+                apps[index].name
+            ));
+        }
+        settled[index] = true;
+    }
+    notes
+}
+
 /// A pinned dev port belongs to one app, like a gateway port.
 pub fn ensure_dev_port_is_free(apps: &[App], port: u16, this: &str) -> Result<()> {
     if let Some(other) = apps.iter().find(|a| a.name != this && a.dev_port == Some(port)) {
@@ -389,7 +453,10 @@ mod tests {
 
     #[test]
     fn a_gateway_port_comes_from_its_own_range_and_skips_what_apps_hold() {
-        assert_eq!(free_gateway_port(&[]), Some(*GATEWAY_PORTS.start()));
+        // Not "7100 exactly": the probe bind makes the answer depend on the
+        // machine, and on every other test probing the range at that instant.
+        let first = free_gateway_port(&[]).unwrap();
+        assert!(GATEWAY_PORTS.contains(&first), "{first}");
         let apps = [app("web", None, Some(7100)), app("api", Some(7101), None)];
         // 7100 is web's gateway port and 7101 is api's dev port, pinned there
         // by hand: both are out, whichever kind of port they are.
@@ -405,6 +472,70 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let busy = listener.local_addr().unwrap().port();
         assert_eq!(free_port(DEV_PORTS, &[], Some(busy)), Some(busy));
+    }
+
+    fn names(of: &[&str]) -> Vec<String> {
+        of.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// The app already here keeps its number - its dotenv file carries it -
+    /// and the one that arrived with the same number takes another.
+    #[test]
+    fn an_arriving_app_moves_off_a_gateway_port_held_here() {
+        let mut apps = [app("here", None, Some(7150)), app("arrived", None, Some(7150))];
+        let notes = settle_arrivals(&mut apps, &names(&["arrived"]));
+        assert_eq!(apps[0].gateway_port, Some(7150), "the app already here keeps its port");
+        let moved = apps[1].gateway_port.unwrap();
+        assert!(moved != 7150 && GATEWAY_PORTS.contains(&moved), "{moved}");
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(notes[0].contains("7150 is 'here''s"), "{notes:?}");
+    }
+
+    /// Two apps of one export on one port - accepted before v0.13.1: the first
+    /// keeps it, the second moves.
+    #[test]
+    fn two_arriving_apps_on_one_port_end_up_on_two() {
+        let mut apps = [app("first", None, Some(7150)), app("second", None, Some(7150))];
+        settle_arrivals(&mut apps, &names(&["first", "second"]));
+        assert_eq!(apps[0].gateway_port, Some(7150));
+        assert_ne!(apps[1].gateway_port, Some(7150));
+        assert!(apps[1].gateway_port.is_some());
+    }
+
+    /// An export from before v0.18 has apps with no gateway port at all.
+    #[test]
+    fn an_arriving_app_without_a_port_is_given_one() {
+        let mut apps = [app("here", None, Some(7100)), app("arrived", None, None)];
+        let notes = settle_arrivals(&mut apps, &names(&["arrived"]));
+        let given = apps[1].gateway_port.expect("a port is given");
+        assert_ne!(given, 7100);
+        assert!(notes[0].contains("was given gateway port"), "{notes:?}");
+    }
+
+    /// A dev port is assigned again on the next `dev`, so a clashing one is
+    /// dropped rather than moved - and either kind of port held here counts.
+    #[test]
+    fn an_arriving_dev_port_held_here_is_given_up() {
+        let mut apps = [app("here", Some(5150), Some(7100)), app("arrived", Some(5150), Some(7101))];
+        let notes = settle_arrivals(&mut apps, &names(&["arrived"]));
+        assert_eq!(apps[0].dev_port, Some(5150));
+        assert_eq!(apps[1].dev_port, None);
+        assert_eq!(apps[1].gateway_port, Some(7101), "a gateway port nobody holds stays");
+        assert!(notes[0].contains("gave up dev port 5150"), "{notes:?}");
+
+        let mut apps = [app("here", None, Some(7101)), app("arrived", Some(7101), Some(7102))];
+        settle_arrivals(&mut apps, &names(&["arrived"]));
+        assert_eq!(apps[1].dev_port, None, "a dev port that is a gateway port here clashes too");
+    }
+
+    /// Apps that are not arriving are never touched, whatever they hold.
+    #[test]
+    fn apps_already_here_are_left_as_they_are() {
+        let mut apps = [app("one", None, Some(7150)), app("two", None, Some(7150)), app("none", None, None)];
+        let notes = settle_arrivals(&mut apps, &[]);
+        assert!(notes.is_empty());
+        assert_eq!(apps[1].gateway_port, Some(7150));
+        assert_eq!(apps[2].gateway_port, None);
     }
 
     #[test]

@@ -2989,6 +2989,40 @@ fn import_keeps_local_entries_unless_forced() {
         .stdout(predicate::str::contains("localhost:7100"));
 }
 
+/// Another machine hands out the same numbers: an app arriving on a gateway
+/// port an app here already holds would leave two listeners on one port - the
+/// v0.13.1 defect, reached by the one door that skips `app add`. The app here
+/// keeps its port, the arriving one moves, and the import says so.
+#[test]
+fn an_imported_app_moves_off_a_port_an_app_here_holds() {
+    let (source, project) = workspace();
+    turnout(source.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", "7150"])
+        .assert()
+        .success();
+    let file = source.path().join("export.json");
+    turnout(source.path()).args(["export", "--output"]).arg(&file).assert().success();
+
+    let (target, other) = workspace();
+    turnout(target.path())
+        .args(["app", "add", "docs", "--path"])
+        .arg(&other)
+        .args(["--port", "7150"])
+        .assert()
+        .success();
+    turnout(target.path())
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("'web' moved to gateway port").and(predicate::str::contains("7150 is 'docs''s")));
+
+    assert_ne!(gateway_port_of(target.path(), "web"), 7150);
+    assert_eq!(gateway_port_of(target.path(), "docs"), 7150, "the app already here keeps its port");
+}
+
 /// Data written by a newer turnout must stop the command with an explanation,
 /// not with a parse error from somewhere deep in a catalog. The files may well
 /// still parse and mean something different, which is the dangerous case.

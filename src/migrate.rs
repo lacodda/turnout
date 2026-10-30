@@ -248,34 +248,24 @@ fn targets_from_server_deploy(dir: &Path) -> Result<()> {
 /// [`crate::front::GATEWAY_PORTS`], because the app's dotenv file and any
 /// `.env` a developer copied from it already carry that number. Renumbering
 /// would be a silent breaking change dressed up as a migration.
+///
+/// The same rule an import follows for the apps it brings
+/// ([`crate::front::settle_arrivals`]): here the portless apps are the ones
+/// arriving, and every app that has a port is already settled.
 fn gateway_ports_for_every_app(dir: &Path) -> Result<()> {
     let apps_file = dir.join("apps.json");
     let mut apps: Vec<crate::model::App> = read_json_array(&apps_file)?;
-    let mut given = Vec::new();
-    for index in 0..apps.len() {
-        if apps[index].gateway_port.is_some() {
-            continue;
-        }
-        // Read against the catalog as it stands after the ports handed out so
-        // far, so two portless apps cannot be given the same number.
-        let Some(port) = crate::front::free_gateway_port(&apps) else {
-            // Not fatal: a catalog this full is better off keeping the apps it
-            // has than refusing to open. The user is told which ones are short.
-            eprintln!(
-                "    no free gateway port left for '{}' - set one with `turnout app edit {} --port PORT`",
-                apps[index].name, apps[index].name
-            );
-            continue;
-        };
-        apps[index].gateway_port = Some(port);
-        given.push(format!("{} on {port}", apps[index].name));
-    }
+    let portless: Vec<String> = apps.iter().filter(|app| app.gateway_port.is_none()).map(|app| app.name.clone()).collect();
+    // Not fatal when the range runs out: a catalog this full is better off
+    // keeping the apps it has than refusing to open, and the note names the
+    // app that is short.
+    let notes = crate::front::settle_arrivals(&mut apps, &portless);
     write_json(&apps_file, &apps)?;
-    if !given.is_empty() {
-        // Named rather than counted: the number goes into the app's dotenv
-        // file on its next `app edit`, and the user may recognize a clash with
-        // something they run by hand.
-        eprintln!("    gateway port: {}", given.join(", "));
+    // Named rather than counted: the number goes into the app's dotenv file on
+    // its next `app edit`, and the user may recognize a clash with something
+    // they run by hand.
+    for note in notes {
+        eprintln!("    {note}");
     }
     Ok(())
 }
