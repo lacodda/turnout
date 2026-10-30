@@ -610,7 +610,7 @@ pub(crate) mod tests {
             })
         }
 
-        async fn auth_publickey(&mut self, user: &str, key: &russh::keys::PublicKey) -> Result<AuthAnswer, Self::Error> {
+        async fn auth_publickey(&mut self, user: &str, key: server::VerifiedPublicKey<'_>) -> Result<AuthAnswer, Self::Error> {
             // russh verifies the signature; the handler only says whether the
             // user may sign in with this key at all.
             //
@@ -622,7 +622,7 @@ pub(crate) mod tests {
             // material for the same reason - a comment is a label, not part of
             // the identity.
             let key_allowed = match &self.authorized {
-                Some(authorized) => authorized.key_data() == key.key_data(),
+                Some(authorized) => authorized.key_data() == key.public_key.key_data(),
                 None => true,
             };
             Ok(if user == USER && key_allowed { AuthAnswer::Accept } else { rejected() })
