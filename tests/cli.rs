@@ -4727,6 +4727,53 @@ fn the_gateway_says_when_a_stand_is_down_or_a_session_expired() {
     assert_eq!(toasts[1]["open"], format!("http://127.0.0.1:{stand_port}"));
 }
 
+/// A lapsed session's toast sends "Log in" through the door that opened. When
+/// the door was asked for and could not open - its port is somebody else's -
+/// the link is the app's own gateway port, not the busy one it pointed at.
+#[test]
+fn the_login_link_follows_the_door_that_opened() {
+    let (dir, project) = workspace();
+    let (stand_port, stand_listener) = reserved_port();
+    let (gateway_port, gateway_reservation) = reserved_port();
+    // Held for the whole test: the door pinned here cannot open.
+    let (busy_port, _busy) = reserved_port();
+    spawn_stand(stand_listener);
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", &format!("http://127.0.0.1:{stand_port}")])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["use", "myapp", "stand", "--no-check"]).assert().success();
+    drop(gateway_reservation);
+    let child = turnout_process(dir.path())
+        .env("TURNOUT_FRONT_PORT", busy_port.to_string())
+        .args(["gateway", "run"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let _gateway = ChildGuard(child);
+    wait_for_port(gateway_port);
+    wait_until("the gateway's record", || status_json(dir.path())["gateway"]["state"] == "running");
+    assert_eq!(status_json(dir.path())["gateway"]["front_door"], serde_json::Value::Null);
+
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let get = |path: &str| {
+        let url = format!("http://127.0.0.1:{gateway_port}{path}");
+        runtime.block_on(async move { reqwest::get(url).await.unwrap().status().as_u16() })
+    };
+    assert_eq!(get("/hello"), 200, "logs in: the stand sets a cookie");
+    assert_eq!(get("/expire"), 401);
+    let sent = toasts_eventually(dir.path(), 1);
+    assert_eq!(sent[0]["title"], "myapp: the stand session expired", "{sent:#?}");
+    assert_eq!(sent[0]["open"], format!("http://localhost:{gateway_port}"), "{sent:#?}");
+}
+
 /// A session copied from a browser goes into the jar of the running
 /// gateway: the next request carries it, the lapsed-session signal goes, and
 /// nothing ever prints the value back.

@@ -191,21 +191,13 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
     runtime.block_on(async move {
         let jars: Jars = Arc::default();
         let clients: Clients = Arc::default();
-        let watch = Watch::start(front_port, ports.clone());
+        let mut listeners = Vec::with_capacity(apps.len());
         for (app, port) in apps {
             let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
                 .await
                 .with_context(|| format!("cannot listen on 127.0.0.1:{port} - the port is taken (a running gateway? stop it with `turnout gateway stop`)"))?;
             println!("{app}: listening on http://localhost:{port}");
-            let ctx = Ctx {
-                app,
-                port,
-                jars: jars.clone(),
-                clients: clients.clone(),
-                watch: watch.clone(),
-            };
-            let router = axum::Router::new().fallback(proxy).with_state(ctx);
-            tokio::spawn(async move { axum::serve(listener, router).await });
+            listeners.push((app, port, listener));
         }
         // The door is the second thing to open and the one thing allowed to
         // fail: the stand proxies above are the daily flow, the door is on
@@ -236,6 +228,21 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
                 None
             }
         };
+        // The door that opened, not the one that was asked for: a lapsed
+        // session's toast sends its "Log in" there, and when the door was
+        // asked for and failed, the port asked for is another process's.
+        let watch = Watch::start(door, ports.clone());
+        for (app, port, listener) in listeners {
+            let ctx = Ctx {
+                app,
+                port,
+                jars: jars.clone(),
+                clients: clients.clone(),
+                watch: watch.clone(),
+            };
+            let router = axum::Router::new().fallback(proxy).with_state(ctx);
+            tokio::spawn(async move { axum::serve(listener, router).await });
+        }
         // Last to open, and never in the way: without it `cookie` has nobody
         // to talk to, and that is all.
         let control = match open_control().await {
