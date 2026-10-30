@@ -24,10 +24,10 @@ turnout app add [NAME] [--path DIR] [--port PORT] [--env-var NAME] [--env-file F
 | --- | --- | --- |
 | `--path` | `-p` | Project directory |
 | `--port` | `-P` | Pin the app's gateway port; assigned from `7100-7199` when the app is added |
-| `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `TURNOUT_GATEWAY_URL`) |
+| `--env-var` | `-e` | Variable that carries the gateway URL to the app's commands (default `VITE_API_URL` for a Vite project, `TURNOUT_GATEWAY_URL` otherwise) |
 | `--env-file` | | Dotenv file turnout keeps in step with the port, relative to the project (default `.env.development.local`) |
 | `--dev-port` | | Port the dev server listens on; assigned from `5100-5199` on the first `dev` when unset, `0` hands it back |
-| `--dist` | `-d` | Build artifact directory, relative to the project path |
+| `--dist` | `-d` | Build artifact directory, relative to the project path (default `dist` for a Vite project, else whichever of `dist`, `build`, `out`, `public` exists) |
 | `--command` | `-c` | Set a command as `NAME=CMD` (repeatable); overrides detected defaults |
 | `--server` | `-s` | Allow a server for this app (repeatable) |
 
@@ -82,7 +82,7 @@ Flags do the same non-interactively, for scripts: `--command NAME=CMD` sets one 
 
 The port is set once, here. The app is handed the *address* (`http://localhost:PORT`) by two roads, so the project's own `.env` never carries it:
 
-- **A variable on every command turnout runs.** `turnout dev`, and any custom command run through `turnout run`, get `VARIABLE=http://localhost:PORT` in their environment. `build`, `test` and `lint` do not: a variable in the process environment overrides every dotenv file whatever the mode, and a production bundle must not bake in localhost. The variable's name is per app (`--env-var`), because the framework decides what the app can see - Vite exposes only `VITE_*` to the client, Create React App only `REACT_APP_*`. The wizard suggests `VITE_API_URL` for a Vite project and `TURNOUT_GATEWAY_URL` otherwise.
+- **A variable on every command turnout runs.** `turnout dev`, and any custom command run through `turnout run`, get `VARIABLE=http://localhost:PORT` in their environment. `build`, `test` and `lint` do not: a variable in the process environment overrides every dotenv file whatever the mode, and a production bundle must not bake in localhost. The variable's name is per app (`--env-var`), because the framework decides what the app can see - Vite exposes only `VITE_*` to the client, Create React App only `REACT_APP_*`. A Vite project gets `VITE_API_URL` and anything else `TURNOUT_GATEWAY_URL` - suggested by the wizard, and taken as it is by `app add` with flags unless `--env-var` says otherwise.
 - **A dotenv file turnout keeps in step.** For the times the app is started past turnout - from an IDE, or with `pnpm dev` by hand - `app add`, `app edit` and `gateway start` write the same assignment into `.env.development.local` (or the file named with `--env-file`). Vite and CRA read `.env.*.local` on top of `.env` in development only, so the project's `.env` stays untouched and committable. Only one block of the file is turnout's: a header line and the assignment under it; everything else in the file survives every rewrite, and unsetting the port takes the block out again. The file name is appended to `.gitignore` when the project is a git repository. A file turnout stops keeping loses its block too: when `--env-file` names another file, when `--path` moves the app, and when the app is removed - a stale block in `.env.development.local` would otherwise keep winning over `.env.local`, which Vite ranks below it. A file that held nothing but the block goes with it.
 
 Commands can also name the address inline: `{gateway}` in a command line is replaced with the URL and `{gateway_port}` with the number before the command runs - `vite --api {gateway}` works on every platform without `$VAR` or `%VAR%` syntax. A command that uses a placeholder on an app without a port is refused with the way to set one.
