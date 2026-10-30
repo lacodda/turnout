@@ -16,8 +16,11 @@
 //!   it is up (see [`ready`]), then only the lines that look like errors or
 //!   warnings. A server that never announces itself falls back to streaming,
 //!   because silence from a spinner is worse than noise.
-//! * [`Mode::Stream`] - `-v`, and everything off a terminal: the old
-//!   behaviour, byte for byte.
+//! * [`Mode::Stream`] - `-v`, and everything off a terminal: every line as
+//!   it arrives, on the stream it came from. Line by line rather than byte
+//!   for byte: a line is decoded leniently and loses its line ending, and a
+//!   line still being written - a progress bar redrawn with `\r` - shows
+//!   when it ends.
 //! * [`Mode::Log`] - a detached job: nothing reaches a terminal, because
 //!   there is none; the log is the whole of its output.
 //!

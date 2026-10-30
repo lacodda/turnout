@@ -113,8 +113,9 @@ const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 /// Stricter than [`probe`], which asks whether a stand is *there*: a check the
 /// target names is the owner's word for "this works", so 4xx fails it too - a
 /// health address that answers 404 is a deploy that lost its routes. No
-/// redirects are followed: a check that is sent to a login page did not get a
-/// yes.
+/// redirects are followed: the address's own answer is judged, and a
+/// redirect is below 400, so it passes (ADR 0024) - following it would judge
+/// whatever page it leads to instead.
 pub fn ask(url: &str, accept_invalid_certs: bool) -> std::result::Result<String, String> {
     let url = url.to_string();
     let answered = crate::utils::run_blocking(async move {

@@ -339,10 +339,20 @@ pub fn file_url(path: &Path) -> String {
 fn icon() -> Option<std::path::PathBuf> {
     const ICON: &[u8] = include_bytes!("../assets/toast-icon.png");
     let path = crate::paths::data_dir().ok()?.join("toast-icon.png");
-    if std::fs::metadata(&path).map(|meta| meta.len() != ICON.len() as u64).unwrap_or(true) {
-        std::fs::write(&path, ICON).ok()?;
-    }
+    put(&path, ICON).ok()?;
     Some(path)
+}
+
+/// Write `bytes` to `path` unless it holds them already.
+///
+/// Compared byte for byte: by length alone, a new icon the size of the old
+/// one - a recoloured tile, say - was never written.
+#[cfg(any(not(target_os = "macos"), test))]
+fn put(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if std::fs::read(path).is_ok_and(|on_disk| on_disk == bytes) {
+        return Ok(());
+    }
+    std::fs::write(path, bytes)
 }
 
 /// The toast as Windows reads it: ToastGeneric XML with protocol activation.
@@ -592,6 +602,19 @@ mod imp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The icon on disk is replaced whenever it differs from the one in the
+    /// binary - also when the two are the same size.
+    #[test]
+    fn an_icon_of_the_same_size_is_still_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("toast-icon.png");
+        put(&path, b"new icon").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new icon");
+        std::fs::write(&path, b"old icon").unwrap();
+        put(&path, b"new icon").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"new icon", "an icon the size of the old one was not written");
+    }
     use std::path::PathBuf;
 
     fn places(log: Option<&Path>) -> Places<'_> {

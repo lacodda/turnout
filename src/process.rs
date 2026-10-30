@@ -65,12 +65,15 @@ pub fn group_alive(group: i32) -> bool {
 /// How a recorded job is ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ending {
-    /// The job runs in a terminal of its own: end it the way Ctrl+C there
-    /// would, so that turnout gets to put that terminal back.
+    /// The job runs in a terminal of its own: on Unix, SIGINT to its group,
+    /// as Ctrl+C there would send, so that turnout gets to put that terminal
+    /// back. Windows cannot send Ctrl+C into another console, and ends the
+    /// tree outright, as it does for every ending.
     Interrupt,
-    /// The job runs in the background: end it outright.
+    /// The job runs in the background: SIGTERM on Unix; the tree outright on
+    /// Windows.
     Terminate,
-    /// It was asked and did not go.
+    /// It was asked and did not go: SIGKILL, or the tree outright.
     Kill,
 }
 

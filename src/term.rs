@@ -14,14 +14,18 @@
 //! return path cleans up. On Windows every spawned child is confined to a job
 //! object that kills the whole tree when turnout exits, however it exits.
 //!
-//! Everything here is a no-op when stdin/stdout are not a terminal.
+//! Off a terminal there is no state to capture, and restoring it does
+//! nothing; the interrupt handler and the job objects work all the same,
+//! because a pipe or a CI job interrupts its commands too.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Set while `job::run` waits on a child; the interrupt handler consults it.
 static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
-/// How many Ctrl+C arrived while a child was active; the second one means the
-/// child ignored the first, and the user wants the tree gone now.
+/// How many Ctrl+C arrived while a child was active. On Windows the second
+/// one means the child ignored the first, and the handler kills the tree; on
+/// Unix the terminal sends every Ctrl+C to the child's group by itself, and
+/// this is only a count.
 static INTERRUPTS: AtomicU32 = AtomicU32::new(0);
 /// Whether the current command was interrupted at all, for exit codes.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);

@@ -48,7 +48,7 @@ Hot-reload chatter stays out of the way; an error or a warning from the server c
 
 ## Seeing everything
 
-`-v` / `--verbose` turns the loader off and streams the output in full. So does anything that is not a terminal: a pipe, a file, a CI job. Piped output is byte for byte what it always was, and exit codes pass through either way.
+`-v` / `--verbose` turns the loader off and streams the output in full. So does anything that is not a terminal: a pipe, a file, a CI job. The output comes line by line, each on the stream it was written to, and exit codes pass through either way.
 
 ```bash
 turnout build myapp -v      # the whole build, as it happens

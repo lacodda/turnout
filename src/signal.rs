@@ -13,7 +13,8 @@
 //!
 //! A signal goes up on the first answer that shows it and stays up until an
 //! answer shows the opposite: a successful login for a session, any answer
-//! below 500 for a stand. `status` shows the signals that are up, and each one
+//! but 502, 503 or 504 for a stand - a 500 is the application answering,
+//! badly, not a stand that is down. `status` shows the signals that are up, and each one
 //! raises a desktop notification once when it goes up - not once per failed
 //! request, and not again for the same thing within [`RETOAST`], so a stand
 //! that flaps does not bury the desktop.

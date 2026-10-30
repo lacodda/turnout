@@ -220,11 +220,6 @@ pub fn human_bytes(bytes: u64) -> String {
     HumanBytes(bytes).to_string()
 }
 
-/// Wall-clock time for the summary line: `4.1s`, `12s`, `1m 43s`.
-///
-/// Sub-second precision only where it is informative - below ten seconds a
-/// digit after the point is the difference between fast and instant; above a
-/// minute nobody reads tenths.
 /// A span of whole seconds the way a person reads it at a glance: `59s`,
 /// `12m`, `5h 07m`, `2d 03h`. Coarser than [`human_duration`] - it is for
 /// how long something has been running, not for how long a step took.
@@ -237,6 +232,11 @@ pub fn human_span(seconds: u64) -> String {
     }
 }
 
+/// Wall-clock time for the summary line: `4.1s`, `12s`, `1m 43s`.
+///
+/// Sub-second precision only where it is informative - below ten seconds a
+/// digit after the point is the difference between fast and instant; above a
+/// minute nobody reads tenths.
 pub fn human_duration(elapsed: Duration) -> String {
     let secs = elapsed.as_secs_f64();
     if secs < 10.0 {

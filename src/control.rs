@@ -27,7 +27,8 @@ use crate::gateway::{Clients, Jars, Watch};
 use crate::output::iso8601;
 use crate::registry::Control;
 
-/// What `cookie set` sends: the pairs, in the order the browser sent them.
+/// What `cookie set` sends: the pairs the browser sent. A name given twice
+/// keeps its last value; the jar keeps no order of its own.
 #[derive(Serialize, Deserialize)]
 pub struct SetJar {
     pub cookies: Vec<(String, String)>,
