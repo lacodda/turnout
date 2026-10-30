@@ -40,6 +40,7 @@ Sending the build of #12 · 1.4.0 · 1a2b3c4 · deployed 3d 04h ago again
 
 - The stand runs the newest deploy there that left files - a `deployed` one, or an `uploaded, restart failed` one, whose files are what is on the server. Deploys that failed or were rolled back changed nothing and are passed over.
 - A rollback stands for the deploy it sent again, so `rollback` twice goes two steps back, not back and forth.
+- A rollback earlier in the stand's history is a build the stand ran like any other: after `#1`, `#2`, `#3` (a rollback to `#1`) and `#4`, `rollback` sends `#1`'s build again, through `#3` - not `#2`'s, which the stand had already been taken off.
 
 ## To a deploy you name
 

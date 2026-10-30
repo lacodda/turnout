@@ -362,6 +362,14 @@ pub fn origin<'a>(records: &'a [Record], record: &'a Record) -> &'a Record {
 /// partial one too, since its files are what is on the server. A deploy that
 /// was itself a rollback stands for the deploy it sent again, so rolling back
 /// twice goes two steps back rather than to and fro.
+///
+/// A rollback that went through *before* the running deploy is a build the
+/// stand ran, the same as any other, and may be the answer: after #1 A, #2 B,
+/// #3 back to #1 and #4 C, the stand ran A just before C. Up to v0.26 every
+/// rollback was passed over here, and a plain `rollback` from C went to B -
+/// a build the stand had already been taken off once. The answer is that
+/// rollback's own record: it sent the same build as the deploy it stands for,
+/// and only the deploys after it can have left files that build lacks.
 pub fn previous<'a>(records: &'a [Record], server: &str, dir: &str) -> Result<&'a Record> {
     let on_stand: Vec<&Record> = records.iter().filter(|record| record.on(server, dir)).collect();
     let Some(live) = on_stand.iter().rev().find(|record| record.outcome.wrote()) else {
@@ -371,7 +379,7 @@ pub fn previous<'a>(records: &'a [Record], server: &str, dir: &str) -> Result<&'
     on_stand
         .iter()
         .rev()
-        .find(|record| record.id < running.id && record.outcome == Outcome::Deployed && record.rollback_of.is_none())
+        .find(|record| record.id < running.id && record.outcome == Outcome::Deployed)
         .copied()
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -598,6 +606,30 @@ pub(crate) mod tests {
         let err = previous(&records, "stand", "/srv/b").unwrap_err().to_string();
         assert!(err.contains("#2") && err.contains("--to"), "{err}");
         assert!(previous(&records, "other", "/srv/a").is_err());
+    }
+
+    /// #1 A, #2 B, #3 back to #1, #4 C: before C the stand ran A, through the
+    /// rollback that sent it again - not B, which #3 had taken it off.
+    #[test]
+    fn a_rollback_the_stand_ran_before_is_what_it_goes_back_to() {
+        let mut back_to_a = a_record(3, "/srv/a", Outcome::Deployed, Some("a"));
+        back_to_a.rollback_of = Some(1);
+        let mut records = vec![
+            a_record(1, "/srv/a", Outcome::Deployed, Some("a")),
+            a_record(2, "/srv/a", Outcome::Deployed, Some("b")),
+            back_to_a,
+            a_record(4, "/srv/a", Outcome::Deployed, Some("c")),
+        ];
+        let found = previous(&records, "stand", "/srv/a").unwrap();
+        assert_eq!((found.id, found.build.as_deref()), (3, Some("a")), "A, as #3 sent it again");
+        assert_eq!(origin(&records, found).id, 1);
+
+        // Rolled back to A that way, the stand runs #1's build, and a rollback
+        // goes to the deploy before the one it runs: before #1 there is none.
+        let mut again = a_record(5, "/srv/a", Outcome::Deployed, Some("a"));
+        again.rollback_of = Some(3);
+        records.push(again);
+        assert!(previous(&records, "stand", "/srv/a").is_err());
     }
 
     #[test]
