@@ -170,17 +170,16 @@ pub fn public_line(key_path: &str, passphrase: Option<&str>, fallback_comment: &
     Ok(public)
 }
 
-/// Refuse a public key line that the remote shell cannot carry literally.
+/// Refuse a public key line that is not one line.
 ///
-/// A public key is base64 plus a comment, so this only ever fires on a comment
-/// someone put a quote or a percent sign into - but the check is what keeps a
-/// mangled line out of `authorized_keys`, where it would fail authentication
-/// with no visible cause.
-pub fn check_line(dialect: Dialect, line: &str) -> Result<()> {
-    if let Err(reason) = dialect.reject_unquotable(line) {
-        bail!("this public key cannot be installed on a cmd.exe server: {reason}");
-    }
-    if line.lines().count() != 1 {
+/// Its comment is free text, and any character of it is carried to the
+/// server literally (see [`Dialect::append_line`]) - up to v0.26 a `"` or a
+/// `%` was refused here because `cmd.exe` could not carry it, while `&`, `|`,
+/// `<` and `>`, which it cannot carry either, went through and broke the
+/// command. A line break is the one thing a single entry of `authorized_keys`
+/// cannot hold.
+pub fn check_line(line: &str) -> Result<()> {
+    if line.trim().is_empty() || line.contains(['\n', '\r']) {
         bail!("a public key must be a single line");
     }
     Ok(())
@@ -378,16 +377,15 @@ mod tests {
         assert!(line.ends_with(" turnout@here"), "{line}");
     }
 
-    /// Nothing that cmd.exe would mangle may reach `authorized_keys`: a broken
-    /// line there fails authentication with no visible cause.
+    /// A comment may say anything - the append carries every character - but
+    /// a key is one line, and two would be two entries.
     #[test]
-    fn a_line_cmd_cannot_carry_is_refused() {
-        let good = "ssh-ed25519 AAAAB turnout@desktop";
-        assert!(check_line(Dialect::Windows, good).is_ok());
-        assert!(check_line(Dialect::Posix, good).is_ok());
-        assert!(check_line(Dialect::Windows, "ssh-ed25519 AAAAB say \"hi\"").is_err());
-        assert!(check_line(Dialect::Windows, "ssh-ed25519 AAAAB 100%done").is_err());
-        assert!(check_line(Dialect::Posix, "ssh-ed25519 AAAAB one\nssh-ed25519 AAAAB two").is_err());
+    fn a_key_is_one_line_whatever_its_comment_says() {
+        assert!(check_line("ssh-ed25519 AAAAB turnout@desktop").is_ok());
+        assert!(check_line("ssh-ed25519 AAAAB say \"hi\" & 100%done <me>").is_ok());
+        assert!(check_line("ssh-ed25519 AAAAB one\nssh-ed25519 AAAAB two").is_err());
+        assert!(check_line("ssh-ed25519 AAAAB one\rtwo").is_err());
+        assert!(check_line("  ").is_err());
     }
 
     /// The administrator probe answers by exit status: being refused is the

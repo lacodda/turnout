@@ -315,21 +315,40 @@ impl Dialect {
         }
     }
 
-    /// Append one line to a file, creating it if it does not exist.
+    /// Append one line to a file, creating it if it does not exist, and on a
+    /// line of its own: a file whose last line has no newline gets one first.
     ///
-    /// The line is a public key: base64 and spaces, never a quote or a percent
-    /// sign, and [`Dialect::reject_unquotable`] is called on it anyway before
-    /// it gets here.
+    /// The line is a public key, and its comment is free text. Up to v0.26
+    /// both were written without care for either: a file saved by Notepad
+    /// ends without a newline, and the key was glued onto its last line -
+    /// breaking both keys; and on Windows the line was echoed bare, so a `&`,
+    /// `|`, `<` or `>` in the comment cut the command apart.
     ///
-    /// `>>` means the same thing in both shells. What differs is `echo`:
-    /// `cmd.exe` would take the quotes as part of the text, so the Windows arm
-    /// writes the line bare - safe here because a public key carries no
-    /// character `cmd.exe` treats specially. It also has no trailing-space
-    /// problem to dodge, since the line ends in the comment.
+    /// POSIX checks the last byte with `tail -c 1` and writes with `printf`,
+    /// which unlike `echo` leaves a backslash alone. Windows has no `cmd.exe`
+    /// way to do either, so the append is a PowerShell script ([`powershell`]),
+    /// which nothing in the line can break out of.
     pub fn append_line(&self, path: &str, line: &str) -> String {
         match self {
-            Dialect::Posix => format!("echo {} >> {}", self.quote(line), self.quote(path)),
-            Dialect::Windows => format!("echo {line}>>{}", self.quote(path)),
+            Dialect::Posix => {
+                let (file, line) = (self.quote(path), self.quote(line));
+                let script = format!("{{ [ ! -s {file} ] || [ -z \"$(tail -c 1 {file})\" ] || echo >> {file}; }} && printf '%s\\n' {line} >> {file}");
+                format!("sh -c {}", self.quote(&script))
+            }
+            // `Stop`, so that a refusal to write lands in the `catch` and
+            // fails the command rather than passing in silence.
+            Dialect::Windows => powershell(&format!(
+                "$ErrorActionPreference = 'Stop'\n\
+                 $f = {}\n\
+                 $line = {}\n\
+                 try {{\n\
+                 $lead = ''\n\
+                 if (Test-Path -LiteralPath $f) {{ $bytes = [IO.File]::ReadAllBytes($f); if ($bytes.Length -gt 0 -and $bytes[-1] -ne 10) {{ $lead = \"`r`n\" }} }}\n\
+                 [IO.File]::AppendAllText($f, $lead + $line + \"`r`n\")\n\
+                 }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}\n",
+                powershell_literal(path),
+                powershell_literal(line)
+            )),
         }
     }
 
@@ -425,6 +444,24 @@ pub fn powershell(script: &str) -> String {
     format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(&whole))
 }
 
+/// A value as a PowerShell single-quoted string, taken literally.
+///
+/// Every quote character PowerShell reads as a single quote is doubled - the
+/// typographic ones too, which it accepts as quotes and which a key comment
+/// typed on a phone can carry.
+pub fn powershell_literal(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('\'');
+    for c in value.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            quoted.push(c);
+        }
+        quoted.push(c);
+    }
+    quoted.push('\'');
+    quoted
+}
+
 /// What every server-side script opens with: errors and progress kept out of
 /// the reply. A PowerShell that loads a module for the first time on a machine
 /// reports "Preparing modules for first use" as progress - on a fresh CI
@@ -513,22 +550,61 @@ mod tests {
         assert!(Dialect::Windows.read_file("C:\\ProgramData\\ssh\\x").contains("(call )"));
     }
 
-    /// The appended line must arrive verbatim: `cmd.exe` would take POSIX
-    /// quotes as part of the text and write them into `authorized_keys`, where
-    /// they break the key silently.
+    /// Appending, never truncating: a single `>` would wipe every other key
+    /// the server trusts.
     #[test]
-    fn a_key_line_is_appended_verbatim() {
-        let line = "ssh-ed25519 AAAAB turnout@desktop";
-        let posix = Dialect::Posix.append_line("/home/deploy/.ssh/authorized_keys", line);
-        assert_eq!(posix, "echo 'ssh-ed25519 AAAAB turnout@desktop' >> '/home/deploy/.ssh/authorized_keys'");
+    fn a_key_line_is_appended_never_written_over() {
+        let posix = Dialect::Posix.append_line("/home/deploy/.ssh/authorized_keys", "ssh-ed25519 AAAAB turnout@desktop");
+        assert!(
+            posix.contains("printf '\\''%s\\n'\\'' '\\''ssh-ed25519 AAAAB turnout@desktop'\\'' >>"),
+            "{posix}"
+        );
+        assert!(!posix.contains("' > '"), "{posix}");
+        let windows = Dialect::Windows.append_line("C:\\ProgramData\\ssh\\administrators_authorized_keys", "ssh-ed25519 AAAAB x");
+        assert!(windows.starts_with("powershell "), "{windows}");
+    }
 
-        let windows = Dialect::Windows.append_line("C:\\ProgramData\\ssh\\administrators_authorized_keys", line);
-        assert!(windows.contains(line), "the line must not be quoted for cmd.exe: {windows}");
-        assert!(!windows.contains(&format!("'{line}'")), "{windows}");
-        // Appending, never truncating: a single `>` would wipe every other key
-        // the server trusts.
-        assert!(windows.contains(">>"), "{windows}");
-        assert!(posix.contains(">>"), "{posix}");
+    /// PowerShell takes a single-quoted string literally once each quote in
+    /// it is doubled - the typographic ones too.
+    #[test]
+    fn a_powershell_literal_doubles_every_single_quote() {
+        assert_eq!(super::powershell_literal("C:\\Users\\O'Brien"), "'C:\\Users\\O''Brien'");
+        assert_eq!(super::powershell_literal("it\u{2019}s"), "'it\u{2019}\u{2019}s'");
+        assert_eq!(super::powershell_literal("$HOME `n & | < > %x% \"q\""), "'$HOME `n & | < > %x% \"q\"'");
+    }
+
+    /// Through this machine's own shell: the line lands verbatim, on a line of
+    /// its own, whatever its comment holds and however the file ended. Up to
+    /// v0.26 a file without a final newline - Notepad's - got the key glued
+    /// onto its last line, and on Windows a `&` or `>` in the comment broke
+    /// the command.
+    #[test]
+    fn a_key_line_lands_on_its_own_line_in_a_real_shell() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dialect = read_probe(&session.exec(PROBE).unwrap());
+        let dir = tempfile::tempdir().unwrap();
+        let lines = |file: &std::path::Path| -> Vec<String> { std::fs::read_to_string(file).unwrap().lines().map(str::to_string).collect() };
+        let line = "ssh-ed25519 AAAAB3Nz me & you | <laptop> 100%done \"home\" it's ^caret\\ (paren) !bang";
+
+        let notepad = dir.path().join("administrators_authorized_keys");
+        std::fs::write(&notepad, "ssh-ed25519 AAAAfirst first@key").unwrap();
+        session.exec(&dialect.append_line(&notepad.display().to_string(), line)).unwrap();
+        assert_eq!(lines(&notepad), ["ssh-ed25519 AAAAfirst first@key", line]);
+        assert!(std::fs::read_to_string(&notepad).unwrap().ends_with('\n'), "the file ends on a newline");
+
+        // A file that does end in one gets no blank line; none at all is made.
+        session
+            .exec(&dialect.append_line(&notepad.display().to_string(), "ssh-ed25519 AAAAthird"))
+            .unwrap();
+        assert_eq!(lines(&notepad), ["ssh-ed25519 AAAAfirst first@key", line, "ssh-ed25519 AAAAthird"]);
+        let fresh = dir.path().join("authorized_keys");
+        session.exec(&dialect.append_line(&fresh.display().to_string(), line)).unwrap();
+        assert_eq!(lines(&fresh), [line]);
+
+        // A file that cannot be written fails the command.
+        let nowhere = dir.path().join("missing").join("authorized_keys");
+        assert!(session.exec(&dialect.append_line(&nowhere.display().to_string(), line)).is_err());
     }
 
     /// The home directory is asked for, not guessed: it can be /home/deploy, /root

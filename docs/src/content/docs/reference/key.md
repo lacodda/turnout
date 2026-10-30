@@ -49,6 +49,8 @@ turnout pass remove prod-deploy
 
 Running `setup` twice is safe. An already-authorized key is recognized - by its body, not its comment - and not appended again.
 
+The key is appended on a line of its own - a file whose last line has no newline, as one saved by Notepad, gets one first - and exactly as it is: whatever the comment holds (`&`, `<`, `%`, quotes) reaches the file unchanged, on a Windows server too.
+
 ### Windows servers
 
 OpenSSH on Windows ships an `sshd_config` with a `Match Group administrators` block, and for a member of that group it reads **only**:
