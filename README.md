@@ -186,14 +186,10 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.26.0, in daily use. Everything above works today: stands and switching
-between them, the gateway and what it notices about them, secrets in the OS
-keyring, the quiet console, jobs in the background with a notification when
-they are done, `status` for a person, a prompt and a script, `doctor` for the
-day something does not work, and build and deploy from any directory - checked,
-recorded, and rolled back when it fails, on Linux and Windows servers alike.
-What landed in each version:
-[the Releases page](https://github.com/lacodda/turnout/releases).
+v0.26.0, in daily use and being stabilised for 1.0: everything above works
+today, deploys are proven against real Linux and Windows servers, and a
+settings export from any version since v0.11 still imports. What landed in each
+version: [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).
 
 ## Documentation
 
