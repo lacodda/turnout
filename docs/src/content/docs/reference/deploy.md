@@ -44,6 +44,8 @@ Builds the app, uploads the artifacts to the target directory over SFTP, restart
 
 :::note[Interrupted after the upload]
 A deploy that fails between the upload and the restart says so explicitly: the files are already on the server, but the service is still running what it had. Run `turnout deploy` again, or restart by hand if the new files are already good enough. [`turnout history`](/turnout/reference/history/) shows such a deploy as `uploaded, restart failed`, with what the restart printed.
+
+A deploy that fails **while writing** - `tar` stopping on a full disk, the connection dropping half-way through the files, `--clear` that could not finish - has written too: the directory may hold part of this build beside the last one's. It counts as written, so a target with a health check rolls it back as it would a failed restart, and without one `history` shows it as `upload failed part-way`. A deploy that fails before its first write has changed nothing; the backup taken only to roll back to is removed with it.
 :::
 
 ## Health check and rollback
@@ -71,7 +73,7 @@ error: the health check failed: ... - rolled back to 20261013-101500.tar.gz: the
 ```
 
 - **The backup is taken for the rollback** even without `--backup`, and removed once the check passes - otherwise every checked deploy would leave an archive behind until the disk is full. With `--backup` it stays, as always.
-- **A restart that fails** rolls back too: the check is the word for "it works", and a failed restart does not give it.
+- **A restart that fails** rolls back too: the check is the word for "it works", and a failed restart does not give it. So does an upload that fails once it has begun writing to the directory.
 - **The stand is asked again** after the rollback. If the old build works, the deploy broke it; if the old build fails as well, the cause is somewhere else, and the error says so.
 - **A first deploy** has nothing to roll back to - the directory was not there before it. A failed check says so and leaves the files in place.
 - The deploy exits with an error either way. In the [background](#in-the-background) that is a `myapp deploy failed` [notification](/turnout/concepts/notifications/) whose line names the rollback.

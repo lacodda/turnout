@@ -140,12 +140,16 @@ impl DeployView {
                 None => "deployed".to_string(),
             },
             Outcome::RolledBack if restart_failed => "restart failed, rolled back".to_string(),
-            Outcome::RolledBack => "check failed, rolled back".to_string(),
+            Outcome::RolledBack if check_failed => "check failed, rolled back".to_string(),
+            // Neither ran: what gave was the writing itself, which a checked
+            // deploy rolls back the same way.
+            Outcome::RolledBack => "upload failed, rolled back".to_string(),
             // The case the record is for: the files went out, and the service
             // still runs what it had.
             Outcome::Partial if restart_failed => "uploaded, restart failed".to_string(),
             Outcome::Partial if check_failed => "uploaded, check failed".to_string(),
-            Outcome::Partial => "uploaded, then failed".to_string(),
+            // Writing began and did not finish: part of the build is there.
+            Outcome::Partial => "upload failed part-way".to_string(),
             Outcome::Failed => "failed".to_string(),
         }
     }
@@ -417,6 +421,12 @@ mod tests {
         assert_eq!(a_view(&record).result(), "uploaded, check failed");
         record.outcome = Outcome::RolledBack;
         assert_eq!(a_view(&record).result(), "check failed, rolled back");
+        // An upload that died once writing had begun: no restart ran, no
+        // check was asked.
+        record.check = None;
+        assert_eq!(a_view(&record).result(), "upload failed, rolled back");
+        record.outcome = Outcome::Partial;
+        assert_eq!(a_view(&record).result(), "upload failed part-way");
         let mut rollback = a_record(8, "/srv/site", Outcome::Deployed, Some("abc"));
         rollback.rollback_of = Some(3);
         assert_eq!(a_view(&rollback).result(), "deployed (rollback to #3)");

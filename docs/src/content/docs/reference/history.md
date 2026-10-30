@@ -43,8 +43,9 @@ Oldest first, so the newest deploy is the line above your prompt. A name narrows
 | Result | What the stand runs now |
 | --- | --- |
 | `deployed` | This build |
-| `check failed, rolled back` / `restart failed, rolled back` | What it ran before - the deploy [put it back](/turnout/reference/deploy/#health-check-and-rollback) |
+| `check failed, rolled back` / `restart failed, rolled back` / `upload failed, rolled back` | What it ran before - the deploy [put it back](/turnout/reference/deploy/#health-check-and-rollback) |
 | `uploaded, restart failed` | The **old** service on the **new** files: they went out, and the post-write command did not finish |
+| `upload failed part-way` | Part of this build beside part of the one before: writing began - the upload, the unpacking, `--clear` - and did not finish, with no check to roll back by |
 | `uploaded, check failed` | This build, failing its check, on a first deploy with nothing to roll back to |
 | `failed` | What it ran before - nothing was written |
 
