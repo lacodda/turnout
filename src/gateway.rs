@@ -25,7 +25,9 @@ pub(crate) const MAX_REQUEST_BODY: usize = 256 * 1024 * 1024;
 /// Cookies issued by stands, keyed by (app, server) - the browser never sees them.
 /// In-memory by design: restarting the gateway means logging in again (ADR 0002).
 pub(crate) type Jars = Arc<Mutex<HashMap<(String, String), Jar>>>;
-pub(crate) type Clients = Arc<Mutex<HashMap<String, reqwest::Client>>>;
+/// HTTP clients to the stands, keyed by server name and whether it accepts
+/// any certificate (see [`client_for`]).
+pub(crate) type Clients = Arc<Mutex<HashMap<(String, bool), reqwest::Client>>>;
 
 /// How long the session check waits for the stand. A proving request
 /// answered within [`crate::jar::QUICK`] once; this is the margin for a stand
@@ -565,11 +567,19 @@ fn stand_to_client(message: StandMessage) -> Option<ClientMessage> {
     }
 }
 
-/// One HTTP client per server: no redirect following (the browser must see them),
-/// TLS verification per the server's policy.
+/// One HTTP client per server and TLS policy: no redirect following (the
+/// browser must see them), certificates checked unless the server says not to.
+///
+/// The policy is part of the key because the catalog is read per request
+/// (ADR 0008) and the client is not: keyed by name alone, the first request
+/// fixed the policy until the gateway restarted, and `turnout server edit
+/// NAME --insecure` - which `use`, the health check and the doctor all advise
+/// for a self-signed stand - changed nothing, while the WebSocket path, which
+/// reads it fresh, already obeyed it.
 fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
+    let key = (server.name.clone(), server.accept_invalid_certs);
     let mut cache = clients.lock().expect("client cache poisoned");
-    if let Some(client) = cache.get(&server.name) {
+    if let Some(client) = cache.get(&key) {
         return Ok(client.clone());
     }
     let client = reqwest::Client::builder()
@@ -577,7 +587,7 @@ fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
         .danger_accept_invalid_certs(server.accept_invalid_certs)
         .build()
         .context("cannot build the HTTP client")?;
-    cache.insert(server.name.clone(), client.clone());
+    cache.insert(key, client.clone());
     Ok(client)
 }
 
@@ -743,5 +753,72 @@ mod tests {
     fn listening_ports_needs_at_least_one_port() {
         let error = listening_ports(&[app("web", None)]).unwrap_err().to_string();
         assert!(error.contains("no apps with a gateway port"), "{error}");
+    }
+
+    /// A stand with a self-signed certificate, on a loopback port: answers
+    /// `200 ok` to whoever completes the handshake.
+    fn self_signed_stand() -> u16 {
+        use std::io::{Read, Write};
+
+        use rustls::pki_types::pem::PemObject;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+        let certs = CertificateDer::pem_slice_iter(include_bytes!("../tests/fixtures/tls/stand.pem"))
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let key = PrivateKeyDer::from_pem_slice(include_bytes!("../tests/fixtures/tls/stand.key")).unwrap();
+        let config = Arc::new(
+            rustls::ServerConfig::builder_with_provider(Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(certs, key)
+                .unwrap(),
+        );
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                let config = Arc::clone(&config);
+                std::thread::spawn(move || {
+                    let Ok(connection) = rustls::ServerConnection::new(config) else { return };
+                    let mut tls = rustls::StreamOwned::new(connection, stream);
+                    let mut request = [0u8; 4096];
+                    // A client that refused the certificate never gets this far.
+                    if tls.read(&mut request).is_ok_and(|read| read > 0) {
+                        let _ = tls.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok");
+                        tls.conn.send_close_notify();
+                        let _ = tls.flush();
+                    }
+                });
+            }
+        });
+        port
+    }
+
+    /// The catalog is read per request, so a stand edited to accept any
+    /// certificate is talked to that way from the next request on - not only
+    /// after the gateway restarts, as with a client cached by name alone.
+    #[test]
+    fn a_server_edited_to_accept_any_certificate_is_trusted_at_once() {
+        let port = self_signed_stand();
+        let clients = Clients::default();
+        let server = |insecure: bool| -> Server {
+            serde_json::from_value(serde_json::json!({
+                "name": "stand",
+                "url": format!("https://127.0.0.1:{port}"),
+                "accept_invalid_certs": insecure,
+            }))
+            .unwrap()
+        };
+        let get = |server: &Server| {
+            let client = client_for(&clients, server).unwrap();
+            let url = format!("{}/", server.url);
+            crate::utils::run_blocking(async move { Ok(client.get(url).send().await?.status().as_u16()) })
+        };
+        assert!(get(&server(false)).is_err(), "a self-signed certificate was trusted without --insecure");
+        // `turnout server edit stand --insecure`, with the gateway running.
+        assert_eq!(get(&server(true)).unwrap(), 200);
+        // And back: the strict client is still the strict one.
+        assert!(get(&server(false)).is_err(), "--insecure outlived its own removal");
     }
 }
