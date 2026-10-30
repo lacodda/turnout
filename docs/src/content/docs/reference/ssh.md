@@ -15,7 +15,7 @@ Opens an interactive SSH session with host, port, user and key taken from the ca
 | --- | --- | --- |
 | `--credential` | `-C` | Log in with this credential instead of the target's or the server's |
 
-The session itself belongs to the system `ssh` client - a terminal is its job, and turnout composes the invocation and gets out of the way. What the prompt will ask for is one paste away: a stored password (or key passphrase) is copied to the clipboard before the client starts. A key credential travels as `-i`; an agent credential needs nothing, the client asks the agent itself.
+The session itself belongs to the system `ssh` client - a terminal is its job, and turnout composes the invocation and gets out of the way. What the prompt will ask for is one paste away, and only that: a password credential's stored password, or a key's stored passphrase when the key file is locked by one, is copied to the clipboard before the client starts. A key without a passphrase asks for nothing, so nothing is copied - the password a credential keeps after [`key setup`](/turnout/reference/key/) stays in the keyring. A key credential travels as `-i`; an agent credential needs nothing, the client asks the agent itself.
 
 Landing in the deploy directory needs the server's shell, which the catalog knows after the first remote command (a deploy, an `exec`); when it does not, turnout asks with one extra login, and a login that fails only costs the directory.
 

@@ -2,7 +2,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::model::Auth;
+use crate::model::{Auth, Credential};
 use crate::remote::{self, Host};
 use crate::shell::Dialect;
 
@@ -45,14 +45,14 @@ pub fn run(name: Option<String>, credential: Option<String>) -> Result<()> {
         }
     }
 
-    // What the prompt will ask for is one paste away. A key that needs no
-    // passphrase has nothing stored, and asking the keyring is not an error.
-    if let Ok(secret) = crate::secrets::get(&host.credential.name) {
-        let what = match host.credential.auth {
-            Auth::Password => "Password",
-            Auth::Key => "Passphrase",
-            Auth::Agent => "Secret",
-        };
+    // What the prompt will ask for is one paste away - and only that. A
+    // stored secret is not always what it asks for: after `key setup` the
+    // secret under a key credential is the old login password, kept as the
+    // way back in. Up to v0.26 every login put it on the clipboard as a
+    // "passphrase" the key never asked for.
+    if let Some(what) = asks_for(&host.credential)
+        && let Ok(secret) = crate::secrets::get(&host.credential.name)
+    {
         match crate::clipboard::set(&secret) {
             Ok(()) => eprintln!("{what} for '{}' copied to the clipboard - paste it at the prompt.", host.credential.name),
             Err(_) => eprintln!("{what} for '{}' is in the keyring: `turnout pass copy {0}`.", host.credential.name),
@@ -71,6 +71,31 @@ pub fn run(name: Option<String>, credential: Option<String>) -> Result<()> {
     crate::term::child_end();
     let status = status.with_context(|| format!("cannot wait for '{client}'"))?;
     std::process::exit(status.code().unwrap_or(1));
+}
+
+/// What the `ssh` prompt will ask for, if anything: a password credential's
+/// password, a key's passphrase when the key is encrypted, and nothing for
+/// an agent, which signs without asking.
+fn asks_for(credential: &Credential) -> Option<&'static str> {
+    match credential.auth {
+        Auth::Password => Some("Password"),
+        Auth::Key => credential.key.as_deref().filter(|key| key_is_encrypted(key)).map(|_| "Passphrase"),
+        Auth::Agent => None,
+    }
+}
+
+/// Whether the key file at `path` is locked by a passphrase.
+///
+/// Read without one: the OpenSSH format says so outright, and the PEM forms
+/// (`BEGIN ENCRYPTED PRIVATE KEY`, `Proc-Type: 4,ENCRYPTED`) carry the word in
+/// the file. A file that cannot be read at all is taken as not encrypted:
+/// putting a secret on the clipboard is what has to be sure.
+fn key_is_encrypted(path: &str) -> bool {
+    match russh::keys::load_secret_key(path, None) {
+        Ok(_) => false,
+        Err(russh::keys::Error::KeyIsEncrypted) => true,
+        Err(_) => std::fs::read_to_string(path).is_ok_and(|text| text.contains("ENCRYPTED")),
+    }
 }
 
 /// The dialect the session will land in: known from the catalog, or learned
@@ -103,6 +128,37 @@ mod tests {
     fn the_landing_command_speaks_the_servers_shell() {
         assert_eq!(landing_command(Dialect::Posix, "/srv/app"), "cd '/srv/app' && exec $SHELL -l");
         assert_eq!(landing_command(Dialect::Windows, r"C:\site"), r#"cd /d "C:\site" && cmd"#);
+    }
+
+    fn credential(auth: Auth, key: Option<&std::path::Path>) -> Credential {
+        Credential {
+            name: "deploy".into(),
+            user: "deploy".into(),
+            auth,
+            key: key.map(|path| path.display().to_string()),
+        }
+    }
+
+    /// Only what the prompt asks for goes on the clipboard: a key's
+    /// passphrase when it has one, never the password a key credential keeps
+    /// after `key setup`, nothing for the agent.
+    #[test]
+    fn only_what_the_prompt_asks_for_is_copied() {
+        use russh::keys::ssh_key::LineEnding;
+        use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
+        let scratch = tempfile::tempdir().unwrap();
+        let key = russh::keys::PrivateKey::new(KeypairData::Ed25519(Ed25519Keypair::from_seed(&[9; 32])), "test").unwrap();
+        let open = scratch.path().join("id_open");
+        std::fs::write(&open, key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        let locked = scratch.path().join("id_locked");
+        let encrypted = key.encrypt(&mut rand::rng(), "passphrase").unwrap();
+        std::fs::write(&locked, encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+
+        assert_eq!(asks_for(&credential(Auth::Password, None)), Some("Password"));
+        assert_eq!(asks_for(&credential(Auth::Key, Some(&locked))), Some("Passphrase"));
+        assert_eq!(asks_for(&credential(Auth::Key, Some(&open))), None, "a key without a passphrase asks nothing");
+        assert_eq!(asks_for(&credential(Auth::Key, Some(&scratch.path().join("missing")))), None);
+        assert_eq!(asks_for(&credential(Auth::Agent, None)), None);
     }
 
     /// A directory that cannot be quoted for the shell is refused before it

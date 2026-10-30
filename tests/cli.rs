@@ -1084,6 +1084,45 @@ fn ssh_composes_the_session_from_the_catalogs() {
         .stderr(predicate::str::contains("cannot run").and(predicate::str::contains("TURNOUT_SSH")));
 }
 
+/// `ssh` copies only what the prompt will ask for. After `key setup` a key
+/// credential keeps the old login password as the way back in, and up to
+/// v0.26 every login put it on the clipboard as a "passphrase" the key never
+/// asked for.
+#[test]
+fn ssh_copies_only_what_the_prompt_asks_for() {
+    let (dir, _project) = workspace();
+    add_staging(dir.path());
+    let client = fake_ssh(dir.path());
+    // The key file is not on this machine, so nothing says it is locked:
+    // the stored secret is not what the prompt will ask for.
+    turnout(dir.path())
+        .args(["credential", "add", "keyed", "--user", "ops", "--auth", "key", "--key", "/keys/id_ed25519"])
+        .assert()
+        .success();
+    turnout_secrets(dir.path())
+        .args(["pass", "set", "keyed"])
+        .write_stdin("the old login password\n")
+        .assert()
+        .success();
+    turnout(dir.path())
+        .env("TURNOUT_SSH", &client)
+        .args(["ssh", "staging", "--credential", "keyed"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("copied to the clipboard").not());
+    assert_eq!(clipboard(dir.path()), None, "the password a key credential keeps stays off the clipboard");
+
+    // A password credential's prompt asks for the password.
+    save_access(dir.path());
+    turnout(dir.path())
+        .env("TURNOUT_SSH", &client)
+        .args(["ssh", "staging", "--credential", "deploy"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("Password for 'deploy' copied to the clipboard"));
+    assert_eq!(clipboard(dir.path()).as_deref(), Some("s3cret"));
+}
+
 #[test]
 fn exec_resolves_the_host_before_dialing_and_needs_a_credential() {
     let (dir, project) = workspace();
