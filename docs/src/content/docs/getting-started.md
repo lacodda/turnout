@@ -78,7 +78,7 @@ Once a day turnout also checks whether a newer release exists and mentions it at
 turnout status
 ```
 
-Shows the data directory, the four catalogs - apps, servers, credentials, paths - and whether the gateway is running.
+Shows the data directory, your apps and the stand each one points at, whether the gateway is running, the catalogs of servers, credentials, paths and targets, and the last few things turnout did. On a fresh setup every section says how to fill it.
 
 ## Describe your first app and server
 
@@ -88,14 +88,19 @@ turnout app add        # wizard: every field of the app, commands included
 turnout server add     # wizard: URL, SSH host, credential, TLS policy
 ```
 
+`app add` gives the app a gateway port of its own and writes the gateway's address into the project's `.env.development.local`, under the variable you chose in the wizard (`VITE_API_URL` for a Vite app, `TURNOUT_GATEWAY_URL` otherwise). Point your API client at that variable once - it is the only change your app needs. [The Vite workflow](/turnout/guides/vite-dev-workflow/) shows it end to end.
+
 That is enough for the dev gateway. Deploying also needs to know who logs in and where files land:
 
 ```bash
 turnout credential add prod-deploy --user deploy
+turnout pass set prod-deploy        # the password, into the OS keyring
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
 turnout server edit prod --credential prod-deploy
 turnout target add --app myapp --server prod --credential prod-deploy --path wwwroot
 ```
+
+A key instead of a password: [`turnout key setup prod`](/turnout/reference/key/) makes one, puts it on the server and switches its credential over, so the password is needed once.
 
 Or let one wizard walk all of it, offering to create the credential and path as it goes:
 
@@ -111,12 +116,15 @@ Either way, `turnout deploy myapp-prod` deploys from any directory afterwards. S
 turnout gateway start          # once: the gateway routes apps to their stands
 turnout use myapp staging      # bind the app to a stand
 turnout dev                    # from the project dir: UI local, API on staging
-turnout pass copy prod-deploy  # password on the clipboard when the stand asks
+turnout open myapp             # the app at http://myapp.localhost
 turnout use myapp prod-eu      # switch stands - no restarts, no env edits
+turnout status                 # where everything points, what is running
 ```
+
+`dev` keeps the console quiet until the server is up, then shows only what looks like a problem; `-v` streams everything, and `turnout logs myapp dev` has the whole output. With `--detach` it runs in the background - [`turnout ps`](/turnout/reference/ps/) lists it and [`turnout stop`](/turnout/reference/stop/) ends it. When something does not work, [`turnout doctor`](/turnout/reference/doctor/) says why.
 
 ## Next steps
 
 - Learn the [entity model](/turnout/concepts/entities/) - apps, servers, credentials, paths, targets and state.
 - See how the [dev gateway](/turnout/concepts/gateway/) routes your apps to stands.
-- Coming from turnout 0.8? Read [Upgrading to 0.9](/turnout/guides/upgrading-to-0-9/).
+- Updating from an older turnout - and coming from 0.8 in particular? Read [Upgrading](/turnout/guides/upgrading/).
