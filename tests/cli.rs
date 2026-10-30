@@ -1005,12 +1005,30 @@ fn fake_ssh(dir: &std::path::Path) -> std::path::PathBuf {
     script
 }
 
+/// The script is run once here before it is handed over, retried on
+/// ETXTBSY - the cure `a_leftover_binary_from_self_update_is_swept` applies:
+/// a test spawning in parallel can inherit the descriptor the script was
+/// written through, between its fork and its exec, and executing the script
+/// in that window answers "Text file busy". turnout cannot retry its own
+/// spawn of the client, so the window is waited out here: once one exec
+/// succeeds, the descriptor is closed everywhere and stays closed.
 #[cfg(not(windows))]
 fn fake_ssh(dir: &std::path::Path) -> std::path::PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let script = dir.join("fake-ssh");
     std::fs::write(&script, "#!/bin/sh\necho \"$@\"\n").unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut tries = 0;
+    loop {
+        match std::process::Command::new(&script).output() {
+            Ok(_) => break,
+            Err(err) if err.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(err) => panic!("cannot run the fake ssh client: {err}"),
+        }
+    }
     script
 }
 
