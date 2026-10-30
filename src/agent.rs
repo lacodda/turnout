@@ -31,8 +31,13 @@ pub type Agent = AgentClient<Box<dyn AgentStream + Send + Unpin + 'static>>;
 
 /// The named pipe the Windows OpenSSH agent service listens on. Fixed by
 /// OpenSSH, not configurable, so it is a constant rather than a setting.
-#[cfg(windows)]
-const OPENSSH_PIPE: &str = r"\.\pipe\openssh-ssh-agent";
+///
+/// Two leading backslashes: `\\.\pipe\` is the pipe namespace. Up to v0.26 the
+/// raw string carried one, which names a path no pipe is at - so the OpenSSH
+/// agent was never reached, and with no Pageant running every agent
+/// credential failed as "no SSH agent".
+#[cfg(any(windows, test))]
+const OPENSSH_PIPE: &str = r"\\.\pipe\openssh-ssh-agent";
 
 /// Connect to the running agent.
 ///
@@ -131,6 +136,15 @@ mod tests {
     fn an_identity_without_a_comment_falls_back_to_its_algorithm() {
         assert_eq!(describe(&identity(2, "")), "ssh-ed25519");
         assert_eq!(describe(&identity(3, "   ")), "ssh-ed25519", "whitespace is not a comment");
+    }
+
+    /// The pipe namespace is `\\.\pipe\`; one backslash fewer is a relative
+    /// path that no agent listens on. Pinned on every platform, since the
+    /// string is easy to get wrong and only a Windows machine running the
+    /// OpenSSH agent service would notice.
+    #[test]
+    fn the_openssh_agent_pipe_is_in_the_pipe_namespace() {
+        assert_eq!(OPENSSH_PIPE, "\\\\.\\pipe\\openssh-ssh-agent");
     }
 
     /// The empty agent is a distinct situation from a rejected key, and the
