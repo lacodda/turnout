@@ -275,8 +275,7 @@ fn apply(app: &mut App, server: &mut Server, answers: Answers) -> bool {
     if allowed {
         app.servers.push(server.name.clone());
     }
-    server.host = answers.host;
-    server.port = answers.port;
+    server.set_address(answers.host, answers.port);
     server.credential = Some(answers.credential.to_string());
     allowed
 }
@@ -341,6 +340,22 @@ mod tests {
         apply(&mut app, &mut server, Answers { host: None, ..answers() });
         assert!(server.host.is_none());
         assert_eq!(server.ssh_host(), "prod.example.com", "it resolves through the URL");
+    }
+
+    /// A server the wizard points at another address forgets the shell it
+    /// learned at the old one, as `server edit` does. Up to v0.26 the wizard
+    /// kept it, and every command went out in the old machine's language.
+    #[test]
+    fn a_new_address_forgets_the_learned_shell() {
+        let (mut app, mut server) = (an_app(&[]), a_server());
+        server.shell = Some(crate::shell::Dialect::Windows);
+        apply(&mut app, &mut server, answers());
+        assert_eq!(server.shell, None);
+
+        // The same address answered again keeps what was learned there.
+        server.shell = Some(crate::shell::Dialect::Windows);
+        apply(&mut app, &mut server, answers());
+        assert_eq!(server.shell, Some(crate::shell::Dialect::Windows));
     }
 
     #[test]

@@ -207,7 +207,7 @@ The settings live on four entities - the artifact directory on the app, the host
 turnout deploy-setup [APP] [--server SERVER]
 ```
 
-It asks for the artifact directory (suggesting `dist`, `build`, `out` or `public` if one already exists), the SSH `host[:port]`, which credential logs in, which path the files land in, and - only for a password credential - a secret to store in the keyring. Existing credentials and paths are offered to pick from, or a new one can be defined inline. Existing values come pre-filled, so it doubles as an edit pass. Nothing is written until every answer is in.
+It asks for the artifact directory (suggesting `dist`, `build`, `out` or `public` if one already exists), the SSH `host[:port]`, which credential logs in, which path the files land in, and - only for a password credential - a secret to store in the keyring. Existing credentials and paths are offered to pick from, or a new one can be defined inline. Existing values come pre-filled, so it doubles as an edit pass. Nothing is written until every answer is in. A new SSH address forgets the server's [shell](/turnout/reference/server/), as `server edit` does, and the next command asks again.
 
 The wizard needs a terminal. In scripts, set the same fields directly:
 

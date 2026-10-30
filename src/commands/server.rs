@@ -316,10 +316,6 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
     let mut servers = store::load_servers()?;
     let index = servers.iter().position(|s| s.name == name).ok_or_else(|| unknown_server(name))?;
     let no_flags = url.is_none() && label.is_none() && host.is_none() && credential.is_none() && !insecure && !secure;
-    let address = (servers[index].ssh_host(), servers[index].port);
-    // `--host` given at all, even unchanged, is how a shell that changed on
-    // the same machine (sshd's DefaultShell) is asked about again.
-    let readdressed = host.is_some();
 
     if no_flags {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
@@ -330,7 +326,7 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
             .default(server.url.clone())
             .validate_with(|s: &String| validate_url(s).map_err(|e| e.to_string()))
             .interact_text()?;
-        server.url = url;
+        server.set_url(url);
         let label: String = Input::new()
             .with_prompt("Label (empty to unset)")
             .default(server.label.clone().unwrap_or_default())
@@ -343,13 +339,12 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
             .default(current_host)
             .allow_empty(true)
             .interact_text()?;
+        // Through the server, which forgets the shell when the address moved.
         if host.trim().is_empty() {
-            server.host = None;
-            server.port = 22;
+            server.set_address(None, 22);
         } else {
             let (parsed, port) = parse_host(host.trim())?;
-            server.host = Some(parsed);
-            server.port = port;
+            server.set_address(Some(parsed), port);
         }
         if !credentials.is_empty() && Confirm::new().with_prompt("Change the credential?").default(false).interact()? {
             server.credential = Some(pick::credential(&credentials, "Logs in with")?);
@@ -366,20 +361,22 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
         let server = &mut servers[index];
         if let Some(url) = url {
             validate_url(&url)?;
-            server.url = url;
+            server.set_url(url);
         }
         if label.is_some() {
             server.label = label;
         }
         if let Some(spec) = host {
             if spec.trim().is_empty() {
-                server.host = None;
-                server.port = 22;
+                server.set_address(None, 22);
             } else {
                 let (parsed, port) = parse_host(&spec)?;
-                server.host = Some(parsed);
-                server.port = port;
+                server.set_address(Some(parsed), port);
             }
+            // `--host` given at all, even unchanged, is how a shell that
+            // changed on the same machine (sshd's DefaultShell) is asked about
+            // again.
+            server.shell = None;
         }
         if let Some(credential) = credential {
             server.credential = if credential.trim().is_empty() { None } else { Some(credential) };
@@ -390,13 +387,6 @@ fn edit(name: &str, url: Option<String>, label: Option<String>, host: Option<Str
         if secure {
             server.accept_invalid_certs = false;
         }
-    }
-    // The shell is the answer of the machine at that address: pointed
-    // somewhere else, the server may answer in another language, and the old
-    // answer would phrase every command for the wrong one.
-    let server = &mut servers[index];
-    if readdressed || (server.ssh_host(), server.port) != address {
-        server.shell = None;
     }
     store::save_servers(&servers)?;
     crate::journal::record("server.edit", None, Some(name), None);

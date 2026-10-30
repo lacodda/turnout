@@ -116,6 +116,36 @@ impl Server {
     pub fn ssh_host(&self) -> String {
         self.host.clone().unwrap_or_else(|| url_host(&self.url).to_string())
     }
+
+    /// Point SSH at `host` - the URL's own host when `None` - and `port`.
+    ///
+    /// The shell is the answer of the machine at the old address: pointed
+    /// somewhere else, the server may answer in another language, and the old
+    /// answer would phrase every command for the wrong one. So a new address
+    /// forgets it, and the next command asks again (ADR 0029). Every change
+    /// of address goes through here: up to v0.26 `server edit` forgot the
+    /// shell and the `deploy-setup` wizard, which sets the same two fields,
+    /// did not.
+    pub fn set_address(&mut self, host: Option<String>, port: u16) {
+        let before = (self.ssh_host(), self.port);
+        self.host = host;
+        self.port = port;
+        self.forget_shell_unless_at(before);
+    }
+
+    /// Change the base URL - a change of address too, when SSH follows the
+    /// URL's host.
+    pub fn set_url(&mut self, url: String) {
+        let before = (self.ssh_host(), self.port);
+        self.url = url;
+        self.forget_shell_unless_at(before);
+    }
+
+    fn forget_shell_unless_at(&mut self, before: (String, u16)) {
+        if (self.ssh_host(), self.port) != before {
+            self.shell = None;
+        }
+    }
 }
 
 /// A way to log in: who, and with what. The secret itself lives in the OS
@@ -627,6 +657,48 @@ mod tests {
         assert!(validate_name("").is_err());
         assert!(validate_name("My App").is_err());
         assert!(validate_name("-x").is_err());
+    }
+
+    /// A new address forgets the shell learned at the old one; the same one,
+    /// however it is spelled, keeps it.
+    #[test]
+    fn a_new_address_forgets_the_shell() {
+        let learned = || Server {
+            name: "stand".into(),
+            label: None,
+            url: "https://stand.example.com".into(),
+            host: None,
+            port: 22,
+            accept_invalid_certs: false,
+            shell: Some(crate::shell::Dialect::Windows),
+            credential: None,
+        };
+        let mut moved = learned();
+        moved.set_address(Some("other.example.com".into()), 22);
+        assert_eq!(moved.shell, None);
+        let mut port = learned();
+        port.set_address(None, 2222);
+        assert_eq!(port.shell, None);
+        let mut same = learned();
+        same.set_address(Some("stand.example.com".into()), 22);
+        assert_eq!(
+            same.shell,
+            Some(crate::shell::Dialect::Windows),
+            "the URL's host spelled out is the same machine"
+        );
+
+        let mut url = learned();
+        url.set_url("https://elsewhere.example.com".into());
+        assert_eq!(url.shell, None, "SSH follows the URL's host");
+        let mut pinned = learned();
+        pinned.set_address(Some("ssh.example.com".into()), 22);
+        pinned.shell = Some(crate::shell::Dialect::Windows);
+        pinned.set_url("https://elsewhere.example.com".into());
+        assert_eq!(
+            pinned.shell,
+            Some(crate::shell::Dialect::Windows),
+            "an explicit host does not move with the URL"
+        );
     }
 
     #[test]
