@@ -70,7 +70,15 @@ fn add(name: Option<String>, apps: Vec<String>) -> Result<()> {
                 bail!("no app named '{app}' - see `turnout app list`");
             }
         }
-        apps
+        // `--app web --app web` is one member: a group switched with `use`
+        // would otherwise bind and report the same app twice.
+        let mut unique: Vec<String> = Vec::new();
+        for app in apps {
+            if !unique.contains(&app) {
+                unique.push(app);
+            }
+        }
+        unique
     };
     if apps.is_empty() {
         bail!("a group needs at least one app - pass --app NAME (repeatable)");

@@ -2859,6 +2859,19 @@ fn deploy_accepts_a_credential_and_path_for_one_run() {
         .stderr(predicate::str::contains("no artifact directory"));
 }
 
+/// A member named twice is one member.
+#[test]
+fn a_group_keeps_each_member_once() {
+    let (dir, project) = workspace();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    turnout(dir.path())
+        .args(["group", "add", "contour", "--app", "web", "--app", "web"])
+        .assert()
+        .success();
+    let groups: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("groups.json")).unwrap()).unwrap();
+    assert_eq!(groups[0]["apps"], serde_json::json!(["web"]), "{groups}");
+}
+
 #[test]
 fn group_use_binds_all_members() {
     let (dir, project) = workspace();

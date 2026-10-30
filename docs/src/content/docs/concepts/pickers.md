@@ -27,7 +27,7 @@ A picker appears **only when both stdin and stderr are a terminal**. Anywhere el
 
 ```bash
 $ turnout app show < /dev/null
-error: app name is required outside an interactive terminal
+error: app name is required: no terminal to prompt on
 ```
 
 That is deliberate: a prompt nobody can answer would hang a build forever. Scripts keep passing names explicitly and behave as they always have.

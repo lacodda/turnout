@@ -271,7 +271,7 @@ pub enum Command {
     Deploy {
         /// Target names, or app names to use their target on the bound server; one build per app, deployed in order
         targets: Vec<String>,
-        /// Target server (defaults to the app's current binding)
+        /// Server to use instead of the target's (without a target: instead of the app's binding)
         #[arg(short, long)]
         server: Option<String>,
         /// Credential for this run only, overriding the target's (the server's when there is no target)
@@ -311,7 +311,7 @@ pub enum Command {
         command: Option<BackupCommand>,
         /// Target name, or an app name to use its target on the bound server
         target: Option<String>,
-        /// Target server (defaults to the app's current binding)
+        /// Server to use instead of the target's (without a target: instead of the app's binding)
         #[arg(short, long)]
         server: Option<String>,
         /// Credential for this run only, overriding the target's (the server's when there is no target)
@@ -325,7 +325,7 @@ pub enum Command {
     Restore {
         /// Target name, or an app name to use its target on the bound server
         target: Option<String>,
-        /// Target server (defaults to the app's current binding)
+        /// Server to use instead of the target's (without a target: instead of the app's binding)
         #[arg(short, long)]
         server: Option<String>,
         /// Credential for this run only, overriding the target's (the server's when there is no target)
@@ -417,7 +417,7 @@ pub enum BackupCommand {
     Prune {
         /// Target name, or an app name to use its target on the bound server
         target: Option<String>,
-        /// Target server (defaults to the app's current binding)
+        /// Server to use instead of the target's (without a target: instead of the app's binding)
         #[arg(short, long)]
         server: Option<String>,
         /// Credential for this run only, overriding the target's (the server's when there is no target)
