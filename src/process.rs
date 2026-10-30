@@ -52,6 +52,16 @@ pub fn own_group() -> Option<i32> {
     imp::own_group()
 }
 
+/// Whether anything is left in process group `group` (Unix; always `false`
+/// on Windows, where no group is ever recorded).
+///
+/// A group outlives the process that led it: what that process started stays
+/// in it, and its number is not handed to another process while anything is
+/// left in it - so a group still there is still the job's.
+pub fn group_alive(group: i32) -> bool {
+    group > 1 && imp::group_alive(group)
+}
+
 /// How a recorded job is ended.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Ending {
@@ -152,6 +162,10 @@ mod imp {
         None
     }
 
+    pub fn group_alive(_group: i32) -> bool {
+        false
+    }
+
     pub fn end(pid: u32, _group: Option<i32>, _how: Ending) -> Result<()> {
         let output = std::process::Command::new("taskkill")
             .args(["/PID", &pid.to_string(), "/T", "/F"])
@@ -220,6 +234,16 @@ mod imp {
         // SAFETY: both calls only read this process's own ids.
         let (group, own) = unsafe { (libc::getpgrp(), libc::getpid()) };
         (group == own).then_some(group)
+    }
+
+    pub fn group_alive(group: i32) -> bool {
+        // SAFETY: signal 0 only asks whether the group has a member we may
+        // signal; `group_alive` has refused every number below 2.
+        if unsafe { libc::kill(-group, 0) } == 0 {
+            return true;
+        }
+        // Somebody else's process in it is still a member.
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
     }
 
     pub fn end(pid: u32, group: Option<i32>, how: Ending) -> Result<()> {
@@ -300,6 +324,23 @@ mod tests {
             let error = end(4242, Some(group), Ending::Terminate).unwrap_err().to_string();
             assert!(error.contains("not a group of ours"), "group {group}: {error}");
         }
+    }
+
+    /// A group is there while anything is in it, and gone once its last
+    /// member is - which is how `stop` knows a job's server outlived the
+    /// process it recorded.
+    #[cfg(unix)]
+    #[test]
+    fn a_group_is_alive_while_anything_is_in_it() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("sleep").arg("30").process_group(0).spawn().unwrap();
+        let group = child.id() as i32;
+        assert!(group_alive(group), "the group of a running child reads as empty");
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!group_alive(group), "a group with nobody left reads as alive");
+        // Numbers that would address more than one group are never asked.
+        assert!(!group_alive(1) && !group_alive(0) && !group_alive(-1));
     }
 
     /// `/proc/PID/stat` is read from the last parenthesis, so a command name

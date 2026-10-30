@@ -774,10 +774,16 @@ fn end_job(entry: &Entry) -> Result<()> {
     }
     signal(entry, how)?;
     let started = Instant::now();
-    while process::is_alive(entry.pid, entry.birth) {
+    while lingers(entry) {
         if started.elapsed() > STOP_PATIENCE {
             // It was asked; it did not listen.
             signal(entry, Ending::Kill)?;
+            // SIGKILL cannot be refused, only take a moment; the port a
+            // server held is free once it is through.
+            let killed = Instant::now();
+            while lingers(entry) && killed.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
             break;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -785,21 +791,36 @@ fn end_job(entry: &Entry) -> Result<()> {
     Ok(())
 }
 
+/// Whether anything of the job is left to stop.
+///
+/// The recorded process is not the whole job. A detached job's is the
+/// supervisor, which has no handler for SIGTERM and dies the moment it
+/// arrives - while the dev server it runs may drain slowly or ignore the
+/// signal and go on holding its port. `stop` used to escalate to SIGKILL only
+/// while the supervisor lived, said "Stopped" at once, and left that server
+/// running. The group the job leads holds the server too (Unix; Windows kills
+/// the tree outright). A foreground turnout waits on its child and so lives
+/// as long as it does: its own pid says enough, and its group may hold a
+/// corpse its shell has not reaped yet.
+fn lingers(entry: &Entry) -> bool {
+    process::is_alive(entry.pid, entry.birth) || (entry.detached && entry.group.is_some_and(process::group_alive))
+}
+
 /// Signal a job, judging the outcome by the job rather than by the tool.
 ///
 /// `taskkill /T` reports a failure whenever some process in the tree is gone
 /// before it gets there - and in a job's tree that is the normal case: the
 /// supervisor dies first, its job object takes the children with it, and
-/// taskkill then fails to find them. Whether the stop worked is whether the
-/// recorded process is still alive, so that is what is asked before an error
-/// is believed.
+/// taskkill then fails to find them. Whether the stop worked is whether
+/// anything of the job is left, so that is what is asked before an error is
+/// believed.
 fn signal(entry: &Entry, how: Ending) -> Result<()> {
     let Err(err) = process::end(entry.pid, entry.group, how) else {
         return Ok(());
     };
     let deadline = Instant::now() + Duration::from_secs(1);
     while Instant::now() < deadline {
-        if !process::is_alive(entry.pid, entry.birth) {
+        if !lingers(entry) {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(20));

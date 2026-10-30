@@ -3717,6 +3717,31 @@ fn eventually(seconds: u64, what: &str, mut check: impl FnMut() -> Result<(), St
     }
 }
 
+/// Stops a job started in the background even when an assertion panics:
+/// otherwise it outlives the test, keeps whatever port it listens on, and
+/// holds its project directory open - which Windows then cannot delete.
+struct StopsJob {
+    dir: std::path::PathBuf,
+    app: &'static str,
+    command: &'static str,
+}
+
+impl StopsJob {
+    fn new(dir: &std::path::Path, app: &'static str, command: &'static str) -> Self {
+        Self {
+            dir: dir.to_path_buf(),
+            app,
+            command,
+        }
+    }
+}
+
+impl Drop for StopsJob {
+    fn drop(&mut self) {
+        let _ = turnout(&self.dir).args(["stop", self.app, self.command]).output();
+    }
+}
+
 fn stdout_of(dir: &std::path::Path, args: &[&str]) -> String {
     let output = turnout(dir).args(args).output().unwrap();
     String::from_utf8_lossy(&output.stdout).into_owned()
@@ -3881,6 +3906,39 @@ fn a_foreground_job_is_listed_and_can_be_stopped_from_elsewhere() {
     assert!(!status.success(), "the stopped turnout exited cleanly: {status}");
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert!(!stdout_of(dir.path(), &["ps"]).contains("myapp long"));
+}
+
+/// A server that ignores SIGTERM is stopped all the same. The supervisor
+/// dies on the signal at once, and `stop` used to take that for the job:
+/// "Stopped", with the server still running and holding its port.
+#[cfg(unix)]
+#[test]
+fn stop_takes_down_a_background_job_that_ignores_sigterm() {
+    let (dir, project) = workspace();
+    // Ignores TERM, as a server that drains slowly or not at all does; the
+    // `sleep` it runs inherits that. The pid says whom to look for after.
+    let stubborn = "trap '' TERM; echo $$ > job.pid; echo stubborn-start; sleep 30";
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("serve={stubborn}")])
+        .assert()
+        .success();
+    let _stops = StopsJob::new(dir.path(), "myapp", "serve");
+    turnout(dir.path()).args(["run", "serve", "myapp", "--detach"]).assert().success();
+    let pid_file = project.join("job.pid");
+    eventually(10, "the job's pid", || {
+        std::fs::read_to_string(&pid_file).map(|_| ()).map_err(|err| err.to_string())
+    });
+    let pid = std::fs::read_to_string(&pid_file).unwrap().trim().to_string();
+
+    turnout(dir.path())
+        .args(["stop", "myapp", "serve"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped myapp serve"));
+    let alive = || std::process::Command::new("kill").args(["-0", &pid]).status().unwrap().success();
+    eventually(3, "the job to be gone", || if alive() { Err(format!("pid {pid} is alive")) } else { Ok(()) });
 }
 
 /// Logs go where `TURNOUT_LOG_DIR` says, and `logs` finds them there.
