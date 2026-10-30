@@ -3026,6 +3026,54 @@ fn import_keeps_local_entries_unless_forced() {
         .stdout(predicate::str::contains("localhost:7100"));
 }
 
+/// A secret follows its credential. The import used to write every secret in
+/// the file, so a kept local `deploy` entry ended up with the other machine's
+/// password and no copy of its own anywhere.
+#[test]
+fn an_import_keeps_the_secret_of_a_credential_it_keeps() {
+    let (source, _) = workspace();
+    add_staging(source.path());
+    add_credential(source.path());
+    turnout(source.path()).args(["pass", "set", "deploy"]).write_stdin("from-the-file").assert().success();
+    let file = source.path().join("export.json");
+    turnout(source.path())
+        .args(["export", "--with-secrets", "--output"])
+        .arg(&file)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success();
+
+    let (target, _) = workspace();
+    add_credential(target.path());
+    turnout(target.path()).args(["pass", "set", "deploy"]).write_stdin("kept-here").assert().success();
+    turnout(target.path())
+        .arg("import")
+        .arg(&file)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Kept this machine's secret of 'deploy'").and(predicate::str::contains("Restored").not()));
+    turnout(target.path())
+        .args(["pass", "copy", "deploy", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("kept-here"));
+
+    // With --force the file's credential wins, and its secret comes with it.
+    turnout(target.path())
+        .args(["import", "--force"])
+        .arg(&file)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restored 1 secret(s)"));
+    turnout(target.path())
+        .args(["pass", "copy", "deploy", "--show"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("from-the-file"));
+}
+
 /// Another machine hands out the same numbers: an app arriving on a gateway
 /// port an app here already holds would leave two listeners on one port - the
 /// v0.13.1 defect, reached by the one door that skips `app add`. The app here

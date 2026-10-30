@@ -106,8 +106,10 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         &mut report,
         store::save_groups,
     )?;
-    merge(
-        &mut store::load_credentials()?,
+    let mut credentials = store::load_credentials()?;
+    let credentials_here: Vec<String> = credentials.iter().map(|credential| credential.name.clone()).collect();
+    let credentials_written = merge(
+        &mut credentials,
         snapshot.credentials,
         |credential| credential.name.clone(),
         force,
@@ -136,11 +138,21 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         store::save_targets,
     )?;
 
+    // A secret goes with its credential, never past it. Writing every secret
+    // in the file used to replace the password of a credential whose entry the
+    // import had just kept: this machine's `deploy` entry stayed, its password
+    // became the other machine's, and no copy of the old one was left anywhere.
     if let Some(opened) = opened {
         for (credential, value) in &opened {
-            secrets::set(credential, value)?;
+            if credentials_written.contains(credential) {
+                secrets::set(credential, value)?;
+                report.secrets += 1;
+            } else if credentials_here.contains(credential) {
+                report.secrets_kept.push(credential.clone());
+            } else {
+                report.secrets_left.push(credential.clone());
+            }
         }
-        report.secrets = opened.len();
     }
 
     report.print();
@@ -155,6 +167,11 @@ struct Report {
     /// Names that already existed, kept as they were.
     skipped: Vec<String>,
     secrets: usize,
+    /// Credentials kept as they were here, whose secret in the file was
+    /// therefore not written either.
+    secrets_kept: Vec<String>,
+    /// Secrets in the file whose credential was not imported at all.
+    secrets_left: Vec<String>,
     /// Ports an arriving app was given or gave up, one line per app.
     ports: Vec<String>,
 }
@@ -179,7 +196,22 @@ impl Report {
         if self.secrets > 0 {
             println!("Restored {} secret(s) to the OS keyring.", self.secrets);
         }
+        if !self.secrets_kept.is_empty() {
+            println!(
+                "Kept this machine's secret of {} - the credential here was kept, so the file's secret was not written.",
+                quoted(&self.secrets_kept)
+            );
+            println!("  Re-run with --force to take the file's credential and its secret.");
+        }
+        if !self.secrets_left.is_empty() {
+            println!("Left out the secret of {} - its credential was not imported.", quoted(&self.secrets_left));
+        }
     }
+}
+
+/// `'a', 'b'` - names as a sentence lists them.
+fn quoted(names: &[String]) -> String {
+    names.iter().map(|name| format!("'{name}'")).collect::<Vec<_>>().join(", ")
 }
 
 /// Add incoming items to `existing`, keeping what is already there unless

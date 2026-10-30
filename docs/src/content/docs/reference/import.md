@@ -51,6 +51,15 @@ Imported 9 item(s).
 
 A file exported with `--with-secrets` asks for its passphrase, and the secrets go into this machine's OS keyring - the same place [`turnout pass`](/turnout/reference/pass/) puts them. They are never written to disk in the clear.
 
+A secret follows its credential. When a credential of the same name already exists here and is kept, so is its secret - the file's is not written over it, and the import says so:
+
+```text
+Kept this machine's secret of 'deploy' - the credential here was kept, so the file's secret was not written.
+  Re-run with --force to take the file's credential and its secret.
+```
+
+With `--force` the file's credential and its secret both replace the ones here.
+
 Decryption happens **before** anything is written. A wrong passphrase therefore leaves the machine exactly as it was, rather than importing the catalogs and failing on the secrets - which would hand you half a setup and then greet the retry with "already exists" on everything.
 
 A wrong passphrase and an altered file report the same error, because the authentication tag genuinely cannot tell them apart:
