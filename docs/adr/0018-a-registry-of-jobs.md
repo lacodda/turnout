@@ -25,6 +25,8 @@ Three questions had to be answered: who runs a detached job, where its record li
 
 **A reused pid is harmless.** After a reboot every recorded pid names *some* process. Without the birth, `ps` would call a dead dev server running and `stop` would kill an unrelated program, tree and all. With it, the record reads `gone` and `stop` clears it.
 
+**A look and the write that depends on it are locked (amended for 1.0).** One writer per record still left a read before the write: two claims at once both read the slot as free, and the second record overwrote the first; `stop` removed a record by key after waiting for its job, and took a new run's record with it. A claim, a removal and a process's update of its own record now happen under an OS lock on `jobs/{key}.lock` (`flock` on Unix, `LockFileEx` on Windows, through std's `File::lock`), and a removal takes only the record whose pid and birth were judged. The OS releases the lock with its process, so no lock is ever stale; the empty `.lock` files stay.
+
 **A slot, not a history.** A key holds the last run of that command; the next run takes the record and truncates the log. Records and logs are bounded by the number of commands, not by time, and a second concurrent run of the same job is refused - it would truncate the first one's log.
 
 **Logs got new names.** `{app}-{command}.log` let `a` running `b-c` and `a-b` running `c` share a file, and squashed `test:e2e` into `test-e2e`'s. The key's dot and escaping make both impossible. `TURNOUT_LOG_DIR` moves the logs; the record keeps the path, so `logs` finds them afterwards.

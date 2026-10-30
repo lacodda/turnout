@@ -79,6 +79,8 @@ A record names a *slot*, not a run: the next `turnout build web` takes over `web
 error: web dev is already running (pid 31412) - see `turnout ps`, stop it with `turnout stop web dev`
 ```
 
+Deciding that is a look at the record before writing one, and two `turnout dev web` started in the same instant could both look before either wrote. So the look and the write happen under a lock on the slot - `jobs/web.dev.lock`, held for milliseconds. The lock belongs to the operating system: it lets go of it when its process dies, however it dies, so there is never a stale lock to clear by hand. The `.lock` files stay where they are, empty; removing them is harmless.
+
 ## A pid is only a number
 
 A record keeps the process id - and the moment the operating system says that process started. A pid outlives its process: the system hands the number to the next program that starts, and after a reboot every recorded pid names *something*. A registry that trusted the number alone would show a dead dev server as running because some unrelated program has its pid now, and `stop` would kill that program.
