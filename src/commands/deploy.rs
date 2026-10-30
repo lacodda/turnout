@@ -77,7 +77,7 @@ pub struct Flags {
 pub fn run(names: Vec<String>, overrides: remote::Overrides, flags: Flags) -> Result<()> {
     let targets = resolve_all(names, overrides)?;
     let verbose = flags.console.verbose;
-    let console = job::Mode::resolve(job::Mode::Quiet, verbose);
+    let console = job::Mode::resolve(job::Mode::Quiet, verbose, job::on_terminal());
     let apps = store::load_apps()?;
     let is_command = |name: &str| apps.iter().any(|app| app.commands.contains_key(name));
     if !flags.diff {

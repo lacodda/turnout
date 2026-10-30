@@ -94,7 +94,11 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     // ready signal that never comes costs nothing but the patience above,
     // after which it streams like the old pass-through did.
     let long_running = !matches!(command_name, "build" | "test" | "lint");
-    let mode = Mode::resolve(if long_running { Mode::UntilReady } else { Mode::Quiet }, options.console.verbose);
+    let mode = Mode::resolve(
+        if long_running { Mode::UntilReady } else { Mode::Quiet },
+        options.console.verbose,
+        job::on_terminal(),
+    );
     let is_command = |name: &str| apps.iter().any(|app| app.commands.contains_key(name));
     let placement = crate::commands::jobs::placement(command_name, options.console, mode, &is_command);
 

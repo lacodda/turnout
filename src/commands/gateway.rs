@@ -56,7 +56,7 @@ fn start() -> Result<()> {
 
     // The door's port is decided here and handed to the child, so the same
     // pick is not made twice with two different answers.
-    let front_port = crate::front::pick_port();
+    let front_port = crate::front::pick_port(crate::front::pinned_port().as_deref());
     let log = registry::log_path(registry::GATEWAY)?;
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;

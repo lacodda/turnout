@@ -34,10 +34,19 @@ pub const FALLBACK_PORT: u16 = 7000;
 /// Pins the door to one port; `0` keeps it shut.
 pub const ENV_PORT: &str = "TURNOUT_FRONT_PORT";
 
-/// The port the door should open on: pinned, or the first of 80 and 7000
-/// that binds. `None` means no door - pinned shut, or both ports taken.
-pub fn pick_port() -> Option<u16> {
-    if let Some(pinned) = std::env::var(ENV_PORT).ok().and_then(|value| value.trim().parse::<u16>().ok()) {
+/// What [`ENV_PORT`] pins the door to, as it was set.
+pub fn pinned_port() -> Option<String> {
+    std::env::var(ENV_PORT).ok()
+}
+
+/// The port the door should open on: `pinned` (see [`pinned_port`]), or the
+/// first of 80 and 7000 that binds. `None` means no door - pinned shut, or
+/// both ports taken.
+///
+/// The pin is an argument rather than read here so that it can be tested
+/// without setting a variable every test in the process shares.
+pub fn pick_port(pinned: Option<&str>) -> Option<u16> {
+    if let Some(pinned) = pinned.and_then(|value| value.trim().parse::<u16>().ok()) {
         return (pinned != 0).then_some(pinned);
     }
     [PORT, FALLBACK_PORT]
@@ -702,11 +711,14 @@ mod tests {
 
     #[test]
     fn a_pinned_port_wins_and_zero_keeps_the_door_shut() {
-        // Set and unset around the call: the variable is process-wide.
-        unsafe { std::env::set_var(ENV_PORT, "7123") };
-        assert_eq!(pick_port(), Some(7123));
-        unsafe { std::env::set_var(ENV_PORT, "0") };
-        assert_eq!(pick_port(), None);
-        unsafe { std::env::remove_var(ENV_PORT) };
+        assert_eq!(pick_port(Some("7123")), Some(7123));
+        assert_eq!(pick_port(Some(" 7123 ")), Some(7123));
+        assert_eq!(pick_port(Some("0")), None);
+        // Unpinned, or pinned to nonsense: whichever of the two ports this
+        // machine hands out, if either.
+        for unpinned in [None, Some("door")] {
+            let picked = pick_port(unpinned);
+            assert!(matches!(picked, None | Some(PORT) | Some(FALLBACK_PORT)), "{picked:?}");
+        }
     }
 }

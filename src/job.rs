@@ -78,14 +78,16 @@ impl Mode {
     /// `--verbose` and a non-terminal stdout both mean "stream": a log file, a
     /// CI job and a pipe all want the lines, and a spinner redrawing into a
     /// file is line noise. Asked once per run, at the top, so the child cannot
-    /// be started under one mode and reported under another.
-    pub fn resolve(wanted: Mode, verbose: bool) -> Mode {
+    /// be started under one mode and reported under another. `terminal` is
+    /// [`on_terminal`], passed in so that both answers can be tested - a test
+    /// process has no terminal to ask.
+    pub fn resolve(wanted: Mode, verbose: bool, terminal: bool) -> Mode {
         // The override outranks even `--verbose`: its whole purpose is to put
         // the run in a mode the environment would not otherwise produce.
         if let Some(forced) = Self::forced() {
             return forced;
         }
-        if verbose || !is_terminal() { Mode::Stream } else { wanted }
+        if verbose || !terminal { Mode::Stream } else { wanted }
     }
 
     fn forced() -> Option<Mode> {
@@ -98,7 +100,8 @@ impl Mode {
     }
 }
 
-fn is_terminal() -> bool {
+/// Whether stdout is a terminal, for [`Mode::resolve`].
+pub fn on_terminal() -> bool {
     use std::io::IsTerminal;
     std::io::stdout().is_terminal()
 }
@@ -763,21 +766,24 @@ mod tests {
     }
 
     /// Verbose and a pipe both mean "stream"; the wanted mode only survives on
-    /// a terminal, and a test process has none.
+    /// a terminal. Whether there is one is an argument: this test used to ask
+    /// the real stdout, and so held only while `cargo test` ran without one.
     ///
-    /// Reads the environment, so it runs alone - `cargo test` shares one
-    /// process across threads, and a neighbour setting `TURNOUT_CONSOLE`
-    /// would decide this test's answer. The integration suite exercises the
-    /// override for real, in a child process.
+    /// The override is the environment's, and no test in this process sets
+    /// it - the integration suite exercises it for real, in a child process.
     #[test]
     fn verbosity_and_pipes_both_force_streaming() {
         assert!(
             std::env::var(MODE_ENV).is_err(),
             "{MODE_ENV} is set in this process; the resolve tests describe the unforced path"
         );
-        assert_eq!(Mode::resolve(Mode::Quiet, true), Mode::Stream);
-        assert_eq!(Mode::resolve(Mode::UntilReady, true), Mode::Stream);
-        // No terminal under `cargo test`, so even the quiet mode streams.
-        assert_eq!(Mode::resolve(Mode::Quiet, false), Mode::Stream);
+        for terminal in [true, false] {
+            assert_eq!(Mode::resolve(Mode::Quiet, true, terminal), Mode::Stream);
+            assert_eq!(Mode::resolve(Mode::UntilReady, true, terminal), Mode::Stream);
+        }
+        assert_eq!(Mode::resolve(Mode::Quiet, false, false), Mode::Stream);
+        assert_eq!(Mode::resolve(Mode::UntilReady, false, false), Mode::Stream);
+        assert_eq!(Mode::resolve(Mode::Quiet, false, true), Mode::Quiet);
+        assert_eq!(Mode::resolve(Mode::UntilReady, false, true), Mode::UntilReady);
     }
 }

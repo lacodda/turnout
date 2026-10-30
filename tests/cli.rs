@@ -2085,6 +2085,13 @@ fn pause_a_second() -> &'static str {
 /// A server that never says it is up must not leave the console behind a
 /// spinner for as long as it runs: after the wait, turnout hands the terminal
 /// over and everything it held back appears.
+///
+/// The wait counts from the start, and how long a shell takes to start is not
+/// the test's to decide - on a cold Windows runner it outlasted the wait, the
+/// first line arrived after the hand-over and was streamed to stdout rather
+/// than replayed to stderr. So that line is written to stderr: held back and
+/// replayed, or streamed, it lands there either way. The second line comes a
+/// second later, long after any wait has run out, and is streamed.
 #[test]
 fn a_server_that_never_announces_itself_gets_the_console_back() {
     let (dir, project) = workspace();
@@ -2095,7 +2102,7 @@ fn a_server_that_never_announces_itself_gets_the_console_back() {
             "--command",
             // Nothing here looks like a server coming up - no address, no
             // "ready", no "compiled". Under the quiet mode it would be hidden.
-            &format!("dev=echo booting the thing && {} && echo still going", pause_a_second()),
+            &format!("dev=echo booting the thing 1>&2 && {} && echo still going", pause_a_second()),
         ])
         .assert()
         .success();
@@ -2105,7 +2112,8 @@ fn a_server_that_never_announces_itself_gets_the_console_back() {
         .args(["dev", "myapp"])
         .assert()
         .success()
-        // Held back at first, replayed when the wait ran out ...
+        // Held back at first and replayed when the wait ran out - or, after
+        // a slow start, streamed: not swallowed either way ...
         .stderr(predicate::str::contains("booting the thing"))
         // ... and streamed from then on.
         .stdout(predicate::str::contains("still going"));
@@ -3767,6 +3775,7 @@ fn a_detached_job_outlives_turnout_and_stops_with_its_tree() {
         .assert()
         .success();
 
+    let _stops = StopsJob::new(dir.path(), "myapp", "serve");
     turnout(dir.path())
         .args(["run", "serve", "myapp", "--detach"])
         .assert()
@@ -3854,6 +3863,7 @@ fn following_a_log_ends_with_the_job() {
         .args(["--command", &format!("tick={tick}")])
         .assert()
         .success();
+    let _stops = StopsJob::new(dir.path(), "myapp", "tick");
     turnout(dir.path()).args(["run", "tick", "myapp", "-d"]).assert().success();
     turnout(dir.path())
         .args(["logs", "myapp", "tick", "--follow"])
@@ -3887,7 +3897,10 @@ fn a_foreground_job_is_listed_and_can_be_stopped_from_elsewhere() {
     // the test harness does not, so the test does what the shell would.
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(&mut foreground, 0);
-    let mut child = foreground.spawn().unwrap();
+    // Dropped in reverse: the stop first, which takes the job's tree down,
+    // then the kill, for a turnout that did not go.
+    let mut child = ChildGuard(foreground.spawn().unwrap());
+    let _stops = StopsJob::new(dir.path(), "myapp", "long");
     eventually(10, "the foreground job in ps", || {
         let ps = stdout_of(dir.path(), &["ps"]);
         // Running, and not marked as a background job.
@@ -3902,7 +3915,7 @@ fn a_foreground_job_is_listed_and_can_be_stopped_from_elsewhere() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Stopped myapp long"));
-    let status = child.wait().unwrap();
+    let status = child.0.wait().unwrap();
     assert!(!status.success(), "the stopped turnout exited cleanly: {status}");
     std::thread::sleep(std::time::Duration::from_secs(1));
     assert!(!stdout_of(dir.path(), &["ps"]).contains("myapp long"));
@@ -4036,6 +4049,7 @@ fn a_background_server_says_where_it_answers_and_stop_is_silent() {
         .args(["--command", &format!("serve={serve}")])
         .assert()
         .success();
+    let _stops = StopsJob::new(dir.path(), "myapp", "serve");
     turnout(dir.path()).args(["run", "serve", "myapp", "--detach"]).assert().success();
     let sent = toasts_eventually(dir.path(), 1);
     assert_eq!(sent[0]["title"], "myapp serve is ready", "{sent:#?}");
@@ -4122,6 +4136,7 @@ fn the_background_preference_covers_what_it_names_and_yields_to_the_flags() {
         .args(["--command", &format!("slow={slow}"), "--command", "quick=echo quick-here"])
         .assert()
         .success();
+    let _stops = StopsJob::new(dir.path(), "myapp", "slow");
     let preferring = |value: &str| {
         let mut cmd = turnout(dir.path());
         cmd.env("TURNOUT_DETACH", value).env("TURNOUT_CONSOLE", "quiet");

@@ -186,7 +186,7 @@ pub fn listening_ports(apps: &[App]) -> Result<BTreeMap<u16, String>> {
 pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<()> {
     let ports = listening_ports(&store::load_apps()?)?;
     let apps: Vec<(String, u16)> = ports.iter().map(|(port, app)| (app.clone(), *port)).collect();
-    let front_port = front_port.or_else(crate::front::pick_port);
+    let front_port = front_port.or_else(|| crate::front::pick_port(crate::front::pinned_port().as_deref()));
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let jars: Jars = Arc::default();
