@@ -77,7 +77,10 @@ fn setup_clears_the_way_out_of_a_refused_data_directory() {
         dir.path().join("settings-backup-v1").join("servers.json").is_file(),
         "the values being re-entered must survive"
     );
-    turnout(dir.path()).args(["server", "add", "staging", "--url", "https://staging.example.com"]).assert().success();
+    turnout(dir.path())
+        .args(["server", "add", "staging", "--url", "https://staging.example.com"])
+        .assert()
+        .success();
     turnout(dir.path())
         .arg("status")
         .assert()
@@ -1333,16 +1336,15 @@ fn emptying_an_allow_list_is_asked_for_not_a_side_effect() {
         .args(["server", "remove", "prod", "--yes", "--force"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("'web' had no other server on the allow-list and may now use any server"));
+        .stdout(predicate::str::contains(
+            "'web' had no other server on the allow-list and may now use any server",
+        ));
     turnout(dir.path())
         .args(["app", "show", "web"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Servers:  any - no allow-list"));
-    turnout(dir.path())
-        .args(["app", "edit", "web", "--add-server", "staging"])
-        .assert()
-        .success();
+    turnout(dir.path()).args(["app", "edit", "web", "--add-server", "staging"]).assert().success();
     turnout(dir.path()).args(["app", "edit", "web", "--any-server"]).assert().success();
     turnout(dir.path())
         .args(["app", "show", "web"])
@@ -1557,10 +1559,7 @@ fn a_target_stays_within_its_apps_allow_list() {
         .args(["server", "add", "other", "--url", "https://other.example.com"])
         .assert()
         .success();
-    turnout(dir.path())
-        .args(["app", "edit", "myapp", "--add-server", "staging"])
-        .assert()
-        .success();
+    turnout(dir.path()).args(["app", "edit", "myapp", "--add-server", "staging"]).assert().success();
     for args in [
         vec!["target", "edit", "myapp-staging", "--server", "other"],
         vec![
@@ -2464,15 +2463,10 @@ fn a_filesystem_root_is_never_a_deploy_directory() {
     let text = std::fs::read_to_string(&file).unwrap().replace("\"/var/www/myapp\"", "\"/\"");
     std::fs::write(&file, text).unwrap();
     let (other, _) = workspace();
-    turnout(other.path())
-        .arg("import")
-        .arg(&file)
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("path 'wwwroot': '/' is the root of the server's filesystem")
-                .and(predicate::str::contains("target 'myapp-staging': it names path 'wwwroot'")),
-        );
+    turnout(other.path()).arg("import").arg(&file).assert().success().stdout(
+        predicate::str::contains("path 'wwwroot': '/' is the root of the server's filesystem")
+            .and(predicate::str::contains("target 'myapp-staging': it names path 'wwwroot'")),
+    );
 
     // A catalog that already holds one - written before the check, or by
     // hand - is stopped before anything connects.
@@ -3366,16 +3360,11 @@ fn an_import_refuses_what_add_would_refuse() {
     let (target, other) = workspace();
     turnout(target.path()).args(["app", "add", "docs", "--path"]).arg(&other).assert().success();
     turnout(target.path()).args(["group", "add", "web", "--app", "docs"]).assert().success();
-    turnout(target.path())
-        .args(["import", "--force"])
-        .arg(&file)
-        .assert()
-        .success()
-        .stdout(
-            predicate::str::contains("Refused 2 item(s)")
-                .and(predicate::str::contains("app 'web': a group named 'web' exists here"))
-                .and(predicate::str::contains("app 'Not Valid': invalid name")),
-        );
+    turnout(target.path()).args(["import", "--force"]).arg(&file).assert().success().stdout(
+        predicate::str::contains("Refused 2 item(s)")
+            .and(predicate::str::contains("app 'web': a group named 'web' exists here"))
+            .and(predicate::str::contains("app 'Not Valid': invalid name")),
+    );
     let apps = read_apps(target.path());
     let names: Vec<&str> = apps.iter().map(|app| app["name"].as_str().unwrap()).collect();
     assert_eq!(names, vec!["docs"], "nothing refused may land in the catalog");
@@ -3389,7 +3378,11 @@ fn an_import_keeps_the_secret_of_a_credential_it_keeps() {
     let (source, _) = workspace();
     add_staging(source.path());
     add_credential(source.path());
-    turnout(source.path()).args(["pass", "set", "deploy"]).write_stdin("from-the-file").assert().success();
+    turnout(source.path())
+        .args(["pass", "set", "deploy"])
+        .write_stdin("from-the-file")
+        .assert()
+        .success();
     let file = source.path().join("export.json");
     turnout(source.path())
         .args(["export", "--with-secrets", "--output"])
@@ -3400,7 +3393,11 @@ fn an_import_keeps_the_secret_of_a_credential_it_keeps() {
 
     let (target, _) = workspace();
     add_credential(target.path());
-    turnout(target.path()).args(["pass", "set", "deploy"]).write_stdin("kept-here").assert().success();
+    turnout(target.path())
+        .args(["pass", "set", "deploy"])
+        .write_stdin("kept-here")
+        .assert()
+        .success();
     turnout(target.path())
         .arg("import")
         .arg(&file)

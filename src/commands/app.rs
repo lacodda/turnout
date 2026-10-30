@@ -348,19 +348,7 @@ fn edit(
         let around = app_wizard::Surroundings { others, known, adding: false };
         app_wizard::walk(&mut app, &around)?;
     } else {
-        apply_flags(
-            &mut app,
-            &others,
-            &known,
-            path,
-            port,
-            env_var,
-            env_file,
-            dev_port,
-            dist,
-            &overrides,
-            allow,
-        )?;
+        apply_flags(&mut app, &others, &known, path, port, env_var, env_file, dev_port, dist, &overrides, allow)?;
     }
     let before = std::mem::replace(&mut apps[index], app);
     store::save_apps(&apps)?;

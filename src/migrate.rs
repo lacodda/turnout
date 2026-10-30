@@ -538,7 +538,10 @@ fn unfinished_copy(dir: &Path, from: u32) -> Option<PathBuf> {
             let name = entry.file_name().to_string_lossy().into_owned();
             // `-v1` must not find `-v10`: the name is the base, or the base
             // and a numeric suffix.
-            name == base || name.strip_prefix(&format!("{base}-")).is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+            name == base
+                || name
+                    .strip_prefix(&format!("{base}-"))
+                    .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
         })
         .map(|entry| entry.path())
         .filter(|path| path.join(UNFINISHED).is_file())
