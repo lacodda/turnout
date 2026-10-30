@@ -179,6 +179,40 @@ fn workspace() -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, project)
 }
 
+/// Found by the v0.27 field run on Linux: a Vite app added with flags got
+/// `TURNOUT_GATEWAY_URL` in its dotenv file - a name Vite never hands to the
+/// browser code - and no build directory, so its first deploy refused. Flags
+/// get what the form proposes; a flag still has the last word.
+#[test]
+fn a_vite_app_added_by_flags_gets_what_vite_reads() {
+    let (dir, project) = workspace();
+    std::fs::create_dir(project.join("public")).unwrap();
+    std::fs::write(
+        project.join("package.json"),
+        r#"{"scripts":{"dev":"vite","build":"vite build"},"devDependencies":{"vite":"^8"}}"#,
+    )
+    .unwrap();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("VITE_API_URL=http://localhost:"));
+    let apps = read_apps(dir.path());
+    assert_eq!(apps[0]["gateway_env"], "VITE_API_URL", "{apps:?}");
+    assert_eq!(apps[0]["dist_dir"], "dist", "not `public`, Vite's static sources: {apps:?}");
+
+    turnout(dir.path())
+        .args(["app", "add", "other", "--path"])
+        .arg(&project)
+        .args(["--env-var", "API_BASE", "--dist", "out"])
+        .assert()
+        .success();
+    let other = read_apps(dir.path()).into_iter().find(|app| app["name"] == "other").unwrap();
+    assert_eq!(other["gateway_env"], "API_BASE");
+    assert_eq!(other["dist_dir"], "out");
+}
+
 #[test]
 fn app_crud_roundtrip() {
     let (dir, project) = workspace();

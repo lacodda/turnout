@@ -87,6 +87,33 @@ fn uses_vite(path: &Path) -> bool {
     std::fs::read_to_string(path.join("package.json")).is_ok_and(|text| text.contains("\"vite\""))
 }
 
+/// The variable the project's code can actually read the gateway's address
+/// from, when it is not turnout's default: Vite hands only `VITE_*` variables
+/// to the code it builds for the browser.
+///
+/// Asked by `app add` with flags and by the form alike. Only the form knew it
+/// until v0.27, so a Vite app added by flags got `TURNOUT_GATEWAY_URL` in its
+/// dotenv file - a name its browser code never sees - and talked to nothing.
+pub fn gateway_env(path: &Path) -> Option<&'static str> {
+    uses_vite(path).then_some("VITE_API_URL")
+}
+
+/// Where the project's build lands, when that can be told from the project.
+///
+/// Vite builds to `dist` whether or not it has run yet - and its `public` is
+/// the source of its static files, which the form used to offer as the build
+/// directory of a Vite project that had not been built. Otherwise the first
+/// of the usual build directories that exists.
+pub fn dist_dir(path: &Path) -> Option<String> {
+    if uses_vite(path) {
+        return Some("dist".to_string());
+    }
+    ["dist", "build", "out", "public"]
+        .iter()
+        .find(|candidate| path.join(candidate).is_dir())
+        .map(|candidate| candidate.to_string())
+}
+
 /// Script names declared in `package.json`, in file order.
 fn read_scripts(path: &Path) -> Option<Vec<String>> {
     let text = std::fs::read_to_string(path.join("package.json")).ok()?;
@@ -160,6 +187,27 @@ mod tests {
         // A project without Vite keeps its command as it is.
         std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"dev":"next dev"}}"#).unwrap();
         assert_eq!(commands_for(dir.path(), ProjectKind::Pnpm)["dev"], "pnpm dev");
+    }
+
+    /// A Vite project gets the variable its browser code can read and Vite's
+    /// own build directory - even before its first build, and even with a
+    /// `public` folder of static sources beside it.
+    #[test]
+    fn a_vite_project_is_given_what_vite_reads_and_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("public")).unwrap();
+        std::fs::write(dir.path().join("package.json"), r#"{"devDependencies":{"vite":"^8"}}"#).unwrap();
+        assert_eq!(gateway_env(dir.path()), Some("VITE_API_URL"));
+        assert_eq!(dist_dir(dir.path()).as_deref(), Some("dist"));
+
+        // Anything else keeps turnout's default variable, and a build
+        // directory only when one is there to see.
+        std::fs::write(dir.path().join("package.json"), r#"{"scripts":{"build":"react-scripts build"}}"#).unwrap();
+        assert_eq!(gateway_env(dir.path()), None);
+        assert_eq!(dist_dir(dir.path()).as_deref(), Some("public"));
+        std::fs::create_dir(dir.path().join("build")).unwrap();
+        assert_eq!(dist_dir(dir.path()).as_deref(), Some("build"));
+        assert_eq!(dist_dir(Path::new("does-not-exist")), None);
     }
 
     #[test]

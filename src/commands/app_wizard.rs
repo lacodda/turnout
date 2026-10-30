@@ -133,7 +133,9 @@ fn ask_gateway_env(app: &mut App, _around: &Surroundings) -> Result<()> {
     }
     let default = match &app.gateway_env {
         Some(name) => name.clone(),
-        None => suggested_env_name(Path::new(&app.path)).to_string(),
+        None => detect::gateway_env(Path::new(&app.path))
+            .unwrap_or(crate::model::DEFAULT_GATEWAY_ENV)
+            .to_string(),
     };
     let answer: String = Input::new()
         .with_prompt("Variable that carries the gateway URL to the app")
@@ -180,7 +182,11 @@ fn ask_dev_port(app: &mut App, around: &Surroundings) -> Result<()> {
 }
 
 fn ask_dist_dir(app: &mut App, _around: &Surroundings) -> Result<()> {
-    let default = app.dist_dir.clone().unwrap_or_else(|| suggested_dist(Path::new(&app.path)));
+    let default = app
+        .dist_dir
+        .clone()
+        .or_else(|| detect::dist_dir(Path::new(&app.path)))
+        .unwrap_or_else(|| "dist".to_string());
     let answer: String = Input::new()
         .with_prompt("Build artifact directory, relative to the project (empty for none)")
         .default(default)
@@ -191,28 +197,12 @@ fn ask_dist_dir(app: &mut App, _around: &Surroundings) -> Result<()> {
     Ok(())
 }
 
-/// The build directory this project most likely produces.
-fn suggested_dist(path: &Path) -> String {
-    ["dist", "build", "out", "public"]
-        .iter()
-        .find(|candidate| path.join(candidate).is_dir())
-        .unwrap_or(&"dist")
-        .to_string()
-}
-
 fn ask_servers(app: &mut App, around: &Surroundings) -> Result<()> {
     if around.known.is_empty() {
         return Ok(());
     }
     app.servers = super::app::pick_servers(&around.known, &app.servers)?;
     Ok(())
-}
-
-/// The variable a framework can actually see: Vite exposes only `VITE_*` to
-/// the client, so a Vite project gets that prefix by default.
-fn suggested_env_name(path: &Path) -> &'static str {
-    let vite = std::fs::read_to_string(path.join("package.json")).is_ok_and(|text| text.contains("\"vite\""));
-    if vite { "VITE_API_URL" } else { crate::model::DEFAULT_GATEWAY_ENV }
 }
 
 // ---------------------------------------------------------------- commands --

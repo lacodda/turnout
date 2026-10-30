@@ -163,7 +163,14 @@ fn add(
     } else {
         let path = path.expect("without a path the run is a wizard");
         app.path = crate::utils::project_dir(&path)?.display().to_string();
-        app.commands = detect::commands_for(Path::new(&app.path), detect::detect(Path::new(&app.path)));
+        let project = Path::new(&app.path);
+        app.commands = detect::commands_for(project, detect::detect(project));
+        // What the form would propose, taken as it is: the flags below still
+        // have the last word.
+        if app.gateway_port.is_some() {
+            app.gateway_env = detect::gateway_env(project).map(str::to_string);
+        }
+        app.dist_dir = detect::dist_dir(project);
         apply_flags(
             &mut app,
             &apps,
