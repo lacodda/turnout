@@ -14,7 +14,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use assert_cmd::Command;
 use serde_json::Value;
 
 /// What `tools/export-fixture.ps1` seals every fixture's secrets with.
@@ -31,14 +30,8 @@ fn fixtures() -> Vec<PathBuf> {
     files
 }
 
-fn turnout(data_dir: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("turnout").unwrap();
-    cmd.env("TURNOUT_DATA_DIR", data_dir)
-        .env("TURNOUT_KEYRING", "insecure-file")
-        .env("TURNOUT_UPDATE_CHECK", "0")
-        .env("TURNOUT_TOASTS", data_dir.join("toasts.jsonl"));
-    cmd
-}
+mod common;
+use common::turnout;
 
 fn read_json(path: &Path) -> Value {
     let text = std::fs::read_to_string(path).unwrap_or_else(|err| panic!("cannot read {}: {err}", path.display()));

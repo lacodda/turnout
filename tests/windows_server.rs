@@ -20,8 +20,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use assert_cmd::Command;
-
 /// One local account the server lets in with a password.
 struct Account {
     user: String,
@@ -61,16 +59,10 @@ impl Stand {
     }
 }
 
-fn turnout(data: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("turnout").unwrap();
-    cmd.env("TURNOUT_DATA_DIR", data)
-        .env("TURNOUT_UPDATE_CHECK", "0")
-        .env("TURNOUT_TOASTS", data.join("toasts.jsonl"))
-        // The passwords go to a file in the data directory: what is under
-        // test is the server, not the runner's credential store.
-        .env("TURNOUT_KEYRING", "insecure-file");
-    cmd
-}
+// The passwords go to a file in the data directory: what is under test is
+// the server, not the runner's credential store.
+mod common;
+use common::turnout;
 
 /// Everything a command printed, both streams, for messages and matching.
 fn printed(output: &Output) -> String {

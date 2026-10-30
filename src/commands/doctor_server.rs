@@ -334,8 +334,7 @@ fn probe_command(dialect: Dialect, dir: &str) -> String {
         Dialect::Windows => {
             let target = dir.replace('\'', "''");
             let script = format!(
-                "$ErrorActionPreference = 'SilentlyContinue'\n\
-                 $target = '{target}'\n\
+                "$target = '{target}'\n\
                  $d = $target\n\
                  while ($d -and -not (Test-Path -LiteralPath $d -PathType Container)) {{ $d = Split-Path -Parent $d }}\n\
                  'dir=' + $d\n\

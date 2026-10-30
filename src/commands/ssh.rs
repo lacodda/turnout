@@ -53,7 +53,7 @@ pub fn run(name: Option<String>, credential: Option<String>) -> Result<()> {
             Auth::Key => "Passphrase",
             Auth::Agent => "Secret",
         };
-        match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.set_text(secret)) {
+        match crate::clipboard::set(&secret) {
             Ok(()) => eprintln!("{what} for '{}' copied to the clipboard - paste it at the prompt.", host.credential.name),
             Err(_) => eprintln!("{what} for '{}' is in the keyring: `turnout pass copy {0}`.", host.credential.name),
         }

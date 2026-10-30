@@ -92,9 +92,7 @@ fn copy(name: Option<String>, user: bool, show: bool) -> Result<()> {
         println!("{value}");
         return Ok(());
     }
-    arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.set_text(value))
-        .context("cannot access the clipboard (use --show to print instead)")?;
+    crate::clipboard::set(&value).context("cannot access the clipboard (use --show to print instead)")?;
     println!("{what} for '{}' copied to the clipboard.", credential.name);
     Ok(())
 }

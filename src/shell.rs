@@ -380,9 +380,22 @@ const SYSTEM_SID: &str = "S-1-5-18";
 /// nothing to quote. `cmd.exe` caps a command line at 8191 characters, and
 /// the encoding takes about 2.7 of them per character of script - callers
 /// that send long lists keep their scripts under [`POWERSHELL_SCRIPT_CHARS`].
+///
+/// Every script runs inside [`POWERSHELL_PREAMBLE`] and ends in `exit 0`, so
+/// none can forget either: a script answers through its output, and an
+/// earlier `exit` still says otherwise when it means to.
 pub fn powershell(script: &str) -> String {
-    format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(script))
+    let whole = format!("{POWERSHELL_PREAMBLE}{script}\nexit 0\n");
+    format!("powershell -NoProfile -NonInteractive -EncodedCommand {}", encoded(&whole))
 }
+
+/// What every server-side script opens with: errors and progress kept out of
+/// the reply. A PowerShell that loads a module for the first time on a machine
+/// reports "Preparing modules for first use" as progress - on a fresh CI
+/// runner that was the whole of stderr, and the script around it exited 1.
+/// Without the explicit `exit 0` PowerShell exits with the success of
+/// whatever statement ran last.
+const POWERSHELL_PREAMBLE: &str = "$ErrorActionPreference = 'SilentlyContinue'\n$ProgressPreference = 'SilentlyContinue'\n";
 
 /// The longest script [`powershell`] can carry through `cmd.exe`, with room
 /// to spare for the command around it.

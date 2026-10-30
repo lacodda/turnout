@@ -134,9 +134,7 @@ fn copied() -> Result<(String, &'static str)> {
             return Ok((text, "standard input"));
         }
     }
-    let text = arboard::Clipboard::new()
-        .and_then(|mut clipboard| clipboard.get_text())
-        .context("cannot read the clipboard - copy the Cookie header first, or pipe it in")?;
+    let text = crate::clipboard::get().context("cannot read the clipboard - copy the Cookie header first, or pipe it in")?;
     Ok((text, "the clipboard"))
 }
 

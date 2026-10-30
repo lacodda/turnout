@@ -1,23 +1,8 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-fn turnout(data_dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("turnout").unwrap();
-    cmd.env("TURNOUT_DATA_DIR", data_dir);
-    // No test should reach github.com as a side effect of running a command.
-    // The update check is already off under `CI`, but a local run would spawn
-    // a background lookup from every single `setup`. The few tests that do
-    // exercise the check turn it back on via `with_update_check`.
-    cmd.env("TURNOUT_UPDATE_CHECK", "0");
-    // Nor pop a notification on the desktop of whoever runs the suite: every
-    // toast goes to a file in the data directory, where tests read it back.
-    cmd.env("TURNOUT_TOASTS", toast_file(data_dir));
-    cmd
-}
-
-fn toast_file(data_dir: &std::path::Path) -> std::path::PathBuf {
-    data_dir.join("toasts.jsonl")
-}
+mod common;
+use common::{clipboard, toast_file, turnout, turnout_process};
 
 /// The notifications turnout has sent in this data directory, oldest first.
 fn toasts(data_dir: &std::path::Path) -> Vec<serde_json::Value> {
@@ -779,8 +764,7 @@ fn the_front_door_routes_by_name_and_says_who_is_not_running() {
     drop(gateway_reservation);
     drop(front_reservation);
     drop(silent_reservation);
-    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
-        .env("TURNOUT_DATA_DIR", dir.path())
+    let child = turnout_process(dir.path())
         .args(["gateway", "run", "--front-port", &front.to_string()])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -1144,10 +1128,10 @@ fn removing_server_updates_apps() {
 /// Pass commands run with the insecure file backend: the OS keyring is
 /// per-process-safe but not shareable across the separate CLI invocations
 /// a test makes, and CI runners have no unlocked keyring at all.
+/// Every `turnout` keeps its secrets in a file now; kept as a name for the
+/// tests whose subject is the secret.
 fn turnout_secrets(data_dir: &std::path::Path) -> Command {
-    let mut cmd = turnout(data_dir);
-    cmd.env("TURNOUT_KEYRING", "insecure-file");
-    cmd
+    turnout(data_dir)
 }
 
 fn add_staging(dir: &std::path::Path) {
@@ -1283,7 +1267,8 @@ fn credential_remove_clears_it_from_servers() {
         .stderr(predicate::str::contains("no credential named"));
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Every platform: the clipboard is a file under test, so Linux runners -
+/// which have no clipboard to write to - check this as well.
 #[test]
 fn pass_copy_never_prints_the_secret() {
     let (dir, _) = workspace();
@@ -1294,6 +1279,7 @@ fn pass_copy_never_prints_the_secret() {
         .assert()
         .success()
         .stdout(predicate::str::contains("copied to the clipboard").and(predicate::str::contains("s3cret").not()));
+    assert_eq!(clipboard(dir.path()).as_deref(), Some("s3cret"), "the secret is on the clipboard");
 }
 
 #[test]
@@ -1510,8 +1496,7 @@ fn gateway_proxies_with_cookie_jar_and_location_rewrite() {
     // which the OS could hand the port to someone else is the child's startup
     // alone, not three process spawns.
     drop(gateway_reservation);
-    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
-        .env("TURNOUT_DATA_DIR", dir.path())
+    let child = turnout_process(dir.path())
         // This test is about the stand proxy; the front door stays shut so
         // parallel tests never compete for one port.
         .env("TURNOUT_FRONT_PORT", "0")
@@ -3258,10 +3243,8 @@ fn a_foreground_job_is_listed_and_can_be_stopped_from_elsewhere() {
         .args(["--command", &format!("long={long}")])
         .assert()
         .success();
-    let mut foreground = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"));
+    let mut foreground = turnout_process(dir.path());
     foreground
-        .env("TURNOUT_DATA_DIR", dir.path())
-        .env("TURNOUT_UPDATE_CHECK", "0")
         .args(["run", "long", "myapp"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -3797,10 +3780,8 @@ fn use_reports_the_health_of_the_stand() {
 fn run_gateway(dir: &std::path::Path, gateway_reservation: std::net::TcpListener) -> ChildGuard {
     let gateway_port = gateway_reservation.local_addr().unwrap().port();
     drop(gateway_reservation);
-    let child = std::process::Command::new(assert_cmd::cargo::cargo_bin("turnout"))
-        .env("TURNOUT_DATA_DIR", dir)
+    let child = turnout_process(dir)
         .env("TURNOUT_FRONT_PORT", "0")
-        .env("TURNOUT_TOASTS", toast_file(dir))
         .args(["gateway", "run"])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

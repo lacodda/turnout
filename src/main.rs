@@ -2,6 +2,7 @@ mod agent;
 mod alias;
 mod artifact;
 mod cli;
+mod clipboard;
 mod commands;
 mod control;
 mod detached;
