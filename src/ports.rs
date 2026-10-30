@@ -19,6 +19,10 @@ pub struct Holder {
     pub pid: Option<u32>,
     /// The program's file name: `node.exe`, `python3`.
     pub name: Option<String>,
+    /// When the process started (see [`crate::process::birth`]), read the
+    /// moment it was found: whatever is done to the holder later is done
+    /// only while its pid still names the process born then.
+    pub birth: Option<u64>,
 }
 
 impl Holder {
@@ -36,7 +40,9 @@ impl Holder {
 /// The process listening on TCP `port`, on any address, or `None` when
 /// nothing listens there.
 pub fn holder(port: u16) -> Option<Holder> {
-    imp::holder(port)
+    let mut holder = imp::holder(port)?;
+    holder.birth = holder.pid.and_then(crate::process::birth);
+    Some(holder)
 }
 
 #[cfg(windows)]
@@ -58,6 +64,7 @@ mod imp {
         Some(Holder {
             pid: Some(pid),
             name: image_name(pid),
+            birth: None,
         })
     }
 
@@ -145,6 +152,7 @@ mod imp {
             name: pid
                 .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok())
                 .map(|name| name.trim().to_string()),
+            birth: None,
         })
     }
 
@@ -195,7 +203,11 @@ mod imp {
         let answers = |address: std::net::SocketAddr| std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_millis(300)).is_ok();
         let v4 = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let v6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port));
-        (answers(v4) || answers(v6)).then_some(Holder { pid: None, name: None })
+        (answers(v4) || answers(v6)).then_some(Holder {
+            pid: None,
+            name: None,
+            birth: None,
+        })
     }
 }
 
@@ -233,10 +245,15 @@ fn read_lsof(output: &str) -> Option<Holder> {
             return Some(Holder {
                 pid,
                 name: Some(command.trim().to_string()),
+                birth: None,
             });
         }
     }
-    pid.map(|pid| Holder { pid: Some(pid), name: None })
+    pid.map(|pid| Holder {
+        pid: Some(pid),
+        name: None,
+        birth: None,
+    })
 }
 
 #[cfg(test)]
@@ -251,6 +268,7 @@ mod tests {
         let holder = holder(port).expect("the port is listened on");
         if cfg!(any(windows, target_os = "linux", target_os = "macos")) {
             assert_eq!(holder.pid, Some(std::process::id()), "{holder:?}");
+            assert_eq!(holder.birth, Some(crate::process::own_birth()), "{holder:?}");
             assert!(holder.name.is_some(), "the test binary has a name: {holder:?}");
         }
         drop(listener);
@@ -296,7 +314,8 @@ mod tests {
             read_lsof("p4242\ncnode\np5000\ncother\n"),
             Some(Holder {
                 pid: Some(4242),
-                name: Some("node".into())
+                name: Some("node".into()),
+                birth: None,
             })
         );
         assert_eq!(read_lsof(""), None);
@@ -307,8 +326,14 @@ mod tests {
         let full = Holder {
             pid: Some(4242),
             name: Some("node.exe".into()),
+            birth: None,
         };
         assert_eq!(full.describe(), "node.exe (pid 4242)");
-        assert_eq!(Holder { pid: None, name: None }.describe(), "a process turnout cannot see");
+        let unseen = Holder {
+            pid: None,
+            name: None,
+            birth: None,
+        };
+        assert_eq!(unseen.describe(), "a process turnout cannot see");
     }
 }

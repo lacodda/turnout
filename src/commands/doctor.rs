@@ -636,9 +636,9 @@ fn judge_dev_port(app: &App, port: u16, running: bool, landed: Option<u16>, hold
 /// hand. `--fix` can end it when the OS says which process it is.
 fn stray(app: &App, port: u16, holder: &Holder, state: State, message: String) -> CheckView {
     let check = CheckView::new(APPS, "dev_port", state, Some(&app.name), message);
-    // The birth is taken now, with the pid: it is what `--fix` asks again
-    // before it signals anything.
-    match holder.pid.and_then(|pid| process::birth(pid).map(|birth| (pid, birth))) {
+    // The birth was taken with the pid, when the holder was found: it is
+    // what `--fix` asks again before it signals anything.
+    match holder.pid.zip(holder.birth) {
         Some((pid, birth)) => check.repair(Repair::EndProcess {
             app: app.name.clone(),
             port,
@@ -1351,6 +1351,7 @@ mod tests {
         Some(Holder {
             pid,
             name: Some("node.exe".into()),
+            birth: pid.map(|_| 133_000_000),
         })
     }
 
@@ -1367,6 +1368,17 @@ mod tests {
         let stray = judge_dev_port(&app, 5100, false, None, node(Some(42)));
         assert_eq!((stray.state, stray.fixable), (State::Warn, true));
         assert!(stray.message.contains("node.exe (pid 42), which turnout did not start"), "{}", stray.message);
+        assert!(
+            matches!(
+                stray.repair,
+                Some(Repair::EndProcess {
+                    pid: 42,
+                    birth: 133_000_000,
+                    ..
+                })
+            ),
+            "--fix must end the process born when it was found: {stray:?}"
+        );
 
         // The job runs, but its server had to move: the front door shows the old one.
         let moved = judge_dev_port(&app, 5100, true, Some(5101), node(Some(42)));

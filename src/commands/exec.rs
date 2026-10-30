@@ -187,12 +187,9 @@ fn clear_dev_port(app: &str, port: u16) -> Result<()> {
     let Some(holder) = crate::ports::holder(port) else {
         return Ok(());
     };
-    // Its birth, with its pid: what is ended after the yes must be what was
-    // asked about.
-    let found = holder
-        .pid
-        .filter(|_| crate::pick::interactive())
-        .and_then(|pid| crate::process::birth(pid).map(|birth| (pid, birth)));
+    // Its birth, taken with its pid: what is ended after the yes must be
+    // what was asked about.
+    let found = holder.pid.zip(holder.birth).filter(|_| crate::pick::interactive());
     if let Some((pid, birth)) = found
         && crate::pick::confirm_destructive(
             format!(
