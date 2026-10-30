@@ -256,9 +256,9 @@ mod tests {
     /// else's, so the administrator answer must not change the path.
     #[test]
     fn posix_ignores_the_administrator_question() {
-        let user = AuthorizedKeysFile::locate(Dialect::Posix, "/home/pi", false);
+        let user = AuthorizedKeysFile::locate(Dialect::Posix, "/home/deploy", false);
         let root = AuthorizedKeysFile::locate(Dialect::Posix, "/root", true);
-        assert_eq!(user.file, "/home/pi/.ssh/authorized_keys");
+        assert_eq!(user.file, "/home/deploy/.ssh/authorized_keys");
         assert_eq!(root.file, "/root/.ssh/authorized_keys");
         assert!(!root.administrators);
     }
@@ -269,8 +269,8 @@ mod tests {
     #[test]
     fn a_trailing_separator_does_not_double() {
         assert_eq!(
-            AuthorizedKeysFile::locate(Dialect::Posix, "/home/pi/", false).file,
-            "/home/pi/.ssh/authorized_keys"
+            AuthorizedKeysFile::locate(Dialect::Posix, "/home/deploy/", false).file,
+            "/home/deploy/.ssh/authorized_keys"
         );
         assert_eq!(
             AuthorizedKeysFile::locate(Dialect::Windows, "C:\\Users\\deploy\\", false).file,

@@ -762,7 +762,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("servers.json"),
-            r#"[{"name":"kib-2","url":"https://kib2.example.com","credential":"deploy","deploy":{"my-app":"wwwroot"}}]"#,
+            r#"[{"name":"staging","url":"https://staging.example.com","credential":"deploy","deploy":{"my-app":"wwwroot"}}]"#,
         )
         .unwrap();
 
@@ -770,7 +770,7 @@ mod tests {
 
         let targets: Vec<crate::model::Target> = serde_json::from_str(&std::fs::read_to_string(dir.path().join("targets.json")).unwrap()).unwrap();
         assert_eq!(targets.len(), 1);
-        assert_eq!(targets[0].name, "my-app-kib-2");
+        assert_eq!(targets[0].name, "my-app-staging");
         crate::model::validate_name(&targets[0].name).expect("a generated name must be a valid entity name");
     }
 
@@ -826,7 +826,7 @@ mod tests {
     #[test]
     fn retiring_catalogs_moves_them_into_the_folder_the_user_was_told_about() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"pi\"}]").unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[{\"name\":\"staging\"}]").unwrap();
         std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
         std::fs::write(dir.path().join("journal.jsonl"), "{}").unwrap();
         // The refusal ran first and already made a reference copy.
@@ -839,7 +839,7 @@ mod tests {
         assert!(dir.path().join("journal.jsonl").exists(), "the journal is not a catalog and stays");
         assert_eq!(
             std::fs::read_to_string(aside.join("servers.json")).unwrap(),
-            "[{\"name\":\"pi\"}]",
+            "[{\"name\":\"staging\"}]",
             "the old values must survive - they are what gets re-entered"
         );
         let folders: Vec<_> = std::fs::read_dir(dir.path())

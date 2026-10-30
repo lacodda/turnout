@@ -537,11 +537,11 @@ mod tests {
             auth: crate::model::Auth::Password,
             key: None,
         };
-        let mut existing = vec![credential("pi-deploy", "deploy")];
+        let mut existing = vec![credential("staging-deploy", "deploy")];
         let mut report = Report::default();
         merge(
             &mut existing,
-            vec![credential("pi-root", "root"), credential("pi-deploy", "someone-else")],
+            vec![credential("staging-root", "root"), credential("staging-deploy", "someone-else")],
             |c| c.name.clone(),
             false,
             "credential",
@@ -553,12 +553,12 @@ mod tests {
         assert_eq!(existing.len(), 2, "a different name is a different login");
         assert_eq!(existing[0].user, "deploy", "the local entry must survive");
         assert_eq!(report.imported, 1);
-        assert_eq!(report.skipped, vec!["credential 'pi-deploy'"]);
+        assert_eq!(report.skipped, vec!["credential 'staging-deploy'"]);
     }
 
     #[test]
     fn an_empty_import_saves_nothing() {
-        let mut existing = vec![server("pi")];
+        let mut existing = vec![server("staging")];
         let mut report = Report::default();
         // The save closure panics: an empty incoming list must not reach it.
         merge(

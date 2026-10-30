@@ -301,7 +301,7 @@ impl Dialect {
     ///
     /// Needed because `~` is a POSIX shell expansion that `cmd.exe` does not
     /// have, and because the remote home is not guessable from the user name:
-    /// it can be `/home/pi`, `/root`, `C:\Users\deploy`, or anything an
+    /// it can be `/home/deploy`, `/root`, `C:\Users\deploy`, or anything an
     /// administrator chose.
     pub fn home_dir(&self) -> &'static str {
         match self {
@@ -473,7 +473,7 @@ mod tests {
     /// than fail the command that is about to create it.
     #[test]
     fn reading_a_missing_file_is_not_a_failure() {
-        assert!(Dialect::Posix.read_file("/home/pi/.ssh/authorized_keys").contains("|| true"));
+        assert!(Dialect::Posix.read_file("/home/deploy/.ssh/authorized_keys").contains("|| true"));
         assert!(Dialect::Windows.read_file("C:\\ProgramData\\ssh\\x").contains("(call )"));
     }
 
@@ -483,8 +483,8 @@ mod tests {
     #[test]
     fn a_key_line_is_appended_verbatim() {
         let line = "ssh-ed25519 AAAAB turnout@desktop";
-        let posix = Dialect::Posix.append_line("/home/pi/.ssh/authorized_keys", line);
-        assert_eq!(posix, "echo 'ssh-ed25519 AAAAB turnout@desktop' >> '/home/pi/.ssh/authorized_keys'");
+        let posix = Dialect::Posix.append_line("/home/deploy/.ssh/authorized_keys", line);
+        assert_eq!(posix, "echo 'ssh-ed25519 AAAAB turnout@desktop' >> '/home/deploy/.ssh/authorized_keys'");
 
         let windows = Dialect::Windows.append_line("C:\\ProgramData\\ssh\\administrators_authorized_keys", line);
         assert!(windows.contains(line), "the line must not be quoted for cmd.exe: {windows}");
@@ -495,7 +495,7 @@ mod tests {
         assert!(posix.contains(">>"), "{posix}");
     }
 
-    /// The home directory is asked for, not guessed: it can be /home/pi, /root
+    /// The home directory is asked for, not guessed: it can be /home/deploy, /root
     /// or C:\Users\deploy, and `~` is not a thing cmd.exe expands.
     #[test]
     fn the_home_directory_is_asked_for_in_the_right_dialect() {
@@ -507,9 +507,9 @@ mod tests {
     /// log, so the permissions are set as part of installing the key.
     #[test]
     fn the_key_file_is_restricted_to_its_owner() {
-        let posix = Dialect::Posix.restrict_to_owner("/home/pi/.ssh", "/home/pi/.ssh/authorized_keys");
-        assert!(posix.contains("chmod 700 '/home/pi/.ssh'"), "{posix}");
-        assert!(posix.contains("chmod 600 '/home/pi/.ssh/authorized_keys'"), "{posix}");
+        let posix = Dialect::Posix.restrict_to_owner("/home/deploy/.ssh", "/home/deploy/.ssh/authorized_keys");
+        assert!(posix.contains("chmod 700 '/home/deploy/.ssh'"), "{posix}");
+        assert!(posix.contains("chmod 600 '/home/deploy/.ssh/authorized_keys'"), "{posix}");
 
         let windows = Dialect::Windows.restrict_to_owner("C:\\Users\\deploy\\.ssh", "C:\\Users\\deploy\\.ssh\\authorized_keys");
         // Inheritance has to be broken first, or the grants sit on top of the

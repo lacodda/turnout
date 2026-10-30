@@ -55,7 +55,7 @@ fn setup_is_idempotent() {
 fn setup_clears_the_way_out_of_a_refused_data_directory() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 1}"#).unwrap();
-    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"pi","url":"http://pi:8081"}]"#).unwrap();
+    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"staging","url":"https://staging.example.com"}]"#).unwrap();
 
     // Any ordinary command refuses - with a non-zero exit, since it did not do
     // what was asked - and names the way forward.
@@ -77,12 +77,12 @@ fn setup_clears_the_way_out_of_a_refused_data_directory() {
         dir.path().join("settings-backup-v1").join("servers.json").is_file(),
         "the values being re-entered must survive"
     );
-    turnout(dir.path()).args(["server", "add", "pi", "--url", "http://pi:8081"]).assert().success();
+    turnout(dir.path()).args(["server", "add", "staging", "--url", "https://staging.example.com"]).assert().success();
     turnout(dir.path())
         .arg("status")
         .assert()
         .success()
-        .stdout(predicate::str::contains("servers      pi"));
+        .stdout(predicate::str::contains("servers      staging"));
 }
 
 /// Every schema after 1 migrates by itself, and `setup` - which the getting
@@ -143,12 +143,12 @@ fn an_unreadable_settings_marker_is_named_not_guessed() {
 fn setup_on_a_refused_directory_changes_nothing_unless_confirmed() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 1}"#).unwrap();
-    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"pi"}]"#).unwrap();
+    std::fs::write(dir.path().join("servers.json"), r#"[{"name":"staging"}]"#).unwrap();
 
     // No terminal to confirm on, and `--yes` withheld: the prompt cannot be
     // answered, so nothing may be touched.
     turnout(dir.path()).args(["setup"]).assert().failure();
-    assert_eq!(std::fs::read_to_string(dir.path().join("servers.json")).unwrap(), r#"[{"name":"pi"}]"#);
+    assert_eq!(std::fs::read_to_string(dir.path().join("servers.json")).unwrap(), r#"[{"name":"staging"}]"#);
     assert_eq!(
         std::fs::read_to_string(dir.path().join("meta.json")).unwrap(),
         r#"{"schema_version": 1}"#,

@@ -334,8 +334,8 @@ pub fn check(server_name: Option<String>, credential_name: Option<String>) -> Re
         .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
 
     // Named by account and machine rather than by the two entity names: a
-    // credential and a server often share a name, and "'pi-host' signs in to
-    // 'pi-host'" reads like a bug in the sentence rather than a result.
+    // credential and a server often share a name, and "'staging' signs in to
+    // 'staging'" reads like a bug in the sentence rather than a result.
     let who = format!("{}@{}", credential.user, server.ssh_host());
 
     // An agent credential has no key file to name, and checking it means
@@ -399,9 +399,9 @@ mod tests {
     /// pointed at a cause, not at a search engine.
     #[test]
     fn a_refused_key_names_the_file_and_the_usual_causes() {
-        let placed = AuthorizedKeysFile::locate(Dialect::Posix, "/home/pi", false);
+        let placed = AuthorizedKeysFile::locate(Dialect::Posix, "/home/deploy", false);
         let message = key_sign_in_failed(Dialect::Posix, &placed);
-        assert!(message.contains("/home/pi/.ssh/authorized_keys"), "{message}");
+        assert!(message.contains("/home/deploy/.ssh/authorized_keys"), "{message}");
         assert!(message.contains("PubkeyAuthentication no"), "{message}");
         assert!(message.contains("group-writable"), "{message}");
         // The most important line: nothing was taken away.

@@ -748,7 +748,7 @@ mod tests {
     /// write a catalog that `build add` refuses to touch afterwards.
     #[test]
     fn generated_names_are_valid_names() {
-        assert!(validate_name(&target_name("my-app", "kib-2")).is_ok());
+        assert!(validate_name(&target_name("my-app", "staging")).is_ok());
         assert!(validate_name(&unique_target_name("web", "prod", &[a_target("web-prod")])).is_ok());
     }
 
