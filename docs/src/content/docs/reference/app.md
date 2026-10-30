@@ -43,7 +43,7 @@ A port belongs to exactly one app and one use: `add`, `edit` and the form refuse
 error: port 7100 is already used by app 'web' as its gateway port - pick another, or move 'web' first with `turnout app edit web --port PORT`
 ```
 
-`--port PORT` pins a specific one, and `turnout app edit NAME --port 0` hands it back - an app with no gateway port has no listener of its own and no address to carry, which is what you want for a project that talks to its stand directly.
+`--port PORT` pins a specific one - nothing is handed out then, so a full `7100-7199` does not stand in its way - and `turnout app edit NAME --port 0` hands it back - an app with no gateway port has no listener of its own and no address to carry, which is what you want for a project that talks to its stand directly.
 
 An app registered by an older turnout that has no gateway port is given one when the data directory is migrated. **A port already written is kept as it stands**, including one from outside the range: the number is already in a dotenv file, and renumbering it would break a working setup silently.
 

@@ -319,6 +319,42 @@ fn app_add_refuses_a_port_another_app_holds() {
     turnout(dir.path()).args(["app", "edit", "web", "--port", "7001"]).assert().success();
 }
 
+/// A pinned port needs nothing handed out. `app add` used to hand out a
+/// gateway port before it looked at `--port`, so with 7100-7199 full it
+/// refused `--port 8000` - telling the user to pin one with `--port`.
+#[test]
+fn a_pinned_gateway_port_needs_no_free_one_in_the_range() {
+    let (dir, project) = workspace();
+    let full: Vec<serde_json::Value> = (7100..=7199u16)
+        .map(|port| serde_json::json!({"name": format!("app-{port}"), "path": project.display().to_string(), "gateway_port": port}))
+        .collect();
+    std::fs::write(dir.path().join("apps.json"), serde_json::to_string(&full).unwrap()).unwrap();
+    turnout(dir.path())
+        .args(["app", "add", "spare", "--path"])
+        .arg(&project)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no free gateway port left"));
+    turnout(dir.path())
+        .args(["app", "add", "pinned", "--path"])
+        .arg(&project)
+        .args(["--port", "8000"])
+        .assert()
+        .success();
+    assert_eq!(gateway_port_of(dir.path(), "pinned"), 8000);
+
+    // A dev port pinned in the gateway range is not handed out as the same
+    // app's gateway port.
+    let (dir, project) = workspace();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--dev-port", "7100"])
+        .assert()
+        .success();
+    assert_ne!(gateway_port_of(dir.path(), "web"), 7100);
+}
+
 /// Gateway and dev ports share one list, pinned by hand as when handed out.
 /// Each kind used to be checked against its own kind only: a dev port on
 /// another app's gateway port was accepted, and the gateway's listener and

@@ -103,13 +103,32 @@ fn add(
         servers: Vec::new(),
     };
 
-    // The gateway port is turnout's to hand out, before anything asks for it:
-    // the form's questions about the variable and the dotenv file are only
-    // worth asking when there is an address to carry, and `report_env_file`
-    // below writes that address the moment the app is saved. `--port` applied
-    // afterwards still has the last word, including `--port 0` for an app
-    // that wants no listener at all.
-    app.gateway_port = assign_gateway_port(&apps, &name)?;
+    // The gateway port is settled before anything asks for it: the form's
+    // questions about the variable and the dotenv file are only worth asking
+    // when there is an address to carry, and `report_env_file` below writes
+    // that address the moment the app is saved. `--port` is looked at first -
+    // a pinned port needs nothing handed out, and handing one out first made
+    // `app add x --port 8000` fail whenever 7100-7199 was full, with an error
+    // telling the user to pin one with `--port`. `--port 0` is an app that
+    // wants no listener at all. A pinned dev port is not handed out as the
+    // gateway port either.
+    let pinned_dev_port = dev_port.filter(|port| *port != 0);
+    app.gateway_port = match port {
+        Some(port) => {
+            if port != 0 {
+                crate::front::ensure_port_is_free(&apps, port, &name)?;
+            }
+            (port != 0).then_some(port)
+        }
+        None => {
+            let mut holders = apps.clone();
+            holders.push(App {
+                dev_port: pinned_dev_port,
+                ..app.clone()
+            });
+            assign_gateway_port(&holders, &name)?
+        }
+    };
 
     if wizard {
         let around = app_wizard::Surroundings {
