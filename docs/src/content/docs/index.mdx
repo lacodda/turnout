@@ -97,7 +97,7 @@ Nothing in the project changed - the app still talks to `localhost`, and the [ga
 		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Every deploy is recorded with its version and commit - `history` lists them, `rollback` sends an earlier build back. Artifacts travel as one archive, to Linux and Windows servers alike.
 	</Card>
 	<Card title="Portable settings" icon="seti:config">
-		`export` writes your apps, servers, credentials, paths and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase.
+		`export` writes your apps, servers, credentials, paths, targets and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase. A file from any release since 0.11 still imports - every build proves it against the file each of those releases wrote.
 	</Card>
 	<Card title="Nothing to memorize" icon="approve-check">
 		Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs.
