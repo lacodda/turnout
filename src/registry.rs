@@ -401,7 +401,11 @@ pub(crate) fn lock_in(dir: &Path, key: &str) -> Result<Slot> {
 
 /// Remove the record under `key`, if any.
 pub fn remove(key: &str) -> Result<()> {
-    let path = record_path(&jobs_dir()?, key);
+    remove_in(&jobs_dir()?, key)
+}
+
+fn remove_in(dir: &Path, key: &str) -> Result<()> {
+    let path = record_path(dir, key);
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -409,26 +413,47 @@ pub fn remove(key: &str) -> Result<()> {
     }
 }
 
+/// Remove the record under `key` if it still is the one that was judged -
+/// the process `pid` born at `birth`; returns whether it was.
+///
+/// What removes a record decided on it a while before: `stop` waits for the
+/// job to go, the doctor runs its checks first. A new run may claim the slot
+/// in that time, and removing by the key alone took the new run's record
+/// away - a running job `ps` no longer showed and `stop` could not reach.
+/// The look and the removal happen under the slot's lock, so no claim comes
+/// between them.
+pub fn remove_if(key: &str, pid: u32, birth: u64) -> Result<bool> {
+    remove_if_in(&jobs_dir()?, key, pid, birth)
+}
+
+fn remove_if_in(dir: &Path, key: &str, pid: u32, birth: u64) -> Result<bool> {
+    let _slot = lock_in(dir, key)?;
+    match load_in(dir, key)? {
+        Some(entry) if entry.pid == pid && entry.birth == birth => remove_in(dir, key).map(|()| true),
+        _ => Ok(false),
+    }
+}
+
 /// Change this process's own record, if it still is this process's.
 ///
 /// `stop` removes a record before (or while) its process dies, and the
 /// process must not write it back on the way out. Checking the pid and the
-/// birth first is what keeps a stopped job stopped.
+/// birth first is what keeps a stopped job stopped - under the slot's lock,
+/// so the removal cannot fall between the check and the write.
 pub fn update_own(key: &str, change: impl FnOnce(&mut Entry)) -> Result<()> {
-    let Some(mut entry) = load(key)? else { return Ok(()) };
+    let dir = jobs_dir()?;
+    let _slot = lock_in(&dir, key)?;
+    let Some(mut entry) = load_in(&dir, key)? else { return Ok(()) };
     if entry.pid != std::process::id() || entry.birth != process::own_birth() {
         return Ok(());
     }
     change(&mut entry);
-    save(&entry)
+    save_in(&dir, &entry)
 }
 
 /// Remove this process's own record, if it still is this process's.
 pub fn remove_own(key: &str) -> Result<()> {
-    match load(key)? {
-        Some(entry) if entry.pid == std::process::id() && entry.birth == process::own_birth() => remove(key),
-        _ => Ok(()),
-    }
+    remove_if(key, std::process::id(), process::own_birth()).map(|_| ())
 }
 
 /// The running gateway, as the rest of turnout sees it.
@@ -529,6 +554,38 @@ mod tests {
             assert_eq!(back.ended.unwrap().code, None);
             assert_eq!(back.signals, entry.signals);
         }
+    }
+
+    /// A record goes only while it is the one that was judged. `stop` waits
+    /// for a job before it takes the record away, and a new run that claimed
+    /// the slot in the meantime used to lose its record with it.
+    #[test]
+    fn a_record_is_removed_only_while_it_is_the_one_judged() {
+        let dir = tempfile::tempdir().unwrap();
+        let work = Work::Command {
+            app: "myapp".into(),
+            command: "dev".into(),
+        };
+        let judged = Entry::own(work, true, None);
+        save_in(dir.path(), &judged).unwrap();
+        // A new run took the slot while the old one was being stopped.
+        let mut newer = judged.clone();
+        newer.pid = judged.pid.wrapping_add(1);
+        newer.birth = judged.birth.wrapping_add(1);
+        save_in(dir.path(), &newer).unwrap();
+
+        let key = judged.key();
+        assert!(!remove_if_in(dir.path(), &key, judged.pid, judged.birth).unwrap());
+        let left = load_in(dir.path(), &key).unwrap().expect("the new run's record was removed");
+        assert_eq!((left.pid, left.birth), (newer.pid, newer.birth));
+        // The same pid with another birth is not the judged record either.
+        assert!(!remove_if_in(dir.path(), &key, newer.pid, judged.birth).unwrap());
+        assert!(load_in(dir.path(), &key).unwrap().is_some());
+
+        assert!(remove_if_in(dir.path(), &key, newer.pid, newer.birth).unwrap());
+        assert!(load_in(dir.path(), &key).unwrap().is_none());
+        // Nothing to remove is not an error.
+        assert!(!remove_if_in(dir.path(), &key, newer.pid, newer.birth).unwrap());
     }
 
     /// A record whose process is this one reads as running; one whose birth

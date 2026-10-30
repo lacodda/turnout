@@ -707,7 +707,7 @@ pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
         match entry.status() {
             Status::Running => {
                 end_job(&entry)?;
-                registry::remove(&entry.key())?;
+                registry::remove_if(&entry.key(), entry.pid, entry.birth)?;
                 if is_gateway {
                     crate::journal::record("gateway.stop", None, None, None);
                     println!("Gateway stopped (pid {}).", entry.pid);
@@ -724,7 +724,7 @@ pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
             // Killed from outside, crashed, or the machine rebooted: the record
             // is all that is left, and it is stale rather than an error.
             Status::Gone => {
-                registry::remove(&entry.key())?;
+                registry::remove_if(&entry.key(), entry.pid, entry.birth)?;
                 if is_gateway {
                     println!("The gateway (pid {}) was no longer running - cleared the stale record.", entry.pid);
                 } else {

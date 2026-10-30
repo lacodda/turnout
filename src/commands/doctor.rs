@@ -78,8 +78,9 @@ enum Repair {
     EnvFile { app: String },
     /// Put the app's dotenv file into `.gitignore`.
     Ignore { app: String },
-    /// Clear the record of a gateway whose process is gone.
-    GatewayRecord,
+    /// Clear the record of a gateway whose process is gone - that record, the
+    /// process `pid` born at `birth`, and not one a gateway started since.
+    GatewayRecord { pid: u32, birth: u64 },
     /// Drop a binding to a server that is not in the catalog.
     Unbind { app: String },
     /// End the process holding the app's dev port - after a yes, and only
@@ -248,7 +249,7 @@ enum GatewayState {
     Running(crate::model::Gateway),
     NotAnswering(crate::model::Gateway),
     /// Recorded, but its process is no more.
-    Gone(u32),
+    Gone(registry::Entry),
     Stopped,
 }
 
@@ -258,7 +259,7 @@ fn gateway_state() -> Result<GatewayState> {
     Ok(match (entry, alive) {
         (_, Some(gateway)) if crate::commands::gateway::probe(&gateway) => GatewayState::Running(gateway),
         (_, Some(gateway)) => GatewayState::NotAnswering(gateway),
-        (Some(entry), None) if entry.ended.is_none() => GatewayState::Gone(entry.pid),
+        (Some(entry), None) if entry.ended.is_none() => GatewayState::Gone(entry),
         _ => GatewayState::Stopped,
     })
 }
@@ -869,14 +870,17 @@ fn gateway_checks(catalogs: &Catalogs, gateway: &GatewayState) -> Vec<CheckView>
             )
             .fix("turnout gateway stop, then turnout gateway start"),
         ),
-        GatewayState::Gone(pid) => checks.push(
+        GatewayState::Gone(entry) => checks.push(
             CheckView::warn(
                 GATEWAY,
                 "gateway",
                 None,
-                format!("the gateway (pid {pid}) is gone and its record stayed behind"),
+                format!("the gateway (pid {}) is gone and its record stayed behind", entry.pid),
             )
-            .repair(Repair::GatewayRecord),
+            .repair(Repair::GatewayRecord {
+                pid: entry.pid,
+                birth: entry.birth,
+            }),
         ),
         GatewayState::Stopped if bound => {
             checks.push(CheckView::warn(GATEWAY, "gateway", None, "the gateway is not running - the bound apps reach no stand").fix("turnout gateway start"))
@@ -1157,9 +1161,10 @@ fn repair(checks: &[CheckView], assume_yes: bool) -> Result<Vec<String>> {
                 crate::envfile::keep_out_of_git(&app)?;
                 done.push(format!("{}: {} is in .gitignore now", app.name, app.env_file_name()));
             }
-            Repair::GatewayRecord => {
-                registry::remove(registry::GATEWAY)?;
-                done.push("cleared the record of the gateway that is gone".to_string());
+            Repair::GatewayRecord { pid, birth } => {
+                if registry::remove_if(registry::GATEWAY, *pid, *birth)? {
+                    done.push("cleared the record of the gateway that is gone".to_string());
+                }
             }
             Repair::Unbind { app } => {
                 let mut state = store::load_state()?;
