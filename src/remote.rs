@@ -438,14 +438,53 @@ pub fn free_backup_name(stamp: &str, taken: &[String]) -> String {
 /// archive already there: [`free_backup_name`] avoids every name the server
 /// listed, so only another backup taken in the same instant can trip it, and
 /// that has to fail rather than replace a backup without a word.
+///
+/// `tar` writes to a name [`is_backup_name`] does not take - the archive's
+/// own, with this process's id and `.part` after it - and the archive is
+/// renamed into place only once `tar` is through; a `tar` that failed takes
+/// its partial file with it. Up to v0.26 it wrote straight to the final name,
+/// so a backup cut short by a full disk stayed as a truncated archive under a
+/// valid name: the next `restore` took it for the newest, and the prune
+/// counted it as one of the backups the stand keeps.
+///
+/// GNU `tar` exits 1 for "file changed as we read it": a stand is live while
+/// it is backed up, and a log or an upload written meanwhile is enough. The
+/// archive is whole then - only that one file may be caught mid-write - so on
+/// POSIX that exit is taken as success when the `tar` is GNU's. Refusing it
+/// failed every checked deploy to a busy stand before it began. bsdtar (macOS,
+/// Windows) has no such code: its 1 is a failure, and stays one.
 pub fn backup_command(dialect: Dialect, deploy_path: &str, archive_name: &str) -> String {
     let dir = deploy_path.trim_end_matches(['/', '\\']);
     let backups = backups_dir(deploy_path);
     let archive = join_remote(&backups, archive_name);
-    dialect.and_then(
-        &dialect.mkdir_p(&backups),
-        &dialect.and_then(&dialect.nothing_at(&archive), &dialect.tar_czf(&archive, dir)),
-    )
+    let partial = join_remote(&backups, &format!("{archive_name}.{}.part", std::process::id()));
+    let (b, a, p, d) = (dialect.quote(&backups), dialect.quote(&archive), dialect.quote(&partial), dialect.quote(dir));
+    match dialect {
+        Dialect::Posix => {
+            let taken = "echo 'a backup by this name is already there' >&2; exit 1";
+            let script = format!(
+                "mkdir -p {b} || exit 1; if [ -e {a} ]; then {taken}; fi; \
+                 tar czf {p} -C {d} .; s=$?; \
+                 if [ $s -eq 1 ] && tar --version 2>/dev/null | grep -q 'GNU tar'; then s=0; fi; \
+                 if [ $s -ne 0 ]; then rm -f {p}; exit $s; fi; \
+                 if [ -e {a} ]; then rm -f {p}; {taken}; fi; \
+                 mv {p} {a}"
+            );
+            format!("sh -c {}", dialect.quote(&script))
+        }
+        // Each group is self-contained, as `and_then` needs on `cmd.exe`; an
+        // `exit /b 1` inside one ends the whole line with the failure.
+        Dialect::Windows => [
+            dialect.mkdir_p(&backups),
+            dialect.nothing_at(&archive),
+            format!("({} || (del /f /q {p} >nul 2>&1 & exit /b 1))", dialect.tar_czf(&partial, dir)),
+            format!("(if exist {a} (del /f /q {p} >nul 2>&1 & exit /b 1))"),
+            format!("move {p} {a} >nul"),
+        ]
+        .into_iter()
+        .reduce(|chain, next| dialect.and_then(&chain, &next))
+        .expect("the chain has links"),
+    }
 }
 
 /// Run the backup, explaining the one failure that surprises everyone.
@@ -725,10 +764,20 @@ mod tests {
     /// silently wrong on a Windows server.
     #[test]
     fn the_backup_command_carries_no_posix_only_syntax() {
+        let pid = std::process::id();
         let posix = backup_command(Dialect::Posix, "/var/www/site", "20260812-181500.tar.gz");
-        assert_eq!(
-            posix,
-            "mkdir -p '/var/www/site.backups' && test ! -e '/var/www/site.backups/20260812-181500.tar.gz' && tar czf '/var/www/site.backups/20260812-181500.tar.gz' -C '/var/www/site' ."
+        assert!(posix.starts_with("sh -c '"), "{posix}");
+        assert!(
+            posix.contains(&format!(
+                "tar czf '\\''/var/www/site.backups/20260812-181500.tar.gz.{pid}.part'\\'' -C '\\''/var/www/site'\\'' ."
+            )),
+            "tar writes aside: {posix}"
+        );
+        assert!(
+            posix.ends_with(&format!(
+                "mv '\\''/var/www/site.backups/20260812-181500.tar.gz.{pid}.part'\\'' '\\''/var/www/site.backups/20260812-181500.tar.gz'\\'''"
+            )),
+            "and the archive is renamed into place last: {posix}"
         );
 
         let windows = backup_command(Dialect::Windows, "C:\\inetpub\\site", "20260812-181500.tar.gz");
@@ -736,9 +785,104 @@ mod tests {
         assert!(!windows.contains("mkdir -p"), "cmd.exe mkdir has no -p: {windows}");
         assert!(windows.contains("if not exist"), "{windows}");
         assert!(
-            windows.contains("tar czf \"C:\\inetpub\\site.backups\\20260812-181500.tar.gz\" -C \"C:\\inetpub\\site\" ."),
+            windows.contains(&format!(
+                "tar czf \"C:\\inetpub\\site.backups\\20260812-181500.tar.gz.{pid}.part\" -C \"C:\\inetpub\\site\" ."
+            )),
             "{windows}"
         );
+        assert!(
+            windows.ends_with(&format!(
+                "move \"C:\\inetpub\\site.backups\\20260812-181500.tar.gz.{pid}.part\" \"C:\\inetpub\\site.backups\\20260812-181500.tar.gz\" >nul"
+            )),
+            "{windows}"
+        );
+        // The partial file is never taken for a backup.
+        assert!(!super::is_backup_name(&format!("20260812-181500.tar.gz.{pid}.part")));
+    }
+
+    /// A backup whose `tar` fails leaves nothing behind: no truncated archive
+    /// under a name `restore` would take for the newest, and no partial file.
+    /// Up to v0.26 the archive was written straight to its name and stayed.
+    ///
+    /// What fails it: on Windows a file held open without sharing, on POSIX
+    /// a file without read permission - `tar` archives the rest, then exits
+    /// with an error.
+    #[test]
+    fn a_failed_backup_leaves_no_archive() {
+        #[cfg(unix)]
+        if unsafe { libc::geteuid() } == 0 {
+            // root reads through any permission, so nothing would fail.
+            return;
+        }
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dialect = crate::shell::read_probe(&session.exec(crate::shell::PROBE).unwrap());
+        let root = tempfile::tempdir().unwrap();
+        let site = root.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        std::fs::write(site.join("index.html"), "v1").unwrap();
+        let unreadable = site.join("unreadable.txt");
+        std::fs::write(&unreadable, "secret").unwrap();
+        #[cfg(windows)]
+        let held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(0).open(&unreadable).unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+
+        let dir = site.display().to_string();
+        let outcome = super::run_backup(&session, dialect, &dir);
+
+        #[cfg(windows)]
+        drop(held);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        assert!(outcome.is_err(), "a tar that failed is a failed backup: {outcome:?}");
+        let backups = std::path::PathBuf::from(super::backups_dir(&dir));
+        let left: Vec<String> = std::fs::read_dir(&backups)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(left.is_empty(), "nothing of the failed backup stays: {left:?}");
+    }
+
+    /// GNU tar's exit 1 - a file changed while it was read - leaves a whole
+    /// archive, and is a backup; the same 1 from any other tar is a failure.
+    /// A stand-in `tar` answers for each, written by the stand's own shell so
+    /// that no descriptor of this test process is open on it when it runs.
+    #[cfg(unix)]
+    #[test]
+    fn gnu_tar_s_changed_file_is_a_backup_and_nothing_else_s_exit_1_is() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let root = tempfile::tempdir().unwrap();
+        let site = root.path().join("site");
+        std::fs::create_dir_all(&site).unwrap();
+        let dir = site.display().to_string();
+        for (version, kept) in [("tar (GNU tar) 1.34", true), ("bsdtar 3.7.2 - libarchive 3.7.2", false)] {
+            let fake = root.path().join(if kept { "gnu" } else { "bsd" });
+            let script = format!("#!/bin/sh\nif [ \"$1\" = --version ]; then echo '{version}'; exit 0; fi\necho archive > \"$2\"\nexit 1\n");
+            let fake_q = Dialect::Posix.quote(&fake.display().to_string());
+            session
+                .exec(&format!(
+                    "mkdir -p {fake_q} && printf '%s' {} > {fake_q}/tar && chmod +x {fake_q}/tar",
+                    Dialect::Posix.quote(&script)
+                ))
+                .unwrap();
+            let name = format!("20261030-12000{}.tar.gz", u8::from(kept));
+            let command = backup_command(Dialect::Posix, &dir, &name);
+            let outcome = session.exec(&format!("PATH={fake_q}:\"$PATH\" {command}"));
+            let archive = std::path::PathBuf::from(super::backups_dir(&dir)).join(&name);
+            assert_eq!(outcome.is_ok(), kept, "{version}: {outcome:?}");
+            assert_eq!(archive.is_file(), kept, "{version}");
+        }
     }
 
     /// The chains a deploy sends, run through this machine's own shell - sh,

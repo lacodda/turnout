@@ -30,6 +30,8 @@ Creates `{dir}.backups/YYYYMMDD-HHMMSS.tar.gz` (UTC) and prints its name. A seco
 
 The timestamp is UTC and comes from your machine, not the server's clock, so archives taken from different places still sort next to each other correctly.
 
+The archive is written under a temporary name and renamed once `tar` is through, so a backup cut short - a full disk, a file `tar` cannot read - leaves nothing behind rather than a truncated archive that `restore` would take for the newest. On a server with GNU `tar`, a file that changed while it was read (a log being written) does not fail the backup: the archive is whole, with that one file as it was caught.
+
 :::note[Backups need access to the parent directory]
 Archives are kept *beside* the target directory, so the deploy user must be able to write to its parent - `/var/www` for a path pointing at `/var/www/myapp`, and that is usually owned by root. Deploying works regardless, which makes the first failed backup look arbitrary; turnout says so and gives you the command. Creating the directory once is enough:
 
