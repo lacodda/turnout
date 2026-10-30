@@ -628,6 +628,42 @@ VITE_API=http://localhost:7002
     turnout(dir.path()).args(["app", "edit", "myapp", "--port", "0"]).assert().success();
 }
 
+/// A file turnout stops keeping loses turnout's block, and only that. Only
+/// the file the app named was rewritten, so the old one kept a stale address:
+/// Vite ranks `.env.development.local` above `.env.local`, and after `app
+/// remove` the freed port went to the next app - the old project's file then
+/// pointed at another app's gateway.
+#[test]
+fn a_dotenv_file_turnout_stops_keeping_loses_its_block() {
+    let (dir, project) = workspace();
+    let moved = dir.path().join("moved");
+    std::fs::create_dir(&moved).unwrap();
+    let first = project.join(".env.development.local");
+    std::fs::write(&first, "VITE_OTHER=1\n").unwrap();
+    turnout(dir.path()).args(["app", "add", "web", "--path"]).arg(&project).assert().success();
+    assert!(std::fs::read_to_string(&first).unwrap().contains(ENV_HEADER));
+
+    // Another file: the old one keeps what was there before turnout came.
+    turnout(dir.path())
+        .args(["app", "edit", "web", "--env-file", ".env.local"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed the gateway line from").and(predicate::str::contains(".env.development.local")));
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "VITE_OTHER=1\n");
+    assert!(std::fs::read_to_string(project.join(".env.local")).unwrap().contains(ENV_HEADER));
+
+    // Another directory: the block moves with the app, and a file that held
+    // nothing else goes.
+    turnout(dir.path()).args(["app", "edit", "web", "--path"]).arg(&moved).assert().success();
+    assert!(!project.join(".env.local").exists(), "turnout's own file is gone with its block");
+    assert!(std::fs::read_to_string(moved.join(".env.local")).unwrap().contains(ENV_HEADER));
+
+    // Removed from the catalog: nothing of turnout's is left in the project.
+    turnout(dir.path()).args(["app", "remove", "web", "--yes"]).assert().success();
+    assert!(!moved.join(".env.local").exists());
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "VITE_OTHER=1\n");
+}
+
 #[test]
 fn app_add_refuses_a_bad_variable_name_and_a_path_for_the_env_file() {
     let (dir, project) = workspace();

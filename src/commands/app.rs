@@ -362,17 +362,22 @@ fn edit(
             allow,
         )?;
     }
-    apps[index] = app;
+    let before = std::mem::replace(&mut apps[index], app);
     store::save_apps(&apps)?;
     crate::journal::record("app.edit", Some(name), None, None);
     println!("App '{name}' updated.");
+    // A file turnout stops keeping loses its block before the new one is
+    // written: in the same file under another spelling, the write puts it back.
+    if crate::envfile::path_of(&before) != crate::envfile::path_of(&apps[index]) {
+        report_forgotten_env_file(&before);
+    }
     report_env_file(&apps[index]);
     Ok(())
 }
 
 fn remove(name: &str, assume_yes: bool) -> Result<()> {
     let mut apps = store::load_apps()?;
-    find(&apps, name)?;
+    let removed = find(&apps, name)?.clone();
     let confirmed = pick::confirm_destructive(format!("Remove app '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
@@ -418,7 +423,10 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
     }
     store::save_state(&state)?;
     crate::journal::record("app.remove", Some(name), None, None);
-    println!("App '{name}' removed. The project on disk is untouched.");
+    // The freed gateway port goes to the next app added, and the block left
+    // behind would point this project at that app's gateway.
+    report_forgotten_env_file(&removed);
+    println!("App '{name}' removed. The rest of the project on disk is untouched.");
     Ok(())
 }
 
@@ -579,6 +587,19 @@ fn report_env_file(app: &App) {
         Ok(Outcome::Written(assignment)) => println!("Wrote {} ({assignment}).", crate::envfile::path_of(app).display()),
         Ok(Outcome::Removed) => println!("Removed the gateway line from {}.", crate::envfile::path_of(app).display()),
         Ok(Outcome::Unchanged | Outcome::Nothing) => {}
+        Err(error) => eprintln!("warning: {error:#}"),
+    }
+}
+
+/// Take turnout's block out of a dotenv file it no longer keeps, and say so.
+/// Not fatal, like [`report_env_file`]: the catalog is already saved.
+fn report_forgotten_env_file(app: &App) {
+    match crate::envfile::forget(app) {
+        Ok(crate::envfile::Outcome::Removed) => println!(
+            "Removed the gateway line from {} - turnout no longer keeps that file.",
+            crate::envfile::path_of(app).display()
+        ),
+        Ok(_) => {}
         Err(error) => eprintln!("warning: {error:#}"),
     }
 }

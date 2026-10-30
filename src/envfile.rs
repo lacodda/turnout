@@ -53,26 +53,10 @@ pub fn write(app: &App) -> Result<Outcome> {
         return Ok(Outcome::Nothing);
     }
     let path = dir.join(app.env_file_name());
-    let existing = match std::fs::read_to_string(&path) {
-        Ok(text) => Some(text),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).with_context(|| format!("cannot read {}", path.display())),
-    };
-
     let Some(url) = app.gateway_url() else {
-        return match existing {
-            Some(text) if text.contains(HEADER) => {
-                let cleared = without_block(&text);
-                if cleared.trim().is_empty() {
-                    std::fs::remove_file(&path).with_context(|| format!("cannot remove {}", path.display()))?;
-                } else {
-                    std::fs::write(&path, cleared).with_context(|| format!("cannot write {}", path.display()))?;
-                }
-                Ok(Outcome::Removed)
-            }
-            _ => Ok(Outcome::Nothing),
-        };
+        return remove_block(&path);
     };
+    let existing = read(&path)?;
 
     let assignment = format!("{}={url}", app.gateway_env_name());
     let rendered = render(existing.as_deref().unwrap_or(""), &assignment);
@@ -82,6 +66,52 @@ pub fn write(app: &App) -> Result<Outcome> {
     std::fs::write(&path, &rendered).with_context(|| format!("cannot write {}", path.display()))?;
     ensure_ignored(dir, app.env_file_name())?;
     Ok(Outcome::Written(assignment))
+}
+
+/// Take turnout's block out of the dotenv file `app` names, and leave the
+/// rest of it alone - for a file turnout stops keeping.
+///
+/// Only the file the app currently names was ever rewritten, so a block left
+/// in a file turnout no longer kept stayed there and went stale: moved to
+/// `--env-file .env.local`, the old `.env.development.local` - which Vite
+/// ranks above `.env.local` - kept winning with the old address; after `app
+/// remove` the freed port went to the next app, and the old project's file
+/// pointed at that app's gateway. `app edit` calls this with the app as it
+/// was when the file or the directory changes, and `app remove` with the app
+/// it removes.
+pub fn forget(app: &App) -> Result<Outcome> {
+    let dir = Path::new(&app.path);
+    if !dir.is_dir() {
+        return Ok(Outcome::Nothing);
+    }
+    remove_block(&dir.join(app.env_file_name()))
+}
+
+/// The file's text, or `None` when there is no file.
+fn read(path: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("cannot read {}", path.display())),
+    }
+}
+
+/// Take the block out of the file at `path`; a file that held nothing else
+/// was turnout's alone and goes with it.
+fn remove_block(path: &Path) -> Result<Outcome> {
+    let Some(text) = read(path)? else {
+        return Ok(Outcome::Nothing);
+    };
+    if !text.lines().any(|line| line == HEADER) {
+        return Ok(Outcome::Nothing);
+    }
+    let cleared = without_block(&text);
+    if cleared.trim().is_empty() {
+        std::fs::remove_file(path).with_context(|| format!("cannot remove {}", path.display()))?;
+    } else {
+        std::fs::write(path, cleared).with_context(|| format!("cannot write {}", path.display()))?;
+    }
+    Ok(Outcome::Removed)
 }
 
 /// The file's text with turnout's block set to `assignment`.
@@ -548,6 +578,27 @@ mod tests {
         assert_eq!(without_block(&text), "A=1\n");
         assert_eq!(without_block(&render("", "X=1")), "");
         assert_eq!(without_block("A=1\n"), "A=1\n");
+    }
+
+    /// A file turnout stops keeping loses the block and nothing else; a file
+    /// that held only the block was turnout's and goes; a file without one
+    /// is not touched at all.
+    #[test]
+    fn forgetting_a_file_takes_out_only_the_block() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app(Some(7100));
+        app.path = dir.path().display().to_string();
+        let file = dir.path().join(crate::model::DEFAULT_ENV_FILE);
+        std::fs::write(&file, render("A=1\n", "X=1")).unwrap();
+        assert_eq!(forget(&app).unwrap(), Outcome::Removed);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "A=1\n");
+        assert_eq!(forget(&app).unwrap(), Outcome::Nothing, "a file with no block is left as it is");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "A=1\n");
+
+        std::fs::write(&file, render("", "X=1")).unwrap();
+        assert_eq!(forget(&app).unwrap(), Outcome::Removed);
+        assert!(!file.exists(), "a file that held only the block was turnout's");
+        assert_eq!(forget(&app).unwrap(), Outcome::Nothing, "no file, nothing to do");
     }
 
     #[test]
