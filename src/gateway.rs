@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::io::Write;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -90,38 +91,74 @@ impl Watch {
 
     /// Take in what one exchange between `app` and `server` showed.
     fn see(&self, app: &str, server: &str, seen: Seen) {
-        let mut board = self.board.lock().expect("signal board poisoned");
-        let change = board.observe(app, server, seen, crate::registry::now());
-        self.publish(change, board.active());
+        let lines = {
+            let mut board = self.board();
+            let change = board.observe(app, server, seen, crate::registry::now());
+            self.publish(change, board.active())
+        };
+        say(&mut std::io::stdout().lock(), &lines);
     }
 
     /// The session of `app` on `server` got fresh cookies by hand.
     pub(crate) fn renewed(&self, app: &str, server: &str) {
-        let mut board = self.board.lock().expect("signal board poisoned");
-        let change = board.renewed(app, server);
-        self.publish(change, board.active());
+        let lines = {
+            let mut board = self.board();
+            let change = board.renewed(app, server);
+            self.publish(change, board.active())
+        };
+        say(&mut std::io::stdout().lock(), &lines);
     }
 
-    fn publish(&self, change: crate::signal::Change, active: &[Signal]) {
+    /// The board, as whatever went wrong while it was held left it.
+    ///
+    /// Every proxied request passes through here. A lock poisoned once, by a
+    /// panic while it was held (a failed write to stdout used to cause one),
+    /// made every request after it panic too, and the gateway answered
+    /// nothing until it was restarted. A board is a list of signals; one a
+    /// panic interrupted is still a good enough one.
+    fn board(&self) -> MutexGuard<'_, Board> {
+        self.board.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Hand a change to the record and the desktop, and return what the
+    /// gateway's log says about it.
+    ///
+    /// Called with the board held, so the record is sent the changes in the
+    /// order they happened; neither channel can block or fail loudly. The
+    /// log lines are written by the caller once the board is let go.
+    fn publish(&self, change: crate::signal::Change, active: &[Signal]) -> Vec<String> {
         if change.is_empty() {
-            return;
+            return Vec::new();
         }
         // The gateway's output is its log: `turnout logs gateway` tells the
         // story of an afternoon's outages without anyone asking at the time.
-        for signal in &change.raised {
-            println!("{}", crate::signal::describe(signal));
-        }
+        let mut lines: Vec<String> = change.raised.iter().map(crate::signal::describe).collect();
         for signal in &change.cleared {
-            match signal.kind {
-                Kind::StandDown => println!("'{}' answers again", signal.server),
-                Kind::SessionExpired => println!("the '{}' session of '{}' is good again", signal.server, signal.app),
-            }
+            lines.push(match signal.kind {
+                Kind::StandDown => format!("'{}' answers again", signal.server),
+                Kind::SessionExpired => format!("the '{}' session of '{}' is good again", signal.server, signal.app),
+            });
         }
         self.record.send_replace(active.to_vec());
         for signal in change.toast {
             let _ = self.toasts.send(signal);
         }
+        lines
     }
+}
+
+/// Write lines to the gateway's log - its stdout - and shrug off a failure.
+///
+/// `println!` panics when stdout cannot be written: a full disk under the
+/// log file `gateway start` points it at, the end of a pipe whose `tee`
+/// exited. A log line is not worth a request, let alone all of them.
+fn say(out: &mut impl Write, lines: &[String]) {
+    for line in lines {
+        if writeln!(out, "{line}").is_err() {
+            return;
+        }
+    }
+    let _ = out.flush();
 }
 
 /// The notification a signal makes.
@@ -760,6 +797,52 @@ mod tests {
     fn listening_ports_needs_at_least_one_port() {
         let error = listening_ports(&[app("web", None)]).unwrap_err().to_string();
         assert!(error.contains("no apps with a gateway port"), "{error}");
+    }
+
+    /// A watch with nobody at the other end of its channels: what the
+    /// signal board does, without the tasks `start` spawns.
+    fn quiet_watch() -> Watch {
+        Watch {
+            board: Arc::default(),
+            record: tokio::sync::watch::channel(Vec::new()).0,
+            toasts: tokio::sync::mpsc::unbounded_channel().0,
+        }
+    }
+
+    /// A panic while the board was held used to poison it, and every
+    /// proxied request after that panicked on the lock: the gateway was up
+    /// and answered nothing. The board carries on as it was left.
+    #[test]
+    fn a_poisoned_board_still_takes_what_the_stands_say() {
+        let watch = quiet_watch();
+        let poisoner = watch.clone();
+        let _ = std::thread::spawn(move || {
+            let _held = poisoner.board.lock().unwrap();
+            panic!("a write to stdout failed while the board was held");
+        })
+        .join();
+        assert!(watch.board.is_poisoned());
+        watch.see("web", "prod", Seen::Unreachable);
+        assert_eq!(watch.board().active().len(), 1, "the stand going down was not taken in");
+        watch.renewed("web", "prod");
+    }
+
+    /// A log that cannot be written costs the log line, nothing more.
+    #[test]
+    fn a_log_line_that_cannot_be_written_is_let_go() {
+        struct Gone;
+        impl Write for Gone {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+        }
+        say(&mut Gone, &["'prod' does not answer".to_string()]);
+        let mut kept = Vec::new();
+        say(&mut kept, &["one".to_string(), "two".to_string()]);
+        assert_eq!(kept, b"one\ntwo\n");
     }
 
     /// A stand with a self-signed certificate, on a loopback port: answers
