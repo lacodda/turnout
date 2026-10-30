@@ -30,7 +30,7 @@ pub const ENV_DISABLE: &str = "TURNOUT_UPDATE_CHECK";
 /// Where the redirect is followed from; overridden by tests.
 pub const ENV_URL: &str = "TURNOUT_UPDATE_URL";
 
-const CACHE_FILE: &str = "update-check.json";
+pub(crate) const CACHE_FILE: &str = "update-check.json";
 const LATEST_URL: &str = "https://github.com/lacodda/turnout/releases/latest";
 /// One check a day: new releases are rarer than commands.
 const INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);

@@ -63,7 +63,7 @@ So a schema-1 directory is refused rather than converted. The refusal names what
 
 ## Your old files are kept
 
-Before anything is rewritten, every JSON file turnout owns is copied to `settings-backup-v<N>` inside the data directory - next to the data, not in a temp folder, so it is where you would look for it. Journals and caches are left alone; they are not what a migration touches.
+Before anything is rewritten, every JSON file turnout owns is copied to `settings-backup-v<N>` inside the data directory - next to the data, not in a temp folder, so it is where you would look for it. Journals, caches and the secrets of the file keyring are left alone; they are not what a migration touches, and a copy of the secrets would be every password in plain text a second time.
 
 Nothing deletes that folder. If a migration ever gets something wrong, copying the files back and installing the previous release puts you exactly where you were. A second migration of the same directory writes `settings-backup-v1-2` rather than overwriting the first safety net.
 

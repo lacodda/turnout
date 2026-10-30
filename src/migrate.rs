@@ -388,9 +388,12 @@ fn copy_for_reference(dir: &Path) -> Result<PathBuf> {
 /// `servers.json` next to a new one would mean two files claiming to be the
 /// catalog, and the next release that *can* migrate would find the wrong shape.
 ///
-/// The journal and the update cache stay: they are not catalogs, and a user's
-/// history of what they did survives a reset. Secrets in the OS keyring are not
-/// touched at all - they are not in this directory.
+/// The journal, the update cache and the file keyring's secrets stay: they
+/// are not catalogs, a user's history of what they did survives a reset, and
+/// a secret moved aside is a login lost. The cache and the secrets are
+/// `.json` like the catalogs, and moved with them until v0.27 - while this
+/// comment already said they stayed. Secrets in the OS keyring are not in
+/// this directory at all.
 pub fn retire_catalogs(dir: &Path, from: u32) -> Result<PathBuf> {
     // Reuse the folder an earlier refusal already made, rather than opening a
     // second one: the user was told where to read the old values, and splitting
@@ -401,7 +404,7 @@ pub fn retire_catalogs(dir: &Path, from: u32) -> Result<PathBuf> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("json") {
+        if !is_settings_file(&path) {
             continue;
         }
         let name = entry.file_name();
@@ -572,23 +575,32 @@ fn backup_dir(dir: &Path, from: u32) -> PathBuf {
     candidate
 }
 
-/// Copy the JSON turnout owns. Journals, caches and previous backups stay put -
-/// they are not what a migration rewrites.
+/// Copy the JSON turnout owns. Journals, caches, secrets and previous backups
+/// stay put - they are not what a migration rewrites, and a copy of the file
+/// keyring would be a second plaintext copy of every password, in a folder
+/// nothing ever cleans up.
 fn copy_data_files(dir: &Path, backup: &Path) -> Result<()> {
     for entry in std::fs::read_dir(dir).with_context(|| format!("cannot read {}", dir.display()))? {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let is_json = path.extension().and_then(|e| e.to_str()) == Some("json");
-        if !is_json {
+        if !is_settings_file(&path) {
             continue;
         }
         let name = entry.file_name();
         std::fs::copy(&path, backup.join(&name)).with_context(|| format!("cannot back up {}", path.display()))?;
     }
     Ok(())
+}
+
+/// Files in the data directory that are `.json` and still not settings: the
+/// update check's cache, and the secrets of the file keyring.
+const NOT_SETTINGS: [&str; 2] = [crate::update::CACHE_FILE, crate::secrets::FILE_STORE];
+
+/// A catalog, the state or the schema marker: a `.json` file in the data
+/// directory that is not one of [`NOT_SETTINGS`].
+fn is_settings_file(path: &Path) -> bool {
+    let name = path.file_name().and_then(|name| name.to_str()).unwrap_or_default();
+    path.is_file() && name.ends_with(".json") && !NOT_SETTINGS.contains(&name)
 }
 
 #[cfg(test)]
@@ -917,6 +929,10 @@ mod tests {
         std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
         std::fs::write(dir.path().join("meta.json"), "{}").unwrap();
         std::fs::write(dir.path().join("journal.jsonl"), "{}").unwrap();
+        // `.json` as well, and still not settings: the cache, and the file
+        // keyring - whose copy would be every password in plain text again.
+        std::fs::write(dir.path().join("update-check.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("insecure-secrets.json"), "{}").unwrap();
         std::fs::create_dir(dir.path().join("nested")).unwrap();
 
         let backup = dir.path().join("backup");
@@ -928,6 +944,25 @@ mod tests {
             .map(|e| e.unwrap().file_name().to_string_lossy().into())
             .collect();
         copied.sort();
-        assert_eq!(copied, vec!["apps.json", "meta.json"], "journals and directories stay put");
+        assert_eq!(copied, vec!["apps.json", "meta.json"], "journals, caches, secrets and directories stay put");
+    }
+
+    /// Starting over moves the catalogs aside and nothing else: the cache and
+    /// the file keyring's secrets are `.json` too, and moved with the catalogs
+    /// took every stored password out of reach of the fresh catalog.
+    #[test]
+    fn retiring_catalogs_leaves_the_cache_and_the_secrets() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("servers.json"), "[]").unwrap();
+        std::fs::write(dir.path().join("update-check.json"), "{}").unwrap();
+        std::fs::write(dir.path().join("insecure-secrets.json"), r#"{"deploy":"s3cret"}"#).unwrap();
+
+        let aside = retire_catalogs(dir.path(), 1).unwrap();
+
+        assert!(aside.join("servers.json").is_file());
+        for stays in ["update-check.json", "insecure-secrets.json"] {
+            assert!(dir.path().join(stays).is_file(), "{stays} must stay where turnout reads it");
+            assert!(!aside.join(stays).exists(), "{stays} must not be copied aside");
+        }
     }
 }

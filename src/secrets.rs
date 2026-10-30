@@ -11,7 +11,7 @@ use crate::paths;
 pub const BACKEND_ENV: &str = "TURNOUT_KEYRING";
 
 const KEYRING_SERVICE: &str = "turnout";
-const FILE_STORE: &str = "insecure-secrets.json";
+pub(crate) const FILE_STORE: &str = "insecure-secrets.json";
 
 enum Backend {
     Keyring,
