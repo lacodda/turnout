@@ -62,6 +62,16 @@ The running gateway picks this up automatically.
 
 The check never refuses the switch - you may be switching to a stand that is about to come back. `--no-check` (`-n`) skips it, in the picker too.
 
+## The running gateway
+
+A running gateway reads the binding on every request, so a switch needs nothing more - for an app it listens for. It listens on the ports the apps had when it started; an app registered or given another port since then is not routed until it starts again, and `use` says so:
+
+```text
+$ turnout use api staging
+'api' now uses 'staging'.
+The running gateway does not listen for 'api' on port 7101 - it was started before; restart it to route the traffic: `turnout gateway stop`, then `turnout gateway start` (the stands' sessions start over).
+```
+
 ## Going back
 
 `-` in place of the server takes the app back to the server it used before its last switch; `-` alone does that for whatever the last `use` switched. Like `cd -`, it toggles:

@@ -4609,6 +4609,51 @@ fn ctrl_c_stops_a_gateway_in_the_foreground_and_takes_its_record() {
     assert_eq!(status_json(dir.path())["gateway"]["state"], "stopped");
 }
 
+/// `use` says the running gateway picks a switch up only where it listens
+/// for the app. Its ports are fixed when it starts, and an app given its
+/// port since then is not routed until a restart - which `use` kept quiet
+/// about, saying "picks this up automatically" whenever any gateway answered.
+#[test]
+fn use_says_when_the_gateway_does_not_listen_for_the_app() {
+    let (dir, project) = workspace();
+    let (web_port, web_reservation) = reserved_port();
+    let (api_port, api_reservation) = reserved_port();
+    drop(api_reservation);
+    let api_project = project.join("api");
+    std::fs::create_dir(&api_project).unwrap();
+    turnout(dir.path())
+        .args(["server", "add", "stand", "--url", "http://127.0.0.1:9"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "add", "web", "--path"])
+        .arg(&project)
+        .args(["--port", &web_port.to_string()])
+        .assert()
+        .success();
+    let _gateway = run_gateway(dir.path(), web_reservation);
+    // Registered after the gateway started: nothing listens on its port.
+    turnout(dir.path())
+        .args(["app", "add", "api", "--path"])
+        .arg(&api_project)
+        .args(["--port", &api_port.to_string()])
+        .assert()
+        .success();
+
+    turnout(dir.path())
+        .args(["use", "api", "stand", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("does not listen for 'api' on port {api_port}")))
+        .stdout(predicate::str::contains("`turnout gateway stop`, then `turnout gateway start`"))
+        .stdout(predicate::str::contains("picks this up").not());
+    turnout(dir.path())
+        .args(["use", "web", "stand", "--no-check"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("The running gateway picks this up automatically."));
+}
+
 /// The signals the gateway has up, as `status --json` reports them.
 fn signals(dir: &std::path::Path) -> Vec<serde_json::Value> {
     status_json(dir)["gateway"]["signals"].as_array().cloned().unwrap_or_default()

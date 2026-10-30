@@ -194,7 +194,34 @@ fn pick_server(name: &str, members: &[&App], servers: &[Server], no_check: bool)
 fn gateway_note(members: &[&App]) -> Result<()> {
     match crate::registry::gateway()? {
         Some(gateway) if crate::commands::gateway::probe(&gateway) => {
-            println!("The running gateway picks this up automatically.");
+            // The binding is read per request (ADR 0008), the ports are not:
+            // the gateway listens where the apps were when it started. An app
+            // given its port since then is not routed at all, and this line
+            // used to say it was picked up all the same.
+            let unheard: Vec<String> = members
+                .iter()
+                .filter_map(|app| {
+                    let port = app.gateway_port?;
+                    (gateway.ports.get(&port) != Some(&app.name)).then(|| format!("'{}' on port {port}", app.name))
+                })
+                .collect();
+            let portless: Vec<&str> = members.iter().filter(|app| app.gateway_port.is_none()).map(|app| app.name.as_str()).collect();
+            if unheard.is_empty() && portless.is_empty() {
+                println!("The running gateway picks this up automatically.");
+            }
+            if !unheard.is_empty() {
+                println!(
+                    "The running gateway does not listen for {} - it was started before; restart it to route the traffic: \
+                     `turnout gateway stop`, then `turnout gateway start` (the stands' sessions start over).",
+                    unheard.join(", ")
+                );
+            }
+            if !portless.is_empty() {
+                println!(
+                    "No gateway port to route through for {}: `turnout app edit NAME --port PORT`.",
+                    portless.join(", ")
+                );
+            }
         }
         _ => {
             if members.iter().any(|app| app.gateway_port.is_some()) {
