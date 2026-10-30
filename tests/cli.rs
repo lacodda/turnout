@@ -2038,6 +2038,87 @@ fn a_quiet_command_hides_its_output_until_it_fails() {
     assert!(std::fs::read_to_string(&log).unwrap().contains("compiling module two"));
 }
 
+/// Ctrl+C on a quiet build is somebody's choice, not a failure of the build
+/// (ADR 0019): no "failed" line, no output replayed, no failure kept. It used
+/// to say "Building myapp failed after 3.2s" over forty lines of tail.
+#[test]
+fn an_interrupted_build_is_not_reported_as_failed() {
+    let (dir, project) = workspace();
+    let build = format!("echo building-start && echo some compiler chatter && {} && echo never-done", pause_for(20));
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--command", &format!("build={build}")])
+        .assert()
+        .success();
+    let mut command = turnout_process(dir.path());
+    command
+        .env("TURNOUT_CONSOLE", "quiet")
+        .args(["build", "myapp"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // A terminal sends Ctrl+C to the process group of the command it runs;
+    // the build gets a group of its own here, to send it to.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut command, 0x0000_0200); // CREATE_NEW_PROCESS_GROUP
+    let mut build = ChildGuard(command.spawn().unwrap());
+    let log = dir.path().join("logs").join("myapp.build.log");
+    eventually(15, "the build to start", || {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("some compiler chatter") { Ok(()) } else { Err(text) }
+    });
+
+    // Pressed again when the first one is shrugged off, as a person would:
+    // Windows' `ping` takes Ctrl+Break for "show the statistics".
+    let started = std::time::Instant::now();
+    let mut pressed = 0;
+    while build.0.try_wait().unwrap().is_none() {
+        if pressed < 2 && started.elapsed() >= std::time::Duration::from_secs(2 * pressed) {
+            if !press_ctrl_c(build.0.id()) {
+                eprintln!("skipped: this process has no console to send Ctrl+C through");
+                return;
+            }
+            pressed += 1;
+        }
+        assert!(started.elapsed() < std::time::Duration::from_secs(20), "the build went on after Ctrl+C");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let status = build.0.wait().unwrap();
+    let mut said = String::new();
+    std::io::Read::read_to_string(build.0.stdout.as_mut().unwrap(), &mut said).unwrap();
+    std::io::Read::read_to_string(build.0.stderr.as_mut().unwrap(), &mut said).unwrap();
+    assert_eq!(status.code(), Some(130), "{said}");
+    assert!(said.contains("Building myapp interrupted after"), "{said}");
+    assert!(!said.contains("failed"), "{said}");
+    // The line itself, not the command line `[myapp] echo ...` that names it.
+    let replayed = said.lines().any(|line| line.trim() == "some compiler chatter");
+    assert!(!replayed, "the output was replayed: {said}");
+    assert!(!said.contains("full output"), "{said}");
+    let kept = dir.path().join("logs").join("failed").join("myapp.build.log");
+    assert!(!kept.exists(), "an interrupt was kept as a failure");
+}
+
+/// Ctrl+C the way a terminal sends it: to the process group of the command.
+#[cfg(unix)]
+fn press_ctrl_c(group: u32) -> bool {
+    // SAFETY: a plain kill(2) of the group the test made for the command.
+    unsafe { libc::kill(-(group as i32), libc::SIGINT) == 0 }
+}
+
+/// Ctrl+Break to the process group of the command: a group of its own has
+/// Ctrl+C itself switched off, and turnout takes the two alike. `false` when
+/// this process has no console to send it through.
+#[cfg(windows)]
+fn press_ctrl_c(group: u32) -> bool {
+    use windows_sys::Win32::System::Console::{CTRL_BREAK_EVENT, GenerateConsoleCtrlEvent};
+    // Group 0 is every process on the console, this test among them.
+    assert_ne!(group, 0);
+    // SAFETY: no pointers; the group is the command's own.
+    unsafe { GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, group) != 0 }
+}
+
 /// A `dev` server goes quiet once it says it is up, and stays quiet for its
 /// own chatter - but never swallows a problem.
 #[test]

@@ -482,6 +482,13 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
 
     match step {
         Some(step) if status.success() => step.done(format!("{label} finished in {}", human_duration(elapsed))),
+        // Ctrl+C is somebody's choice, not a failure of the job (ADR 0019).
+        // A quiet build stopped that way used to say "failed after 3.2s" and
+        // replay forty lines of output nobody had asked to see.
+        Some(step) if !outcome.failed() => {
+            step.clear();
+            progress::info(&format!("{label} interrupted after {}", human_duration(elapsed)));
+        }
         Some(step) => {
             step.clear();
             progress::outro_error(format!("{label} failed after {}", human_duration(elapsed)));
@@ -490,7 +497,7 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
     }
     // The point of hiding the output is that a failure gets to show it. Only
     // what was not already on screen: a streamed run has printed it once.
-    if !status.success() && !shown_any && mode != Mode::Log {
+    if outcome.failed() && !shown_any && mode != Mode::Log {
         replay(&outcome.tail);
         // The kept copy: it still says this after the next run.
         if let Some(path) = outcome.kept.as_deref().or(job.log_path()) {

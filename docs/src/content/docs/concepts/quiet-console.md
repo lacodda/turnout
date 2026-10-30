@@ -25,6 +25,13 @@ src/app.ts:14:8 - error TS2304: Cannot find name 'wat'.
 full output: C:\Users\me\AppData\Local\lacodda\turnout\logs\myapp.build.log
 ```
 
+A command stopped with Ctrl+C has not failed - stopping it was somebody's choice. It says so, and nothing more: no output replayed, no failure kept.
+
+```
+[myapp] pnpm build
+●  Building myapp interrupted after 3.2s
+```
+
 ## Commands that keep running
 
 `dev`, and any custom command through [`run`](/turnout/reference/run/), show a loader until the server says it is up, and from then on only the lines that look like a problem:
