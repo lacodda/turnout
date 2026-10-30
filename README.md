@@ -80,7 +80,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 0.26.0  ~/.local/share/lacodda/turnout
+turnout 0.27.0  ~/.local/share/lacodda/turnout
 
 Apps
   api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
@@ -186,7 +186,7 @@ Full command reference and concepts: **[lacodda.github.io/turnout](https://lacod
 
 ## Status
 
-v0.26.0, in daily use and being stabilised for 1.0: everything above works
+v0.27.0, in daily use and being stabilised for 1.0: everything above works
 today, deploys are proven against real Linux and Windows servers, and a
 settings export from any version since v0.11 still imports. What landed in each
 version: [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).

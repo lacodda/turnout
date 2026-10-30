@@ -7,6 +7,98 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [0.27.0] - 2026-10-30
+
+### Breaking Changes
+
+- **Say what 0.27 changes for scripts**
+`cookie set` reads standard input only with `--stdin`; piped
+without it, the clipboard is read. `server remove` of an app's only allowed
+server needs `--force`, and `app edit --rm-server` of its last one is refused -
+lift the list with `--any-server`. Without a terminal the only credential or
+path is no longer taken for a missing name: pass `-C`/`-p` or the name. A
+filesystem root is refused as a deploy directory - `path edit NAME --dir DIR`.
+Settings and exports are unchanged.
+
+### Bug Fixes
+- Give every arriving app a port of its own
+- Never write over a backup taken in the same second
+- Say a job that never started did not start
+- Migrate an older data directory instead of retiring it
+- Write a secret only for a credential the import wrote
+- Hold arriving entries to what add holds them to
+- Refuse a filesystem root as a deploy directory
+- Refuse a missing credential or path name without a terminal
+- Check a pinned port against both kinds of port
+- Look at --port before handing out a gateway port
+- Hold target edit --server to the app's allow-list
+- Never empty an allow-list as a side effect
+- Forget a group that app remove empties
+- Take the managed block out of a dotenv file left behind
+- Reuse the safety copy of an unfinished migration
+- Leave the update cache and the file keyring in place
+- Reach the Windows OpenSSH agent at \\.\pipe\
+- Sign with an RSA hash the server accepts
+- Count an earlier rollback as a build the stand ran
+- Count a deploy that failed while writing as written
+- Let --clear pass on a directory that is not there yet
+- Unpack the backup even when clearing left something
+- Write the archive aside and rename it into place
+- Stop waiting for a restart whose process is gone
+- Write a generated key only after the password signs in
+- Append the key on a line of its own, verbatim on Windows too
+- Ask sudo about the restart command, not about everything
+- Forget the learned shell when the address changes
+- Make missing parents and keep the separator file by file
+- Copy only the secret the prompt will ask for
+- Remove a partly uploaded archive, and correct stale comments
+- Let Ctrl+C reach a foreground gateway's shutdown on Unix
+- Wait for the job's process group, not only the supervisor
+- Key the stand clients by their TLS policy too
+- Hand a page to the Windows shell without a command line
+- Keep a failure's log and notes before the record says it ended
+- Do not report a job stopped with Ctrl+C as failed
+- Say when the running gateway does not listen for the app
+- Point the login link at the door that actually opened
+- End a port's holder only while it is the process found
+- Claim a job slot under a lock
+- Remove a record only while it is the one judged
+- Never let a failed log line take the signal board down
+- Read standard input only when --stdin asks for it
+- Rewrite a redirect only from beneath the address it left
+- Make comments match the code, compare the toast icon by content
+- Read a port holder's birth where the holder is found
+- Keep a stopped job quiet whichever process dies first
+- Give a Vite app added by flags what Vite reads
+- Say what --server overrides, and keep each group member once
+
+### Build
+- Adopt the line's standard
+
+### Documentation
+- Say the status in one paragraph
+- One upgrading guide for every version
+- Walk a newcomer through what they actually need
+- Say what an export carries and how far back it imports
+- Make help texts say what the commands do
+- Describe the lock on a job slot
+- Say what a Vite project gets by default
+- One upgrading guide, and example names that are not a real stand
+- Say what 0.27 changes for scripts
+
+### Testing
+- Import the export of every release since v0.11
+- Isolate every turnout under test from the machine
+- Hold every flag of every command to its reference page
+- Make the version and installer checks fail on nothing
+- Name example stands neutrally
+- Let the detached job outlive a loaded suite
+- Wait out ETXTBSY before handing the fake ssh client over
+- Take the machine and the clock out of four tests' verdicts
+
+### style
+- Apply rustfmt to the stabilisation fixes
+
 ## [0.26.0] - 2026-10-22
 
 ### Bug Fixes
