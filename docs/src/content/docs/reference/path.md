@@ -43,6 +43,14 @@ turnout path add winroot --dir "C:\inetpub\wwwroot\myapp"  # Windows server
 
 A relative path is refused rather than stored. See [Windows servers](/turnout/concepts/windows-servers/) for what else changes against a Windows target.
 
+The **root of a filesystem** is refused too - `/`, a drive such as `C:\`, or a share such as `\\fileserver\share`, however it is spelled (`//`, `/var/..`, `C:/`). A deploy owns its directory: [`deploy --clear`](/turnout/reference/deploy/) and every [restore](/turnout/reference/backup/#restore) empty it before writing, and on a root that would empty the server. A directory one level down - `/app`, `/srv`, `C:\site` - is accepted: that is where real deploys live, and no list of names could tell `/app` from `/home`.
+
+```text
+error: '/' is the root of the server's filesystem, not a deploy directory: a deploy with --clear, and every restore, empties its directory first. Name the directory the app lives in, e.g. /var/www/myapp or C:\inetpub\myapp
+```
+
+The same check runs wherever a directory comes in - `path add` and `path edit`, the [`deploy-setup`](/turnout/reference/deploy/) wizard, and [`import`](/turnout/reference/import/) - and once more where a deploy, a backup or a restore reads the path, for a catalog written before it or edited by hand.
+
 :::caution[Git Bash rewrites remote paths]
 On Windows, Git Bash (MSYS2) turns arguments that look like POSIX paths into Windows paths before turnout ever sees them, so `--dir /var/www/myapp` arrives as `C:/Program Files/Git/var/www/myapp`. turnout recognizes the Git installation prefix and refuses the value, because storing it would deploy to a directory nobody chose - a genuine Windows path like `C:\inetpub\myapp` carries no such prefix and is stored as typed. Any of these gets the POSIX path through:
 

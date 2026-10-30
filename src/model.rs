@@ -496,6 +496,15 @@ pub fn normalize_remote_path(path: &str) -> String {
 /// The tell is the Git Bash installation prefix, not the drive letter: the
 /// rewrite always splices the MSYS root in front of the path the user typed.
 /// A plain `C:\inetpub\site` carries no such prefix and is taken at face value.
+///
+/// The root of a filesystem is refused - `/`, a drive (`C:\`, `C:/`) or a
+/// share (`\\server\share`), however it is spelled - because a deploy owns
+/// its directory: `deploy --clear` and every restore empty it first, and on
+/// `/` that was `find '/' -mindepth 1 -maxdepth 1 -exec rm -rf {} +`. A
+/// directory one level down (`/home`, `/srv`, `C:\site`) is accepted: `/app`
+/// and `C:\site` are where real deploys live, and only a list of names could
+/// tell them from `/home` - one that would never be complete, and would make
+/// a refusal of `/opt` read as a judgement of the user's server layout.
 pub fn validate_remote_path(path: &str) -> Result<()> {
     if path.trim().is_empty() {
         bail!("remote path is empty: pass an absolute path on the server, e.g. /var/www/myapp");
@@ -510,7 +519,53 @@ pub fn validate_remote_path(path: &str) -> Result<()> {
     if !is_absolute_remote(path) {
         bail!("remote path '{path}' must be absolute, e.g. /var/www/myapp or C:\\inetpub\\myapp");
     }
+    refuse_filesystem_root(&normalize_remote_path(path))
+}
+
+/// Fail when `dir` is the root of a filesystem; see [`validate_remote_path`].
+///
+/// Separate so a catalog written before the check - or edited by hand - is
+/// stopped where a deploy, a backup or a restore reads it, not only where a
+/// path is typed.
+pub fn refuse_filesystem_root(dir: &str) -> Result<()> {
+    if is_filesystem_root(dir) {
+        bail!(
+            "'{dir}' is the root of the server's filesystem, not a deploy directory: a deploy with --clear, and every restore, \
+             empties its directory first. Name the directory the app lives in, e.g. /var/www/myapp or C:\\inetpub\\myapp"
+        );
+    }
     Ok(())
+}
+
+/// Whether `dir` names a filesystem root once `.` and `..` are read the way
+/// the server reads them: `/`, `//`, `/.`, `/var/..`; `C:\`, `C:/`, `C:\.`; a
+/// share `\\server\share` with nothing below it.
+fn is_filesystem_root(dir: &str) -> bool {
+    let dir = dir.trim();
+    let (rest, fixed) = if let Some(share) = dir.strip_prefix("\\\\") {
+        // The server and the share name are the root of a UNC path.
+        (share, 2)
+    } else if has_drive_letter(dir) || (dir.len() == 2 && dir.ends_with(':') && dir.starts_with(|c: char| c.is_ascii_alphabetic())) {
+        (&dir[2..], 0)
+    } else if dir.starts_with('/') {
+        (dir, 0)
+    } else {
+        return false;
+    };
+    let mut depth: Vec<&str> = Vec::new();
+    for part in rest.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                // A share's own two names are not left by `..`.
+                if depth.len() > fixed {
+                    depth.pop();
+                }
+            }
+            part => depth.push(part),
+        }
+    }
+    depth.len() <= fixed
 }
 
 /// Absolute for either kind of server: a leading `/`, a drive (`C:\` or `C:/`)
@@ -774,6 +829,38 @@ mod tests {
             validate_remote_path("\\\\fileserver\\share\\myapp").is_ok(),
             "a UNC share is a real destination"
         );
+    }
+
+    /// A deploy owns its directory: `--clear` and every restore empty it. On
+    /// a filesystem root that was `find '/' -mindepth 1 -exec rm -rf {} +`,
+    /// so a root is refused however it is spelled.
+    #[test]
+    fn a_filesystem_root_is_not_a_deploy_directory() {
+        for root in [
+            "/",
+            "//",
+            "///",
+            "/.",
+            "/var/..",
+            "/var/www/../..",
+            "C:\\",
+            "C:/",
+            "c:\\.",
+            "D:\\sites\\..",
+            "\\\\fileserver\\share",
+            "\\\\fileserver\\share\\",
+            "\\\\fileserver\\share\\site\\..",
+        ] {
+            let refused = validate_remote_path(root).expect_err(root).to_string();
+            assert!(refused.contains("root of the server's filesystem"), "{root}: {refused}");
+        }
+        // One level down is a directory a deploy can own: `/app` in a
+        // container, `C:\site` on a Windows box.
+        for directory in ["/app", "/srv", "/var/www/..", "C:\\site", "D:/sites", "\\\\fileserver\\share\\site"] {
+            assert!(validate_remote_path(directory).is_ok(), "{directory}");
+        }
+        assert!(refuse_filesystem_root("/var/www/myapp").is_ok());
+        assert!(refuse_filesystem_root("/").is_err(), "a catalog holding one is stopped where it is read");
     }
 
     /// The doubled slash is the escape hatch the error message suggests, so a

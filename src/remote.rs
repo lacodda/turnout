@@ -198,6 +198,7 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         .into_iter()
         .find(|p| p.name == path_name)
         .ok_or_else(|| dangling(&target.name, "path", &path_name, "turnout path list"))?;
+    check_deploy_dir(&path)?;
     // The address and the check describe the stand - the server and the
     // directory. Another login reaches the same stand, so they stay; another
     // server or directory is a different stand, and checking it against this
@@ -288,6 +289,7 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         .into_iter()
         .find(|p| p.name == path_name)
         .ok_or_else(|| anyhow::anyhow!("no path named '{path_name}' - see `turnout path list`"))?;
+    check_deploy_dir(&path)?;
 
     Ok(Resolved {
         address: server.url.clone(),
@@ -300,6 +302,17 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         unchecked: None,
         keep_backups: DEFAULT_KEEP_BACKUPS,
     })
+}
+
+/// A path whose directory is a filesystem root reaches no remote command.
+///
+/// `path add` refuses one, but a catalog written before it did - or edited by
+/// hand - still holds whatever it holds, and this is where every deploy,
+/// backup and restore reads it: the last point before `--clear` would empty
+/// the server's `/`.
+fn check_deploy_dir(path: &crate::model::Path) -> Result<()> {
+    crate::model::refuse_filesystem_root(&path.dir)
+        .map_err(|err| anyhow::anyhow!("path '{0}': {err:#}\nChange it with `turnout path edit {0} --dir DIR`.", path.name))
 }
 
 /// An app with an allow-list may only reach the servers on it.

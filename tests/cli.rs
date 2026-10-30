@@ -2221,6 +2221,63 @@ fn path_remove_takes_the_targets_that_used_it() {
         .stdout(predicate::str::contains("No targets yet"));
 }
 
+/// A deploy owns its directory: `--clear` and every restore empty it first.
+/// `/` was accepted, and `deploy --clear` then ran `find '/' -mindepth 1
+/// -maxdepth 1 -exec rm -rf {} +` on the stand. A root is refused by every
+/// way a directory gets in - and stopped where it is read, for a catalog
+/// that already holds one.
+#[test]
+fn a_filesystem_root_is_never_a_deploy_directory() {
+    let (dir, project) = workspace();
+    for root in ["/", "C:\\", "\\\\fileserver\\share"] {
+        turnout(dir.path())
+            .args(["path", "add", "everything", "--dir", root])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("root of the server's filesystem"));
+    }
+    a_full_target(dir.path(), &project, &[]);
+    turnout(dir.path())
+        .args(["path", "edit", "wwwroot", "--dir", "/var/.."])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("root of the server's filesystem"));
+
+    // An export carrying one is refused at the door, with the target that
+    // would have deployed there.
+    let file = dir.path().join("export.json");
+    turnout(dir.path()).args(["export", "--output"]).arg(&file).assert().success();
+    let text = std::fs::read_to_string(&file).unwrap().replace("\"/var/www/myapp\"", "\"/\"");
+    std::fs::write(&file, text).unwrap();
+    let (other, _) = workspace();
+    turnout(other.path())
+        .arg("import")
+        .arg(&file)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("path 'wwwroot': '/' is the root of the server's filesystem")
+                .and(predicate::str::contains("target 'myapp-staging': it names path 'wwwroot'")),
+        );
+
+    // A catalog that already holds one - written before the check, or by
+    // hand - is stopped before anything connects.
+    let paths = dir.path().join("paths.json");
+    let text = std::fs::read_to_string(&paths).unwrap().replace("\"/var/www/myapp\"", "\"/\"");
+    std::fs::write(&paths, text).unwrap();
+    for args in [
+        vec!["deploy", "myapp-staging", "--no-build", "--clear"],
+        vec!["restore", "myapp-staging"],
+        vec!["backup", "myapp-staging"],
+    ] {
+        turnout(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("path 'wwwroot': '/' is the root").and(predicate::str::contains("turnout path edit wwwroot")));
+    }
+}
+
 /// A key file is enough to mean key authentication, and `credential show` must
 /// never turn into a way to read the secret back out.
 #[test]
