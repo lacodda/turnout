@@ -151,19 +151,9 @@ fn find_server<'a>(servers: &'a [Server], name: &str) -> Result<&'a Server> {
         .ok_or_else(|| anyhow!("no server named '{name}' - see `turnout server list`"))
 }
 
-/// An empty allow-list means the app is not restricted to particular servers.
+/// Every member has to be allowed on the server; see [`App::check_allowed`].
 fn check_allowed(members: &[&App], server: &Server) -> Result<()> {
-    for app in members {
-        if !app.servers.is_empty() && !app.servers.contains(&server.name) {
-            bail!(
-                "server '{}' is not allowed for '{}' (allowed: {})",
-                server.name,
-                app.name,
-                app.servers.join(", ")
-            );
-        }
-    }
-    Ok(())
+    members.iter().try_for_each(|app| app.check_allowed(&server.name))
 }
 
 /// Pick a server for `name`, with each stand's health beside it.

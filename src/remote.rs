@@ -187,7 +187,7 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
         .into_iter()
         .find(|s| s.name == server_name)
         .ok_or_else(|| dangling(&target.name, "server", &server_name, "turnout server list"))?;
-    check_allowed(&app, &server.name)?;
+    app.check_allowed(&server.name)?;
     let credential_name = overrides.credential.unwrap_or_else(|| target.credential.clone());
     let credential = store::load_credentials()?
         .into_iter()
@@ -256,7 +256,7 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         .into_iter()
         .find(|s| s.name == server_name)
         .ok_or_else(|| anyhow::anyhow!("no server named '{server_name}' - see `turnout server list`"))?;
-    check_allowed(&app, &server.name)?;
+    app.check_allowed(&server.name)?;
 
     let credential_name = overrides.credential.or_else(|| server.credential.clone()).ok_or_else(|| {
         anyhow::anyhow!(
@@ -315,13 +315,6 @@ fn check_deploy_dir(path: &crate::model::Path) -> Result<()> {
         .map_err(|err| anyhow::anyhow!("path '{0}': {err:#}\nChange it with `turnout path edit {0} --dir DIR`.", path.name))
 }
 
-/// An app with an allow-list may only reach the servers on it.
-fn check_allowed(app: &App, server: &str) -> Result<()> {
-    if !app.servers.is_empty() && !app.servers.iter().any(|s| s == server) {
-        bail!("server '{server}' is not allowed for '{}' (allowed: {})", app.name, app.servers.join(", "));
-    }
-    Ok(())
-}
 /// Open a session to `server` as `credential`.
 ///
 /// The transport lives in [`crate::ssh`]; this is the entry the rest of the

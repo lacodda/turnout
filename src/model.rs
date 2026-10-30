@@ -55,6 +55,24 @@ impl App {
     pub fn env_file_name(&self) -> &str {
         self.env_file.as_deref().unwrap_or(DEFAULT_ENV_FILE)
     }
+
+    /// Whether the app may use `server`: an empty allow-list restricts nothing.
+    pub fn allows(&self, server: &str) -> bool {
+        self.servers.is_empty() || self.servers.iter().any(|allowed| allowed == server)
+    }
+
+    /// Fail when the app may not use `server`.
+    ///
+    /// The one check every way of pointing an app at a server makes - `use`,
+    /// `target add`, `target edit` and a deploy. `target edit --server` used
+    /// to check only that the server existed, so a target could be moved onto
+    /// a server its app was not allowed on, and the deploy refused it later.
+    pub fn check_allowed(&self, server: &str) -> Result<()> {
+        if !self.allows(server) {
+            bail!("server '{server}' is not allowed for '{}' (allowed: {})", self.name, self.servers.join(", "));
+        }
+        Ok(())
+    }
 }
 
 /// A machine: where it lives and how to reach it.

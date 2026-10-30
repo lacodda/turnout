@@ -157,9 +157,7 @@ fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthA
         .iter()
         .find(|s| s.name == server_name)
         .ok_or_else(|| anyhow::anyhow!("no server named '{server_name}' - see `turnout server list`"))?;
-    if !app.servers.is_empty() && !app.servers.iter().any(|s| s == &server_name) {
-        bail!("server '{server_name}' is not allowed for '{app_name}' (allowed: {})", app.servers.join(", "));
-    }
+    app.check_allowed(&server_name)?;
 
     // The server's own credential is the right default: it is what a deploy
     // there logged in as before named targets existed.
@@ -424,10 +422,18 @@ fn edit(
         target.credential = credential;
         target.path = path;
     } else {
-        if let Some(server) = &server
-            && !store::load_servers()?.iter().any(|s| &s.name == server)
-        {
-            bail!("no server named '{server}' - see `turnout server list`");
+        if let Some(server) = &server {
+            if !store::load_servers()?.iter().any(|s| &s.name == server) {
+                bail!("no server named '{server}' - see `turnout server list`");
+            }
+            // The check `target add` makes: a target moved onto a server its
+            // app may not use was accepted here, and refused by the deploy.
+            let app_name = &targets[index].app;
+            store::load_apps()?
+                .iter()
+                .find(|a| &a.name == app_name)
+                .ok_or_else(|| anyhow::anyhow!("target '{name}' names app '{app_name}', which is not in the catalog"))?
+                .check_allowed(server)?;
         }
         if let Some(credential) = &credential
             && !store::load_credentials()?.iter().any(|c| &c.name == credential)

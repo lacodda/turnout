@@ -38,7 +38,7 @@ turnout target add [NAME] [--app APP] [--server SERVER] [--credential NAME] [--p
 | `--health-wait` | | How long the check keeps asking, in seconds (default 60) |
 | `--keep-backups` | | How many backups of its deploy directory the stand keeps (default 5) - see [Backups](#backups) |
 
-Anything missing is asked for on a terminal, with the server's own credential pre-selected. Every part must already exist: a target names entities, it does not create them.
+Anything missing is asked for on a terminal, with the server's own credential pre-selected. Every part must already exist: a target names entities, it does not create them. An app with an [allow-list](/turnout/reference/app/) is held to it - the server has to be on the list.
 
 **The name defaults to `APP-SERVER`.** Both halves were chosen by you, so the generated name is one you recognize - `myapp-prod`, `web-staging`. Pass a name to use your own. A name already taken gains a numeric suffix rather than overwriting, because two targets for one pair is a real shape - a staging root beside the live one - and losing either silently would be worse than an ugly name.
 
@@ -75,6 +75,8 @@ turnout target edit myapp-prod                  # interactive wizard
 | `--keep-backups` | | How many backups the stand keeps |
 
 Each health flag changes its own part: a new probe keeps the wait, a wait keeps the probe. A wait with no check to belong to is refused rather than dropped.
+
+`--server` is held to the app's allow-list as `add` is: a target cannot be moved onto a server its app may not use.
 
 The app is not editable: a target that changes which app it deploys is a different route, and renaming one into another silently is how a deploy ends up somewhere nobody chose. Add a new target instead.
 

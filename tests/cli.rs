@@ -1451,6 +1451,46 @@ fn use_respects_the_allow_list() {
         .stderr(predicate::str::contains("not allowed"));
 }
 
+/// A target is held to its app's allow-list whether it is added or moved.
+/// `target edit --server` used to check only that the server existed, so a
+/// target landed on a server its app may not use and only the deploy refused.
+#[test]
+fn a_target_stays_within_its_apps_allow_list() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &[]);
+    turnout(dir.path())
+        .args(["server", "add", "other", "--url", "https://other.example.com"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["app", "edit", "myapp", "--add-server", "staging"])
+        .assert()
+        .success();
+    for args in [
+        vec!["target", "edit", "myapp-staging", "--server", "other"],
+        vec![
+            "target",
+            "add",
+            "elsewhere",
+            "--app",
+            "myapp",
+            "--server",
+            "other",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ],
+    ] {
+        turnout(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("server 'other' is not allowed for 'myapp' (allowed: staging)"));
+    }
+    assert_eq!(target_json(dir.path())["server"], "staging", "a refused edit changes nothing");
+}
+
 /// A port reserved by an actual bound listener, handed to the caller.
 ///
 /// Not bind-close-return: between a close and the next bind the OS is free to
