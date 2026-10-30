@@ -58,6 +58,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          check-latest: true
           registry-url: https://registry.npmjs.org
       # One README for all three pages. npm publishes whatever sits next to
       # package.json, so the root file is copied in here rather than kept as a
