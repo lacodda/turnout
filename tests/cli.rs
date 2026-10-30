@@ -3504,6 +3504,49 @@ fn a_current_data_directory_migrates_nothing() {
     assert!(backups.is_empty(), "no backup folder should appear for a no-op");
 }
 
+/// A migration that fails after rewriting something leaves the schema where
+/// it was, so every command - a prompt's `status --short`, Tab completion -
+/// runs it again. Each run used to copy the whole directory into a new
+/// backup folder first; the one copy of the files as they were is reused.
+#[test]
+fn a_failing_migration_does_not_multiply_backups() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 2}"#).unwrap();
+    std::fs::write(
+        dir.path().join("servers.json"),
+        r#"[{"name":"staging","url":"https://staging.example.com","credential":"deploy","deploy":{"web":"wwwroot"}}]"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("apps.json"), "[{").unwrap();
+
+    for args in [vec!["status", "--short"], vec!["complete", "apps"], vec!["app", "list"]] {
+        let _ = turnout(dir.path()).args(&args).output().unwrap();
+    }
+    turnout(dir.path())
+        .args(["app", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("migration 3 -> 4 failed").and(predicate::str::contains("settings-backup-v2")));
+    let backups = || -> Vec<String> {
+        std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("settings-backup"))
+            .collect()
+    };
+    assert_eq!(backups(), vec!["settings-backup-v2"]);
+
+    // Repaired by hand, the next command finishes the migration.
+    std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
+    turnout(dir.path()).args(["server", "list"]).assert().success();
+    assert!(std::fs::read_to_string(dir.path().join("meta.json")).unwrap().contains("\"schema_version\": 7"));
+    assert_eq!(backups(), vec!["settings-backup-v2"]);
+    assert!(
+        !dir.path().join("settings-backup-v2").join("MIGRATION-UNFINISHED.txt").exists(),
+        "a finished migration's copy is not reused by the next one"
+    );
+}
+
 /// A live run against a real stand found this: with no password stored,
 /// `key setup` generated a key pair, wrote it to `~/.ssh`, and only *then*
 /// failed on the missing password. The user was left with a key they never

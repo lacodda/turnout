@@ -64,7 +64,9 @@ fn ensure_current_schema(dir: &Path) -> Result<()> {
         return Ok(());
     }
     crate::migrate::run(dir, from)?;
-    write_meta(dir).context("cannot update meta.json after migrating")
+    write_meta(dir).context("cannot update meta.json after migrating")?;
+    crate::migrate::complete(dir, from);
+    Ok(())
 }
 
 fn meta_path() -> Result<PathBuf> {

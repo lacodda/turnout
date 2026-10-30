@@ -67,6 +67,14 @@ Before anything is rewritten, every JSON file turnout owns is copied to `setting
 
 Nothing deletes that folder. If a migration ever gets something wrong, copying the files back and installing the previous release puts you exactly where you were. A second migration of the same directory writes `settings-backup-v1-2` rather than overwriting the first safety net.
 
+A migration that **fails** part-way - a catalog edited by hand into something it cannot read - leaves the schema marker where it was, so the next command tries again. It does not make another copy each time: the folder the first attempt made holds the files from before anything was touched, and every retry starts from that one. The error names it:
+
+```text
+error: migration 3 -> 4 failed - the files as they were before are in ~/.local/share/lacodda/turnout/settings-backup-v2, and the next command tries again from them
+```
+
+Until the migration finishes, the folder carries a `MIGRATION-UNFINISHED.txt` that says so; once the new schema is recorded the note goes, and a later migration gets a folder of its own.
+
 ## Data from a newer turnout is refused
 
 If the directory was written by a **newer** release than the one you are running, turnout stops:

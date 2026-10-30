@@ -450,16 +450,14 @@ pub fn run(dir: &Path, from: u32) -> Result<u32> {
     // The heading goes out with the first step that succeeds rather than with
     // the copy: a step that rewrites nothing still changes what the directory
     // is, and a description under no heading reads like a stray line.
-    let mut copied = false;
+    let mut copied: Option<PathBuf> = None;
     let mut announced = false;
     let mut copy_note = None;
     for step in pending {
-        if step.rewrites && !copied {
-            let backup = backup_dir(dir, from);
-            std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
-            copy_data_files(dir, &backup)?;
+        if step.rewrites && copied.is_none() {
+            let backup = safety_copy(dir, from)?;
             copy_note = Some(format!("  A copy of the old files is in {}", backup.display()));
-            copied = true;
+            copied = Some(backup);
         }
         match (step.apply)(dir) {
             Ok(()) => {
@@ -475,10 +473,89 @@ pub fn run(dir: &Path, from: u32) -> Result<u32> {
             // A refusal is already a complete explanation; wrapping it in
             // "migration 1 -> 2 failed" would bury the part the user acts on.
             Err(err) if !step.rewrites => return Err(err),
-            Err(err) => return Err(err).with_context(|| format!("migration {} -> {} failed", step.from, step.from + 1)),
+            Err(err) => {
+                let copy = copied.as_deref().map(Path::display);
+                return Err(err).with_context(|| match copy {
+                    Some(copy) => format!(
+                        "migration {} -> {} failed - the files as they were before are in {copy}, and the next command tries again from them",
+                        step.from,
+                        step.from + 1
+                    ),
+                    None => format!("migration {} -> {} failed", step.from, step.from + 1),
+                });
+            }
         }
     }
     Ok(from)
+}
+
+/// Marks a safety copy whose migration has not finished. Not `.json`: a user
+/// copying the catalogs back by hand takes the `.json` files, and this is not
+/// one of them.
+const UNFINISHED: &str = "MIGRATION-UNFINISHED.txt";
+
+/// The safety copy for a migration from `from`: the one an unfinished
+/// attempt left, or a new one.
+///
+/// A migration that failed after its first rewriting step left `meta.json`
+/// as it was, so every later command - Tab completion and a prompt's `status
+/// --short` among them - ran it again, and each run copied the whole
+/// directory into a new `settings-backup-vN-K` before failing the same way.
+/// The copy an unfinished attempt made holds the files from before any step
+/// touched them, which is exactly what a retry needs; a fresh copy would hold
+/// half-migrated ones. So it is reused, and marked until the attempt is
+/// [`complete`].
+fn safety_copy(dir: &Path, from: u32) -> Result<PathBuf> {
+    if let Some(unfinished) = unfinished_copy(dir, from) {
+        return Ok(unfinished);
+    }
+    let backup = backup_dir(dir, from);
+    std::fs::create_dir_all(&backup).with_context(|| format!("cannot create {}", backup.display()))?;
+    copy_data_files(dir, &backup)?;
+    // Written last: a copy cut short by a crash carries no mark, and is never
+    // taken for a complete one.
+    std::fs::write(
+        backup.join(UNFINISHED),
+        format!(
+            "turnout copied the settings here before migrating them from schema {from}, and that migration has not finished.\n\
+             Until it does, every attempt starts from this copy: it holds the files as they were.\n"
+        ),
+    )
+    .with_context(|| format!("cannot mark {}", backup.display()))?;
+    Ok(backup)
+}
+
+/// The marked copy an unfinished migration from `from` left, if there is one.
+fn unfinished_copy(dir: &Path, from: u32) -> Option<PathBuf> {
+    let base = format!("settings-backup-v{from}");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // `-v1` must not find `-v10`: the name is the base, or the base
+            // and a numeric suffix.
+            name == base || name.strip_prefix(&format!("{base}-")).is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+        })
+        .map(|entry| entry.path())
+        .filter(|path| path.join(UNFINISHED).is_file())
+        .collect();
+    found.sort();
+    found.into_iter().next()
+}
+
+/// The migration from `from` is over and recorded: its safety copy stops
+/// being the one a retry starts from.
+///
+/// Called by [`crate::store`] once `meta.json` says the new version, not at
+/// the end of [`run`]: until the version is recorded, the next command
+/// migrates again, and has to find the originals where the first attempt
+/// left them. Best effort - a mark that stays only means one copy is reused
+/// by a migration that is never run again.
+pub fn complete(dir: &Path, from: u32) {
+    if let Some(copy) = unfinished_copy(dir, from) {
+        let _ = std::fs::remove_file(copy.join(UNFINISHED));
+    }
 }
 
 /// `settings-backup-v1-2` next to the data, not inside a temp dir: a user who
@@ -772,6 +849,54 @@ mod tests {
 
         assert!(aside.join("servers.json").is_file());
         assert!(!dir.path().join("servers.json").exists());
+    }
+
+    /// A migration that fails after a rewriting step leaves `meta.json` as it
+    /// was, so every command runs it again. Each run used to copy the whole
+    /// directory into a new folder before failing the same way; the copy the
+    /// first attempt made - of the files before anything touched them - is
+    /// the one every retry needs, and the only one made.
+    #[test]
+    fn a_failing_migration_reuses_its_safety_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let servers = r#"[{"name":"prod","url":"https://prod.example.com","credential":"deploy","deploy":{"web":"wwwroot"}}]"#;
+        std::fs::write(dir.path().join("servers.json"), servers).unwrap();
+        // Broken by hand: step 2 -> 3 rewrites the servers, then 3 -> 4
+        // cannot read the apps.
+        std::fs::write(dir.path().join("apps.json"), "[{").unwrap();
+
+        for _ in 0..3 {
+            let err = run(dir.path(), 2).unwrap_err().to_string();
+            assert!(err.contains("migration 3 -> 4 failed"), "{err}");
+            assert!(err.contains("settings-backup-v2"), "the error names where the originals are: {err}");
+        }
+        let folders = || -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(dir.path())
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|name| name.starts_with("settings-backup"))
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(folders(), vec!["settings-backup-v2"]);
+        let copy = dir.path().join("settings-backup-v2");
+        assert_eq!(
+            std::fs::read_to_string(copy.join("servers.json")).unwrap(),
+            servers,
+            "the copy holds the files from before the first attempt, not half-migrated ones"
+        );
+
+        // Repaired, the migration finishes and the copy stops being reused.
+        std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
+        run(dir.path(), 2).unwrap();
+        complete(dir.path(), 2);
+        assert!(!copy.join(UNFINISHED).exists());
+        assert_eq!(folders(), vec!["settings-backup-v2"]);
+        // A later migration from the same schema is another one, with a copy
+        // of its own.
+        run(dir.path(), 2).unwrap();
+        assert_eq!(folders(), vec!["settings-backup-v2", "settings-backup-v2-2"]);
     }
 
     #[test]
