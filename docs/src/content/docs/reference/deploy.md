@@ -132,6 +132,8 @@ A path's post-write command is often the longest part of a deploy - `docker comp
 
 On a Linux or macOS server the command is started detached instead, with `setsid` (`nohup` where there is none), in a session of its own. Its output and exit code go to files under `~/.turnout/runs` on the server, and turnout reads them back - the newest line shows beside the spinner. The connection is only a window onto the run: when it drops, turnout dials again for up to a minute and reads on. When it cannot, the error says the command is still running and where its output is. A finished run leaves nothing behind.
 
+turnout waits as long as the command's process is there, however long that is. A run whose process is gone without an exit code - killed by the out-of-memory killer or a reboot, or unable to write its code - ends the wait with an error naming its log, which stays on the server. A run that cannot create its log or its other files in `~/.turnout/runs` does not start at all, and the deploy says so.
+
 The command runs in the account's login shell, in the deploy directory, exactly as before. On a Windows server it still runs attached - see [Windows servers](/turnout/concepts/windows-servers/).
 
 ## A build older than its sources

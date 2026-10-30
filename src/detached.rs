@@ -89,17 +89,28 @@ impl Run {
 /// written to a side file and renamed into place, so a reader never sees half
 /// a number. Without `setsid` (macOS has none) `nohup` is the honest fallback:
 /// it keeps the command from the hangup, if not from its session.
+///
+/// The log and the file that keeps the run's process id are created here, in
+/// the foreground, before anything starts: up to v0.26 the log was opened by
+/// the background job itself, so a run that could not create it never
+/// started - and `launched` was printed all the same, and turnout waited for
+/// an exit code that could not come. The process id is what lets a poll tell
+/// a run still going from one that is gone (see [`poll_command`]); the run's
+/// id opens the script, so that the process can be told apart from another
+/// that took its number later, in the first words `ps` shows of it.
 fn launch_command(run: &Run, dir: &str, command: &str) -> String {
     let posix = Dialect::Posix;
     let inner = format!(
-        "\"${{SHELL:-sh}}\" -c {}; c=$?; echo $c > \"$1.part\" && mv \"$1.part\" \"$1.code\"",
-        posix.quote(command)
+        ": {id}; \"${{SHELL:-sh}}\" -c {}; c=$?; echo $c > \"$1.part\" && mv \"$1.part\" \"$1.code\"",
+        posix.quote(command),
+        id = run.id,
     );
     let script = format!(
         "mkdir -p \"$HOME/{RUNS}\" || exit 1; f={base}; cd {dir} || exit 1; \
+         : > \"$f.log\" || exit 1; : > \"$f.pid\" || exit 1; \
          if command -v setsid >/dev/null 2>&1; then d=setsid; else d=nohup; fi; \
-         $d sh -c {inner} turnout-run \"$f\" > \"$f.log\" 2>&1 < /dev/null & \
-         echo launched",
+         $d sh -c {inner} turnout-run \"$f\" >> \"$f.log\" 2>&1 < /dev/null & \
+         echo $! > \"$f.pid\" || exit 1; echo launched",
         base = run.base(),
         dir = posix.quote(dir),
         inner = posix.quote(&inner),
@@ -107,17 +118,32 @@ fn launch_command(run: &Run, dir: &str, command: &str) -> String {
     format!("sh -c {}", posix.quote(&script))
 }
 
-/// The command that reports on a run: `exit=N` or `running` on the first
-/// line, then the log from byte `offset` on.
+/// The command that reports on a run: `exit=N`, `running` or `gone` on the
+/// first line, then the log from byte `offset` on.
 ///
 /// The code is read before the log: a run that ends between the two reads is
 /// reported as running, and its last output comes with the next poll - the
 /// other order could report it ended and lose what it wrote last.
+///
+/// `gone` is a run with no exit code whose process is not there any more:
+/// killed (the OOM killer, a reboot) or unable to write its code. Up to v0.26
+/// such a run read as `running` for ever, and the deploy waited for ever. A
+/// run that is merely slow still has its process, and is waited for as long
+/// as it takes - an image build may take many minutes. The process is the one
+/// whose number the launch kept, and whose command line carries this run's id:
+/// a number taken over by another process after this one ended does not count.
+/// Where `ps` cannot say, `kill -0` alone answers. The code is looked for once
+/// more after the process: a run that ends between the two looks has one.
 fn poll_command(run: &Run, offset: u64) -> String {
     let script = format!(
-        "f={base}; if [ -f \"$f.code\" ]; then echo \"exit=$(cat \"$f.code\")\"; else echo running; fi; \
+        "f={base}; p=$(cat \"$f.pid\" 2>/dev/null); \
+         if [ -f \"$f.code\" ]; then echo \"exit=$(cat \"$f.code\")\"; \
+         elif [ -n \"$p\" ] && kill -0 \"$p\" 2>/dev/null && {{ a=$(ps -p \"$p\" -o args= 2>/dev/null) || a={id}; case \"$a\" in *{id}*) true;; *) false;; esac; }}; then echo running; \
+         elif [ -f \"$f.code\" ]; then echo \"exit=$(cat \"$f.code\")\"; \
+         else echo gone; fi; \
          tail -c +{from} \"$f.log\" 2>/dev/null; exit 0",
         base = run.base(),
+        id = run.id,
         from = offset + 1,
     );
     format!("sh -c {}", Dialect::Posix.quote(&script))
@@ -125,15 +151,23 @@ fn poll_command(run: &Run, offset: u64) -> String {
 
 /// The command that removes a finished run's files.
 fn forget_command(run: &Run) -> String {
-    let script = format!("f={}; rm -f \"$f.log\" \"$f.code\"", run.base());
+    let script = format!("f={}; rm -f \"$f.log\" \"$f.code\" \"$f.pid\"", run.base());
     format!("sh -c {}", Dialect::Posix.quote(&script))
+}
+
+/// Where a run stands, as a poll found it.
+#[derive(Debug, PartialEq, Eq)]
+enum State {
+    Running,
+    Exited(i32),
+    /// No exit code, and no process to write one.
+    Gone,
 }
 
 /// What a poll said.
 #[derive(Debug, PartialEq, Eq)]
 struct Polled {
-    /// The exit code, once the run has one.
-    exit: Option<i32>,
+    state: State,
     /// Log bytes past the offset asked for.
     output: Vec<u8>,
 }
@@ -142,14 +176,15 @@ fn read_poll(reply: &[u8]) -> Result<Polled> {
     let split = reply.iter().position(|byte| *byte == b'\n').unwrap_or(reply.len());
     let head = String::from_utf8_lossy(&reply[..split]);
     let output = reply.get(split + 1..).unwrap_or_default().to_vec();
-    let exit = match head.trim() {
-        "running" => None,
+    let state = match head.trim() {
+        "running" => State::Running,
+        "gone" => State::Gone,
         status => match status.strip_prefix("exit=").and_then(|code| code.trim().parse().ok()) {
-            Some(code) => Some(code),
+            Some(code) => State::Exited(code),
             None => bail!("the server answered '{status}' about a run it should know"),
         },
     };
-    Ok(Polled { exit, output })
+    Ok(Polled { state, output })
 }
 
 /// The last line with anything on it, cut to fit beside a spinner.
@@ -216,15 +251,24 @@ pub fn run<R: Remote>(
         {
             progress(&line);
         }
-        if let Some(code) = polled.exit {
-            // Best-effort: the result is in hand, and two stray files in a
-            // dot directory are not worth failing a deploy over.
-            let _ = remote.exec_bytes(&forget_command(&run));
-            let text = String::from_utf8_lossy(&output).into_owned();
-            if code != 0 {
-                bail!("`{command}` exited with {code}: {}", text.trim());
+        match polled.state {
+            State::Exited(code) => {
+                // Best-effort: the result is in hand, and three stray files in
+                // a dot directory are not worth failing a deploy over.
+                let _ = remote.exec_bytes(&forget_command(&run));
+                let text = String::from_utf8_lossy(&output).into_owned();
+                if code != 0 {
+                    bail!("`{command}` exited with {code}: {}", text.trim());
+                }
+                return Ok(text);
             }
-            return Ok(text);
+            // Its files stay: the log is all there is to say what happened.
+            State::Gone => bail!(
+                "`{command}` ended on the server without an exit code - it was killed, or could not write its code; \
+                 what it printed is in {}",
+                run.log()
+            ),
+            State::Running => {}
         }
         std::thread::sleep(pause);
         pause = (pause * 2).min(Duration::from_secs(1));
@@ -245,7 +289,6 @@ fn redial<R>(reconnect: &mut impl FnMut() -> Result<R>) -> Result<R> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(unix)]
     use std::cell::Cell;
 
     use super::*;
@@ -272,18 +315,85 @@ mod tests {
         assert_eq!(
             read_poll(b"running\nstep 1\nstep 2\n").unwrap(),
             Polled {
-                exit: None,
+                state: State::Running,
                 output: b"step 1\nstep 2\n".to_vec()
             }
         );
         assert_eq!(
             read_poll(b"exit=3\n").unwrap(),
             Polled {
-                exit: Some(3),
+                state: State::Exited(3),
                 output: Vec::new()
             }
         );
+        assert_eq!(
+            read_poll(b"gone\nhalf a line").unwrap(),
+            Polled {
+                state: State::Gone,
+                output: b"half a line".to_vec()
+            }
+        );
         assert!(read_poll(b"who knows\n").is_err(), "a reply nobody wrote must not read as running forever");
+    }
+
+    /// A server that answers like a run whose process went without a code:
+    /// started, a line of output, then gone.
+    struct Vanishing {
+        polls: Cell<u32>,
+    }
+
+    impl Remote for Vanishing {
+        fn exec_bytes(&self, command: &str) -> Result<Vec<u8>> {
+            if command.contains("echo launched") {
+                return Ok(b"launched\n".to_vec());
+            }
+            if command.contains("tail -c") {
+                self.polls.set(self.polls.get() + 1);
+                return Ok(match self.polls.get() {
+                    1 => b"running\nbuilding\n".to_vec(),
+                    _ => b"gone\n".to_vec(),
+                });
+            }
+            bail!("nothing else is asked of a run that is gone: {command}")
+        }
+    }
+
+    /// A run whose process went without an exit code ends the wait, with the
+    /// log to look in. Up to v0.26 it read as running, and the deploy waited
+    /// for a code that could never come.
+    #[test]
+    fn a_run_gone_without_a_code_ends_the_wait() {
+        let mut remote = Vanishing { polls: Cell::new(0) };
+        let mut heard = Vec::new();
+        let err = run(
+            &mut remote,
+            Dialect::Posix,
+            "/srv/app",
+            "docker compose up -d --build",
+            || -> Result<Vanishing> { bail!("the connection never drops here") },
+            |line| heard.push(line.to_string()),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("without an exit code"), "{err}");
+        assert!(err.contains("~/.turnout/runs/"), "the log is named: {err}");
+        assert_eq!(heard, ["building"]);
+    }
+
+    /// The poll asks after the run's process, by the number the launch kept
+    /// and by the run's id in its command line, before it says `gone`; and
+    /// the launch writes both files in the foreground.
+    #[test]
+    fn the_poll_asks_after_the_process_and_the_launch_keeps_its_number() {
+        let run = Run { id: "r7".into() };
+        let poll = poll_command(&run, 0);
+        assert!(poll.contains("kill -0"), "{poll}");
+        assert!(poll.contains("*r7*"), "{poll}");
+        assert!(poll.contains("echo gone"), "{poll}");
+        let launch = launch_command(&run, "/srv/app", "make");
+        assert!(launch.contains(": > \"$f.log\" || exit 1"), "the log exists before the run starts: {launch}");
+        assert!(launch.contains("echo $! > \"$f.pid\" || exit 1"), "{launch}");
+        assert!(launch.contains(": r7;"), "the run's id opens its command line: {launch}");
     }
 
     #[test]
@@ -369,6 +479,66 @@ mod tests {
         .to_string();
         assert!(err.contains("exited with 3"), "{err}");
         assert!(err.contains("the image did not build"), "{err}");
+    }
+
+    /// A run whose process is killed before it can write its code - here the
+    /// command kills the shell that would have written it - ends the wait.
+    /// Up to v0.26 this deploy waited for ever.
+    #[cfg(unix)]
+    #[test]
+    fn a_killed_run_ends_the_wait_in_a_real_shell() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = stand.session();
+        let err = run(
+            &mut session,
+            Dialect::Posix,
+            &dir.path().display().to_string(),
+            "echo about to go; kill -9 $PPID",
+            || Ok(stand.session()),
+            |_| {},
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("without an exit code"), "{err}");
+        let runs = stand.home().join(RUNS);
+        let log = std::fs::read_dir(&runs)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "log"))
+            .expect("the log stays");
+        assert!(std::fs::read_to_string(log).unwrap().contains("about to go"));
+    }
+
+    /// A run that cannot create its log does not start, and the launch says
+    /// so. Up to v0.26 the background job opened the log, failed, and never
+    /// ran - while the launch printed `launched` and the deploy waited for
+    /// ever for its exit code.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_that_cannot_keep_its_log_does_not_launch() {
+        if unsafe { libc::geteuid() } == 0 {
+            // root writes through any permission.
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let runs = stand.home().join(RUNS);
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::set_permissions(&runs, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = stand.session();
+        let outcome = run(
+            &mut session,
+            Dialect::Posix,
+            &dir.path().display().to_string(),
+            "echo ran > marker",
+            || Ok(stand.session()),
+            |_| {},
+        );
+        std::fs::set_permissions(&runs, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(!dir.path().join("marker").exists(), "nothing ran");
     }
 
     /// With no way back to the server, the error says the command is still
