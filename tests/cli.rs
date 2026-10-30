@@ -4415,6 +4415,46 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
     panic!("{what} never happened");
 }
 
+/// Ctrl+C in the terminal of `gateway run` stops the gateway its own way:
+/// it says so and takes its record along. On Unix the interrupt handler
+/// turnout keeps for its spinners used to exit before the gateway heard the
+/// signal, and `status` went on to report a gateway that was "no longer
+/// running".
+#[cfg(unix)]
+#[test]
+fn ctrl_c_stops_a_gateway_in_the_foreground_and_takes_its_record() {
+    let (dir, project) = workspace();
+    let (gateway_port, reservation) = reserved_port();
+    turnout(dir.path())
+        .args(["app", "add", "myapp", "--path"])
+        .arg(&project)
+        .args(["--port", &gateway_port.to_string()])
+        .assert()
+        .success();
+    drop(reservation);
+    let child = turnout_process(dir.path())
+        .env("TURNOUT_FRONT_PORT", "0")
+        .args(["gateway", "run"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut gateway = ChildGuard(child);
+    wait_for_port(gateway_port);
+    wait_until("the gateway's record", || status_json(dir.path())["gateway"]["state"] == "running");
+
+    // What the terminal sends on Ctrl+C.
+    let pid = gateway.0.id().to_string();
+    assert!(std::process::Command::new("kill").args(["-INT", &pid]).status().unwrap().success());
+    wait_until("the gateway to exit", || gateway.0.try_wait().unwrap().is_some());
+
+    let mut said = String::new();
+    std::io::Read::read_to_string(gateway.0.stdout.as_mut().unwrap(), &mut said).unwrap();
+    assert!(said.contains("Gateway stopped."), "the gateway's shutdown did not run: {said}");
+    assert!(!dir.path().join("jobs").join("gateway.json").exists(), "the record stayed behind");
+    assert_eq!(status_json(dir.path())["gateway"]["state"], "stopped");
+}
+
 /// The signals the gateway has up, as `status --json` reports them.
 fn signals(dir: &std::path::Path) -> Vec<serde_json::Value> {
     status_json(dir)["gateway"]["signals"].as_array().cloned().unwrap_or_default()

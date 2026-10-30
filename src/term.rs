@@ -25,6 +25,8 @@ static CHILD_ACTIVE: AtomicBool = AtomicBool::new(false);
 static INTERRUPTS: AtomicU32 = AtomicU32::new(0);
 /// Whether the current command was interrupted at all, for exit codes.
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+/// Set by a command that waits for Ctrl+C itself and shuts down its own way.
+static HANDED_OVER: AtomicBool = AtomicBool::new(false);
 
 /// Capture the terminal state and install the Ctrl+C handler.
 ///
@@ -45,6 +47,21 @@ pub fn restore() {
 /// Whether Ctrl+C arrived during this command, for a conventional exit code.
 pub fn interrupted() -> bool {
     INTERRUPTED.load(Ordering::SeqCst)
+}
+
+/// Hand Ctrl+C to the command itself: it waits for the interrupt and shuts
+/// down its own way, and the handler only notes that it came.
+///
+/// The gateway in a terminal is such a command - on Ctrl+C it takes its
+/// record out of the registry. On Unix the runtime's signal handler is
+/// chained behind this module's: signal-hook calls the handler that was
+/// installed first before its own, and that one `_exit`ed whenever no child
+/// ran. The gateway's shutdown never ran, its record stayed behind, and
+/// `status` reported a gateway that was "no longer running". On Windows the
+/// runtime's console handler is registered later and so asked first; it
+/// answers for itself and this one is never reached.
+pub fn hand_over_interrupts() {
+    HANDED_OVER.store(true, Ordering::SeqCst);
 }
 
 /// Mark a child as running: from here Ctrl+C belongs to the child, and the
@@ -237,6 +254,11 @@ mod imp {
             // process group, the child included; the normal return path from
             // wait() restores the terminal. Nothing to do here.
             super::INTERRUPTS.fetch_add(1, Ordering::SeqCst);
+            return;
+        }
+        if super::HANDED_OVER.load(Ordering::SeqCst) {
+            // The command waits for this signal itself, in the handler
+            // chained behind this one; exiting here would cut it off.
             return;
         }
         restore();

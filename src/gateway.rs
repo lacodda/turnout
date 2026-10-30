@@ -250,6 +250,8 @@ pub fn run(front_port: Option<u16>, log: Option<std::path::PathBuf>) -> Result<(
         // The door that actually opened, not the one that was asked for: the
         // record is what `open`, `status` and `dev` print addresses from.
         crate::commands::gateway::record(ports, door, control, log)?;
+        // Ctrl+C is the gateway's to handle: the record goes with it.
+        crate::term::hand_over_interrupts();
         tokio::signal::ctrl_c().await?;
         let _ = crate::registry::remove_own(crate::registry::GATEWAY);
         println!("Gateway stopped.");
