@@ -484,14 +484,44 @@ const CMD_BUILTINS: [&str; 22] = [
 fn restart_check(session: &Session, dialect: Dialect, path: &crate::model::Path, restart: &str, user: &str, dir_exists: bool) -> CheckView {
     let subject = Some(path.name.as_str());
     let (sudo, programs) = restart_programs(dialect, restart);
-    if sudo && dialect == Dialect::Posix && remote::exec(session, "sudo -n true").is_err() {
-        return CheckView::fail(
-            PATHS,
-            "restart",
-            subject,
-            format!("restart `{restart}` - sudo asks {user} for a password, and a deploy has nobody to type it"),
-        )
-        .fix(format!("allow the command without a password for {user}: a NOPASSWD rule in sudoers"));
+    if sudo && dialect == Dialect::Posix {
+        let requests = sudo_requests(restart);
+        // A probe that could not run at all answers nothing, which reads as
+        // "could not tell" - a warning, not a verdict.
+        let reply = remote::exec(session, &sudo_probe(&requests)).unwrap_or_default();
+        let rule = format!("allow it without a password for {user}: a NOPASSWD rule in sudoers");
+        match sudo_verdict(&read_sudo_probe(&reply), &requests) {
+            Sudo::Free => {}
+            Sudo::Password => {
+                return CheckView::fail(
+                    PATHS,
+                    "restart",
+                    subject,
+                    format!("restart `{restart}` - sudo asks {user} for a password, and a deploy has nobody to type it"),
+                )
+                .fix(rule);
+            }
+            Sudo::Refused(command) => {
+                return CheckView::fail(
+                    PATHS,
+                    "restart",
+                    subject,
+                    format!("restart `{restart}` - sudo does not let {user} run `{command}`"),
+                )
+                .fix(rule);
+            }
+            Sudo::Unproven(command) => {
+                return CheckView::warn(
+                    PATHS,
+                    "restart",
+                    subject,
+                    format!(
+                        "restart `{restart}` - sudo lets {user} run `{command}`, and no rule `sudo -l` shows says it runs without a password; if it asks for one, the deploy fails"
+                    ),
+                )
+                .fix(rule);
+            }
+        }
     }
     if programs.is_empty() {
         return CheckView::ok(PATHS, "restart", subject, format!("restart `{restart}` - shell built-ins only"));
@@ -626,6 +656,257 @@ fn restart_program(command: &str) -> Option<(bool, String)> {
     Some((sudo, word.trim_matches(['"', '\'']).to_string()))
 }
 
+/// One command of a restart that goes through sudo: as whom, and what.
+#[derive(Debug, PartialEq, Eq)]
+struct SudoRequest {
+    /// `-u USER`, else root.
+    user: String,
+    /// sudo's `-u`/`-g` options and the command with its arguments, as the
+    /// restart spells them.
+    words: Vec<String>,
+}
+
+/// The sudo commands of a restart chain.
+///
+/// Only the options that choose whom to run as are kept: they decide which
+/// rules apply. Others - `-E`, `-H`, `-i` - change how the command runs, and
+/// some cannot be put beside `-l` at all.
+fn sudo_requests(restart: &str) -> Vec<SudoRequest> {
+    let mut requests = Vec::new();
+    for part in commands_of(restart) {
+        let mut words = part.split_whitespace().skip_while(|word| word.contains('=') && !word.starts_with('-'));
+        if words.next() != Some("sudo") {
+            continue;
+        }
+        let (mut user, mut kept) = ("root".to_string(), Vec::new());
+        let mut words = words.peekable();
+        while let Some(word) = words.next_if(|word| word.starts_with('-')) {
+            const TAKES: [&str; 8] = ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U"];
+            if !TAKES.contains(&word) {
+                continue;
+            }
+            let Some(value) = words.next() else { break };
+            if word == "-u" {
+                user = value.trim_matches(['"', '\'']).to_string();
+            }
+            if word == "-u" || word == "-g" {
+                kept.extend([word.to_string(), value.to_string()]);
+            }
+        }
+        kept.extend(words.map(str::to_string));
+        requests.push(SudoRequest { user, words: kept });
+    }
+    requests
+}
+
+/// The command that asks sudo about a restart's commands without running
+/// them.
+///
+/// `sudo -n true` passing means nothing asks for a password. When it does
+/// not, that is not yet a verdict: a rule like
+/// `deploy ALL=NOPASSWD: /usr/bin/systemctl restart api` lets exactly that
+/// command run unattended and nothing else. Up to v0.26 the doctor failed
+/// such a server - "sudo asks for a password" - while its deploys restarted
+/// without one. So each command is put to `sudo -n -l COMMAND`, which names
+/// it in full when it is allowed, and the rules come with `sudo -n -l`, whose
+/// NOPASSWD tags say which run without a password.
+fn sudo_probe(requests: &[SudoRequest]) -> String {
+    let mut script = String::from("if sudo -n true >/dev/null 2>&1; then echo free; exit 0; fi; ");
+    for request in requests {
+        let words = request.words.join(" ");
+        script.push_str(&format!(
+            "if o=$(sudo -n -l {words} 2>&1); then echo \"allowed $o\"; else echo \"refused $(printf %s \"$o\" | tr '\\n' ' ')\"; fi; "
+        ));
+    }
+    script.push_str("echo rules; sudo -n -l 2>/dev/null; exit 0");
+    format!("sh -c {}", Dialect::Posix.quote(&script))
+}
+
+/// What the sudo probe said.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SudoProbe {
+    /// `sudo -n true` passed: no password for anything.
+    free: bool,
+    /// Per command, in order: the full command sudo named, or its refusal.
+    answers: Vec<Result<String, String>>,
+    /// The rules `sudo -l` listed.
+    rules: Vec<SudoRule>,
+}
+
+/// One command of a `sudo -l` rule.
+#[derive(Debug, PartialEq, Eq)]
+struct SudoRule {
+    /// Whom it runs as: the users before `:` in `(...)`, root when absent.
+    users: Vec<String>,
+    nopasswd: bool,
+    command: String,
+}
+
+fn read_sudo_probe(reply: &str) -> SudoProbe {
+    let mut probe = SudoProbe::default();
+    let mut lines = reply.lines().map(|line| line.trim_end_matches('\r'));
+    for line in lines.by_ref() {
+        match line.trim() {
+            "free" => probe.free = true,
+            "rules" => break,
+            line => {
+                if let Some(command) = line.strip_prefix("allowed ") {
+                    probe.answers.push(Ok(command.trim().to_string()));
+                } else if let Some(why) = line.strip_prefix("refused") {
+                    probe.answers.push(Err(why.trim().to_string()));
+                }
+            }
+        }
+    }
+    // The rules follow a line that says whose they are; lines before it are
+    // sudo's matching Defaults. sudo indents a rule by four and wraps a long
+    // one onto lines indented by eight, which belong to the rule above.
+    let mut listing = false;
+    let mut rule: Option<String> = None;
+    for line in lines {
+        let continued = line.starts_with("        ") || line.starts_with('\t');
+        match &mut rule {
+            Some(rule) if listing && continued => {
+                rule.push(' ');
+                rule.push_str(line.trim());
+                continue;
+            }
+            _ => {}
+        }
+        probe.rules.extend(rule.take().map(|rule| read_sudo_rule(&rule)).unwrap_or_default());
+        if line.contains("may run the following commands") {
+            listing = true;
+        } else if listing && line.starts_with(' ') && !line.trim().is_empty() {
+            rule = Some(line.trim().to_string());
+        } else if !line.trim().is_empty() {
+            listing = false;
+        }
+    }
+    probe.rules.extend(rule.map(|rule| read_sudo_rule(&rule)).unwrap_or_default());
+    probe
+}
+
+/// The commands of one `sudo -l` line: `(root) NOPASSWD: /a, PASSWD: /b`.
+/// A tag holds for the commands after it until another replaces it.
+fn read_sudo_rule(line: &str) -> Vec<SudoRule> {
+    let (users, rest) = match line.strip_prefix('(').and_then(|rest| rest.split_once(')')) {
+        Some((runas, rest)) => {
+            let users = runas.split(':').next().unwrap_or_default();
+            (users.split(',').map(|user| user.trim().to_string()).collect(), rest)
+        }
+        None => (vec!["root".to_string()], line),
+    };
+    let mut nopasswd = false;
+    let mut rules = Vec::new();
+    for spec in rest.split(',') {
+        let mut spec = spec.trim();
+        // Tags are upper-case words ending in a colon, in front of a command.
+        while let Some((tag, after)) = spec
+            .split_once(':')
+            .filter(|(tag, _)| !tag.is_empty() && tag.chars().all(|c| c.is_ascii_uppercase() || c == '_'))
+        {
+            match tag {
+                "NOPASSWD" => nopasswd = true,
+                "PASSWD" => nopasswd = false,
+                _ => {}
+            }
+            spec = after.trim_start();
+        }
+        if !spec.is_empty() {
+            rules.push(SudoRule {
+                users: users.clone(),
+                nopasswd,
+                command: spec.to_string(),
+            });
+        }
+    }
+    rules
+}
+
+/// Whether a rule's command covers `command`, as sudoers matches them: `ALL`
+/// covers everything, a path alone covers it with any arguments, `""` after
+/// a path means none, and `*` and `?` are wildcards. A negated command
+/// covers nothing here.
+fn sudo_rule_covers(rule: &str, command: &str) -> bool {
+    if rule == "ALL" {
+        return true;
+    }
+    if rule.starts_with('!') {
+        return false;
+    }
+    match rule.split_once(char::is_whitespace) {
+        None => command.split_whitespace().next().is_some_and(|program| glob(rule, program)),
+        Some((path, "\"\"")) => glob(path, command.trim()),
+        Some(_) => glob(rule, command.trim()),
+    }
+}
+
+/// `*` and `?` wildcards, everything else literal.
+fn glob(pattern: &str, text: &str) -> bool {
+    let (pattern, text): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut p, mut t, mut star, mut mark) = (0, 0, None, 0);
+    while t < text.len() {
+        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == text[t]) {
+            p += 1;
+            t += 1;
+        } else if p < pattern.len() && pattern[p] == '*' {
+            star = Some(p);
+            mark = t;
+            p += 1;
+        } else if let Some(at) = star {
+            p = at + 1;
+            mark += 1;
+            t = mark;
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|c| *c == '*')
+}
+
+/// What sudo will do with a restart's commands.
+#[derive(Debug, PartialEq, Eq)]
+enum Sudo {
+    /// Every command runs without a password.
+    Free,
+    /// Nothing runs without one: even listing the rules asks for it.
+    Password,
+    /// This command is not allowed at all.
+    Refused(String),
+    /// This command is allowed, and no rule shown says without a password:
+    /// sudo may ask, or a rule `sudo -l` spells in a way not read here
+    /// (an alias, a regular expression) may let it through.
+    Unproven(String),
+}
+
+fn sudo_verdict(probe: &SudoProbe, requests: &[SudoRequest]) -> Sudo {
+    if probe.free {
+        return Sudo::Free;
+    }
+    let mut verdict = Sudo::Free;
+    for (index, request) in requests.iter().enumerate() {
+        let spelled = request.words.join(" ");
+        match probe.answers.get(index) {
+            Some(Err(why)) if why.contains("password is required") => return Sudo::Password,
+            Some(Err(_)) => return Sudo::Refused(spelled),
+            Some(Ok(command)) => {
+                // The last rule that matches is the one sudo applies.
+                let applies = probe
+                    .rules
+                    .iter()
+                    .rev()
+                    .find(|rule| rule.users.iter().any(|user| user == "ALL" || *user == request.user) && sudo_rule_covers(&rule.command, command));
+                if !applies.is_some_and(|rule| rule.nopasswd) && verdict == Sudo::Free {
+                    verdict = Sudo::Unproven(spelled);
+                }
+            }
+            None if verdict == Sudo::Free => verdict = Sudo::Unproven(spelled),
+            None => {}
+        }
+    }
+    verdict
+}
+
 fn web_check(server: &Server, health: Health) -> CheckView {
     let name = Some(server.name.as_str());
     let url = crate::health::health_url(&server.url);
@@ -722,6 +1003,108 @@ mod tests {
         assert_eq!(restart_program("iisreset"), Some((false, "iisreset".into())));
         assert_eq!(restart_program("sudo"), None);
         assert_eq!(restart_program(""), None);
+    }
+
+    /// The sudo commands of a chain, with the options that pick whom they run
+    /// as and without the ones `-l` cannot sit beside.
+    #[test]
+    fn the_sudo_commands_of_a_restart_are_picked_out() {
+        assert_eq!(
+            sudo_requests("cd /srv && sudo systemctl restart api && FOO=1 sudo -E -u web pm2 reload all; echo done"),
+            [
+                SudoRequest {
+                    user: "root".into(),
+                    words: vec!["systemctl".into(), "restart".into(), "api".into()],
+                },
+                SudoRequest {
+                    user: "web".into(),
+                    words: vec!["-u".into(), "web".into(), "pm2".into(), "reload".into(), "all".into()],
+                },
+            ]
+        );
+        assert!(sudo_requests("docker compose up -d").is_empty());
+        let probe = sudo_probe(&sudo_requests("sudo systemctl restart api"));
+        assert!(probe.contains("sudo -n -l systemctl restart api"), "{probe}");
+    }
+
+    /// What a server with `deploy ALL=NOPASSWD: /usr/bin/systemctl restart api`
+    /// and a password for everything else answers.
+    const PER_COMMAND: &str = "allowed /usr/bin/systemctl restart api\n\
+        rules\n\
+        Matching Defaults entries for deploy on stand:\n    env_reset, mail_badpass\n\n\
+        User deploy may run the following commands on stand:\n\
+        \x20   (ALL : ALL) ALL\n\
+        \x20   (root) NOPASSWD: /usr/bin/systemctl restart api, /usr/bin/systemctl\n\
+        \x20       status api\n";
+
+    /// The reply is read into the answers and the rules, a wrapped rule
+    /// joined back into one.
+    #[test]
+    fn the_sudo_probe_reply_is_read() {
+        let probe = read_sudo_probe(PER_COMMAND);
+        assert!(!probe.free);
+        assert_eq!(probe.answers, [Ok("/usr/bin/systemctl restart api".to_string())]);
+        let commands: Vec<(&str, bool)> = probe.rules.iter().map(|rule| (rule.command.as_str(), rule.nopasswd)).collect();
+        assert_eq!(
+            commands,
+            [
+                ("ALL", false),
+                ("/usr/bin/systemctl restart api", true),
+                ("/usr/bin/systemctl status api", true)
+            ]
+        );
+        assert_eq!(probe.rules[1].users, ["root"]);
+        assert!(read_sudo_probe("free\n").free);
+        assert_eq!(
+            read_sudo_probe("refused sudo: a password is required \nrules\n").answers,
+            [Err("sudo: a password is required".to_string())]
+        );
+    }
+
+    /// The case the doctor got wrong: a NOPASSWD rule for exactly the restart
+    /// command, a password for the rest. Up to v0.26 that was a FAIL - "sudo
+    /// asks for a password" - while the deploy restarted without one.
+    #[test]
+    fn a_nopasswd_rule_for_the_restart_alone_is_enough() {
+        let requests = sudo_requests("sudo systemctl restart api");
+        assert_eq!(sudo_verdict(&read_sudo_probe(PER_COMMAND), &requests), Sudo::Free);
+
+        // Allowed, but only under the rule that asks for the password.
+        let other = sudo_requests("sudo systemctl restart web");
+        let reply = PER_COMMAND.replace("allowed /usr/bin/systemctl restart api", "allowed /usr/bin/systemctl restart web");
+        assert_eq!(sudo_verdict(&read_sudo_probe(&reply), &other), Sudo::Unproven("systemctl restart web".into()));
+        // As another user than the rule's.
+        let as_web = sudo_requests("sudo -u web systemctl restart api");
+        assert_eq!(
+            sudo_verdict(&read_sudo_probe(PER_COMMAND), &as_web),
+            Sudo::Unproven("-u web systemctl restart api".into())
+        );
+        assert_eq!(sudo_verdict(&read_sudo_probe("free\n"), &other), Sudo::Free);
+        assert_eq!(
+            sudo_verdict(&read_sudo_probe("refused sudo: a password is required\nrules\n"), &requests),
+            Sudo::Password
+        );
+        assert_eq!(
+            sudo_verdict(&read_sudo_probe("refused \nrules\n"), &requests),
+            Sudo::Refused("systemctl restart api".into())
+        );
+        assert_eq!(
+            sudo_verdict(&read_sudo_probe(""), &requests),
+            Sudo::Unproven("systemctl restart api".into()),
+            "a probe that said nothing proves nothing"
+        );
+    }
+
+    #[test]
+    fn a_rule_covers_a_command_as_sudoers_matches_it() {
+        assert!(sudo_rule_covers("ALL", "/usr/bin/anything at all"));
+        assert!(sudo_rule_covers("/usr/bin/systemctl", "/usr/bin/systemctl restart api"));
+        assert!(sudo_rule_covers("/usr/bin/systemctl restart *", "/usr/bin/systemctl restart api"));
+        assert!(!sudo_rule_covers("/usr/bin/systemctl restart api", "/usr/bin/systemctl restart web"));
+        assert!(sudo_rule_covers("/usr/bin/systemctl \"\"", "/usr/bin/systemctl"));
+        assert!(!sudo_rule_covers("/usr/bin/systemctl \"\"", "/usr/bin/systemctl restart api"));
+        assert!(!sudo_rule_covers("!/usr/bin/su", "/usr/bin/su"));
+        assert!(sudo_rule_covers("/usr/bin/*ctl", "/usr/bin/systemctl stop"));
     }
 
     fn failed(check: &'static str) -> CheckView {

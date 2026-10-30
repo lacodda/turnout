@@ -126,7 +126,7 @@ turnout doctor --server prod
 │
 ✗  wwwroot · /var/www/app is not writable for deploy, owned by root · fix: sudo chown -R deploy '/var/www/app'
 ◇  wwwroot · 34.2 GiB free (the last build is 6.1 MiB)
-✗  wwwroot · restart `sudo systemctl restart app` - sudo asks deploy for a password, and a deploy has nobody to type it · fix: allow the command without a password for deploy: a NOPASSWD rule in sudoers
+✗  wwwroot · restart `sudo systemctl restart app` - sudo asks deploy for a password, and a deploy has nobody to type it · fix: allow it without a password for deploy: a NOPASSWD rule in sudoers
 │
 ◇  prod · the web server answers · https://prod.example.com/health 200 in 84 ms
 │
@@ -140,7 +140,7 @@ Everything a deploy to that server needs, asked as the account each [target](/tu
 - **tar** is there - without it a deploy sends the files one by one;
 - **each deploy directory** is writable for that account (or, when it does not exist yet, the parent a deploy would create it in), with the command that grants the right - `chown` on Linux, `icacls` on Windows;
 - **free space** there, against twice the size of the app's last build - the archive and the files unpacked from it sit side by side for a moment;
-- **the restart command** finds its programs as the deploy runs it - unattended, as that account, in the deploy directory - each command of a chain like `cd /srv/app && docker compose up -d` on its own, shell built-ins left out; and when it goes through `sudo`, sudo does not ask for a password;
+- **the restart command** finds its programs as the deploy runs it - unattended, as that account, in the deploy directory - each command of a chain like `cd /srv/app && docker compose up -d` on its own, shell built-ins left out; and when it goes through `sudo`, sudo does not ask for a password - for that command: `sudo -n -l` is asked whether the command is allowed and which rules carry `NOPASSWD`, so a rule for the restart alone (`deploy ALL=NOPASSWD: /usr/bin/systemctl restart api`) passes. A command sudo allows under no `NOPASSWD` rule it shows is a warning rather than a failure, since a rule `sudo -l` spells another way (an alias) may still let it through;
 - **the web server** answers at the stand's address;
 - each target's app names a build directory.
 
