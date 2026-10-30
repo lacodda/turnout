@@ -28,6 +28,7 @@ use anyhow::Result;
 use serde::Serialize;
 
 use crate::cli::Format;
+use crate::commands::gateway::GatewayState;
 use crate::control::Verdict;
 use crate::envfile::{Drift, InGit};
 use crate::health::Health;
@@ -244,26 +245,6 @@ impl Catalogs {
     }
 }
 
-/// The gateway as the record and its ports say it is.
-enum GatewayState {
-    Running(crate::model::Gateway),
-    NotAnswering(crate::model::Gateway),
-    /// Recorded, but its process is no more.
-    Gone(registry::Entry),
-    Stopped,
-}
-
-fn gateway_state() -> Result<GatewayState> {
-    let entry = registry::load(registry::GATEWAY)?;
-    let alive = entry.clone().filter(registry::Entry::is_running).and_then(registry::as_gateway);
-    Ok(match (entry, alive) {
-        (_, Some(gateway)) if crate::commands::gateway::probe(&gateway) => GatewayState::Running(gateway),
-        (_, Some(gateway)) => GatewayState::NotAnswering(gateway),
-        (Some(entry), None) if entry.ended.is_none() => GatewayState::Gone(entry),
-        _ => GatewayState::Stopped,
-    })
-}
-
 /// Every local check, in the order the checklist prints them.
 fn local() -> Result<Vec<CheckView>> {
     let data_dir = paths::data_dir()?;
@@ -283,7 +264,7 @@ fn local() -> Result<Vec<CheckView>> {
             )]);
         }
     };
-    let gateway = gateway_state()?;
+    let gateway = crate::commands::gateway::state()?;
 
     // The slow parts run side by side: tools are processes to start, stands
     // and sessions are network round trips that may wait out a timeout.
@@ -614,7 +595,7 @@ fn dev_port_check(app: &App, port: u16) -> CheckView {
         .as_ref()
         .and_then(|job| job.ready.as_ref())
         .and_then(|ready| ready.url.as_deref())
-        .and_then(port_in);
+        .and_then(crate::utils::url_port);
     judge_dev_port(app, port, job.is_some(), landed, ports::holder(port))
 }
 
@@ -667,12 +648,6 @@ fn stray(app: &App, port: u16, holder: &Holder, state: State, message: String) -
         }),
         None => check.fix("end the process that holds it - the OS does not say which one it is"),
     }
-}
-
-/// The port an address names: `http://localhost:5101/` -> 5101.
-fn port_in(url: &str) -> Option<u16> {
-    let authority = url.split("://").nth(1)?.split('/').next()?;
-    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 fn gateway_port_check(app: &App, port: u16, catalogs: &Catalogs, gateway: &GatewayState) -> CheckView {
@@ -1402,13 +1377,6 @@ mod tests {
         let unseen = judge_dev_port(&app, 5100, false, None, node(None));
         assert_eq!((unseen.state, unseen.fixable), (State::Warn, false));
         assert!(unseen.fix.as_deref().is_some_and(|fix| fix.contains("does not say")), "{unseen:?}");
-    }
-
-    #[test]
-    fn the_port_comes_out_of_an_address() {
-        assert_eq!(port_in("http://localhost:5101/"), Some(5101));
-        assert_eq!(port_in("http://127.0.0.1:5100"), Some(5100));
-        assert_eq!(port_in("http://web.localhost/"), None);
     }
 
     fn check(state: State, section: &'static str) -> CheckView {

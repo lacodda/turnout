@@ -202,11 +202,7 @@ pub fn stopped(app: &str, command: &str, span: &str, places: &Places<'_>) -> Toa
 /// names the command that shows the rest, because on macOS the toast cannot be
 /// clicked and the command is the way to the log.
 pub fn failed(app: &str, command: &str, how: &str, reason: Option<&str>, places: &Places<'_>) -> Toast {
-    let logs = if command == "dev" {
-        format!("turnout logs {app} dev --failed")
-    } else {
-        format!("turnout logs {app} {command} --failed")
-    };
+    let logs = format!("turnout logs {app} {command} --failed");
     Toast {
         title: format!("{} failed", subject(app, command)),
         body: reason.map_or_else(|| how.to_string(), str::to_string),

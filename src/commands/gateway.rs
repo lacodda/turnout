@@ -134,9 +134,7 @@ fn start() -> Result<()> {
 
 /// Put what the gateway said on the way down in front of the error about it.
 fn replay(log: &std::path::Path) {
-    let text = std::fs::read_to_string(log).unwrap_or_default();
-    let lines: Vec<&str> = text.lines().collect();
-    for line in &lines[lines.len().saturating_sub(TAIL_LINES)..] {
+    for line in crate::commands::jobs::tail(log, TAIL_LINES).unwrap_or_default() {
         eprintln!("{line}");
     }
 }
@@ -150,6 +148,28 @@ pub fn record(
 ) -> Result<()> {
     let detached = log.is_some();
     registry::save(&registry::Entry::own(Work::Gateway { ports, front_port, control }, detached, log))
+}
+
+/// The gateway as its record and its ports say it is - what `status` and
+/// the doctor both report.
+pub enum GatewayState {
+    Running(Gateway),
+    /// Its process is alive and does not answer on its ports.
+    NotAnswering(Gateway),
+    /// Recorded, but its process is no more.
+    Gone(registry::Entry),
+    Stopped,
+}
+
+pub fn state() -> Result<GatewayState> {
+    let entry = registry::load(registry::GATEWAY)?;
+    let alive = entry.clone().filter(registry::Entry::is_running).and_then(registry::as_gateway);
+    Ok(match (entry, alive) {
+        (_, Some(gateway)) if probe(&gateway) => GatewayState::Running(gateway),
+        (_, Some(gateway)) => GatewayState::NotAnswering(gateway),
+        (Some(entry), None) if entry.ended.is_none() => GatewayState::Gone(entry),
+        _ => GatewayState::Stopped,
+    })
 }
 
 /// Quick liveness check: can we open one of the recorded ports?

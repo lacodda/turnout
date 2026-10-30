@@ -405,7 +405,7 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
     }
     resp_headers.remove(SET_COOKIE);
     strip_hop_headers(&mut resp_headers);
-    rewrite_location(&mut resp_headers, &server.url, ctx.port)?;
+    rewrite_location(&mut resp_headers, &[&server.url], &format!("http://localhost:{}", ctx.port))?;
 
     let mut response = Response::builder().status(status);
     if let Some(headers_mut) = response.headers_mut() {
@@ -727,20 +727,35 @@ pub(crate) async fn check_session(jars: &Jars, clients: &Clients, watch: &Watch,
     Ok(check)
 }
 
-/// Absolute redirects to the stand come back as localhost so the browser never leaves.
-fn rewrite_location(headers: &mut HeaderMap, server_url: &str, port: u16) -> Result<()> {
+/// Send a redirect to one of the addresses in `from` to `to` instead, so the
+/// browser stays where turnout has it: a stand's redirect to itself comes
+/// back to the app's gateway port, a dev server's redirect to its own port
+/// back to the app's name at the front door.
+pub(crate) fn rewrite_location(headers: &mut HeaderMap, from: &[&str], to: &str) -> Result<()> {
     let Some(location) = headers.get(LOCATION).and_then(|v| v.to_str().ok()).map(str::to_string) else {
         return Ok(());
     };
-    let base = server_url.trim_end_matches('/');
-    if let Some(rest) = location.strip_prefix(base) {
-        let rewritten = format!("http://localhost:{port}{rest}");
-        headers.insert(
-            LOCATION,
-            HeaderValue::from_str(&rewritten).context("rewritten location is not a valid header value")?,
-        );
-    }
+    let Some(rest) = from.iter().find_map(|origin| beneath(&location, origin.trim_end_matches('/'))) else {
+        return Ok(());
+    };
+    let rewritten = format!("{to}{rest}");
+    headers.insert(
+        LOCATION,
+        HeaderValue::from_str(&rewritten).context("rewritten location is not a valid header value")?,
+    );
     Ok(())
+}
+
+/// What follows `base` in `location`, when `location` is `base` or lies
+/// beneath it.
+///
+/// A prefix alone is not enough. There were two copies of this rewrite, and
+/// both took `http://localhost:51000/` for a redirect to
+/// `http://localhost:5100`, and `https://stand.example.com.au/` for one to
+/// `https://stand.example.com` - and sent the browser somewhere else.
+fn beneath<'a>(location: &'a str, base: &str) -> Option<&'a str> {
+    let rest = location.strip_prefix(base)?;
+    (rest.is_empty() || rest.starts_with(['/', '?', '#'])).then_some(rest)
 }
 
 /// Drop headers that describe the hop, not the message.
@@ -797,6 +812,41 @@ mod tests {
     fn listening_ports_needs_at_least_one_port() {
         let error = listening_ports(&[app("web", None)]).unwrap_err().to_string();
         assert!(error.contains("no apps with a gateway port"), "{error}");
+    }
+
+    fn redirected(location: &str, from: &[&str], to: &str) -> String {
+        let mut headers = HeaderMap::new();
+        headers.insert(LOCATION, HeaderValue::from_str(location).unwrap());
+        rewrite_location(&mut headers, from, to).unwrap();
+        headers.get(LOCATION).unwrap().to_str().unwrap().to_string()
+    }
+
+    /// A redirect is brought back only from beneath the address it left:
+    /// a stand's own address, or a dev server's own port - not a host or a
+    /// port that merely starts the same.
+    #[test]
+    fn a_redirect_comes_back_only_from_beneath_the_address_it_left() {
+        let stand = ["https://stand.example.com/"];
+        let to = "http://localhost:7100";
+        assert_eq!(
+            redirected("https://stand.example.com/login?next=/", &stand, to),
+            "http://localhost:7100/login?next=/"
+        );
+        assert_eq!(redirected("https://stand.example.com", &stand, to), "http://localhost:7100");
+        assert_eq!(redirected("https://stand.example.com?sso=1", &stand, to), "http://localhost:7100?sso=1");
+        assert_eq!(redirected("https://stand.example.com#top", &stand, to), "http://localhost:7100#top");
+        // Another host that only begins like the stand's.
+        assert_eq!(redirected("https://stand.example.com.au/x", &stand, to), "https://stand.example.com.au/x");
+        assert_eq!(redirected("https://sso.example.com/", &stand, to), "https://sso.example.com/");
+
+        // The front door: the dev server's own port, by either name.
+        let dev = ["http://localhost:5100", "http://127.0.0.1:5100"];
+        let door = "http://myapp.localhost";
+        assert_eq!(redirected("http://localhost:5100/after?x=1", &dev, door), "http://myapp.localhost/after?x=1");
+        assert_eq!(redirected("http://127.0.0.1:5100/", &dev, door), "http://myapp.localhost/");
+        // Another port that only begins like it.
+        assert_eq!(redirected("http://localhost:51000/x", &dev, door), "http://localhost:51000/x");
+        assert_eq!(redirected("http://127.0.0.1:51001", &dev, door), "http://127.0.0.1:51001");
     }
 
     /// A watch with nobody at the other end of its channels: what the

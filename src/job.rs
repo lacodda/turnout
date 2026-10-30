@@ -47,7 +47,7 @@ use crate::registry::{self, Entry, Work};
 /// Enough to hold a compiler's error with its context, short enough that the
 /// command that caused it is still on screen above it. The full output is in
 /// the log file either way, and the note under the tail says where.
-const TAIL_LINES: usize = 40;
+pub(crate) const TAIL_LINES: usize = 40;
 
 /// How the child's output reaches the terminal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -19,8 +19,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use axum::body::Body;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::{FromRequestParts, Request, State};
-use axum::http::header::{COOKIE, HOST, LOCATION, SEC_WEBSOCKET_PROTOCOL};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::StatusCode;
+use axum::http::header::{COOKIE, HOST, SEC_WEBSOCKET_PROTOCOL};
 use axum::response::Response;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -195,7 +195,8 @@ async fn forward(app: &App, dev_port: u16, front_port: u16, req: Request) -> Res
     let status = upstream.status();
     let mut resp_headers = upstream.headers().clone();
     crate::gateway::strip_hop_headers(&mut resp_headers);
-    rewrite_location(&mut resp_headers, dev_port, &address(&app.name, front_port))?;
+    let [by_name, by_number] = own_origins(dev_port);
+    crate::gateway::rewrite_location(&mut resp_headers, &[&by_name, &by_number], &address(&app.name, front_port))?;
     let mut response = Response::builder().status(status);
     if let Some(headers_mut) = response.headers_mut() {
         *headers_mut = resp_headers;
@@ -203,22 +204,10 @@ async fn forward(app: &App, dev_port: u16, front_port: u16, req: Request) -> Res
     Ok(response.body(Body::from_stream(upstream.bytes_stream()))?)
 }
 
-/// A dev server that redirects to its own port is redirected back to the name.
-fn rewrite_location(headers: &mut HeaderMap, dev_port: u16, public: &str) -> Result<()> {
-    let Some(location) = headers.get(LOCATION).and_then(|v| v.to_str().ok()).map(str::to_string) else {
-        return Ok(());
-    };
-    for own in [format!("http://localhost:{dev_port}"), format!("http://127.0.0.1:{dev_port}")] {
-        if let Some(rest) = location.strip_prefix(&own) {
-            let rewritten = format!("{public}{rest}");
-            headers.insert(
-                LOCATION,
-                HeaderValue::from_str(&rewritten).context("rewritten location is not a valid header value")?,
-            );
-            break;
-        }
-    }
-    Ok(())
+/// The addresses a dev server on `dev_port` redirects to when it names
+/// itself; a redirect there is sent back to the app's name.
+fn own_origins(dev_port: u16) -> [String; 2] {
+    [format!("http://localhost:{dev_port}"), format!("http://127.0.0.1:{dev_port}")]
 }
 
 /// HMR and the like: accept the browser's upgrade, open the same socket to
@@ -509,6 +498,8 @@ fn shell_open(_file: &[u16]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::header::LOCATION;
+    use axum::http::{HeaderMap, HeaderValue};
     use std::collections::BTreeMap;
 
     fn app(name: &str, dev_port: Option<u16>, gateway_port: Option<u16>) -> App {
@@ -672,13 +663,17 @@ mod tests {
 
     #[test]
     fn a_redirect_to_the_dev_servers_own_port_comes_back_by_name() {
-        let mut headers = HeaderMap::new();
-        headers.insert(LOCATION, HeaderValue::from_static("http://localhost:5100/after?x=1"));
-        rewrite_location(&mut headers, 5100, "http://myapp.localhost").unwrap();
-        assert_eq!(headers.get(LOCATION).unwrap(), "http://myapp.localhost/after?x=1");
-        headers.insert(LOCATION, HeaderValue::from_static("https://elsewhere.example.com/"));
-        rewrite_location(&mut headers, 5100, "http://myapp.localhost").unwrap();
-        assert_eq!(headers.get(LOCATION).unwrap(), "https://elsewhere.example.com/");
+        let [by_name, by_number] = own_origins(5100);
+        let redirected = |location: &'static str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(LOCATION, HeaderValue::from_static(location));
+            crate::gateway::rewrite_location(&mut headers, &[&by_name, &by_number], "http://myapp.localhost").unwrap();
+            headers.get(LOCATION).unwrap().to_str().unwrap().to_string()
+        };
+        assert_eq!(redirected("http://localhost:5100/after?x=1"), "http://myapp.localhost/after?x=1");
+        assert_eq!(redirected("http://127.0.0.1:5100/"), "http://myapp.localhost/");
+        assert_eq!(redirected("http://localhost:51000/x"), "http://localhost:51000/x");
+        assert_eq!(redirected("https://elsewhere.example.com/"), "https://elsewhere.example.com/");
     }
 
     #[test]

@@ -42,9 +42,6 @@ const GRACE: Duration = Duration::from_millis(700);
 /// How long `stop` waits for a job to go before it stops asking.
 const STOP_PATIENCE: Duration = Duration::from_secs(5);
 
-/// How many lines a job that failed at once replays.
-const TAIL_LINES: usize = 40;
-
 /// Sends commands to the background without `--detach`: `all`, or their names.
 pub const PREFER_ENV: &str = "TURNOUT_DETACH";
 
@@ -236,7 +233,7 @@ pub fn detach(spec: Detach<'_>) -> Result<()> {
             let kept = registry::failed_log(log);
             let log = if kept.is_file() { &kept } else { log };
             let mut stderr = std::io::stderr().lock();
-            for line in tail(log, TAIL_LINES)? {
+            for line in tail(log, job::TAIL_LINES)? {
                 let _ = writeln!(stderr, "{line}");
             }
             let _ = writeln!(stderr, "full output: {}", log.display());
@@ -545,15 +542,9 @@ fn reach(entry: &Entry, apps: &[crate::model::App], gateway: Option<&crate::mode
                 let door = gateway.and_then(|gateway| gateway.front_port).map(|front| crate::front::address(app, front));
                 return (Some(port), door.or(seen).or_else(|| Some(format!("http://localhost:{port}"))));
             }
-            (seen.as_deref().and_then(port_of), seen)
+            (seen.as_deref().and_then(crate::utils::url_port), seen)
         }
     }
-}
-
-/// The port an address names, if it names one.
-fn port_of(url: &str) -> Option<u16> {
-    let authority = url.split("://").nth(1)?.split('/').next()?;
-    authority.rsplit_once(':')?.1.parse().ok()
 }
 
 /// The records a name (and a command) points at.
@@ -678,8 +669,8 @@ fn copy_from(path: &Path, position: u64, out: &mut impl Write) -> Result<u64> {
     Ok(position + whole as u64)
 }
 
-/// The last `count` lines of a file.
-fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
+/// The last `count` lines of a file; none when there is no file.
+pub(crate) fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
     let file = match std::fs::File::open(path) {
         Ok(file) => file,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -890,14 +881,6 @@ mod tests {
         // Forced quiet (`TURNOUT_CONSOLE`) still yields to `-v`.
         assert_eq!(placement("build", verbose, Mode::Quiet, &any), Placement::Here);
         assert_eq!(placement("build", Console::default(), Mode::Stream, &any), Placement::Here);
-    }
-
-    #[test]
-    fn the_port_comes_out_of_an_address() {
-        assert_eq!(port_of("http://localhost:5100/"), Some(5100));
-        assert_eq!(port_of("http://127.0.0.1:3000"), Some(3000));
-        assert_eq!(port_of("http://myapp.localhost"), None);
-        assert_eq!(port_of("not a url"), None);
     }
 
     /// The tail keeps the end of the file, no more lines than asked, and

@@ -15,6 +15,13 @@ pub fn project_dir(path: &Path) -> Result<PathBuf> {
     dunce::canonicalize(&path).with_context(|| format!("cannot canonicalize {}", path.display()))
 }
 
+/// The port an address names, if it names one: `http://localhost:5101/`
+/// gives 5101, `http://myapp.localhost` nothing.
+pub fn url_port(url: &str) -> Option<u16> {
+    let authority = url.split("://").nth(1)?.split(['/', '?', '#']).next()?;
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
 /// Days since 1970-01-01 to a calendar date, by Howard Hinnant's `civil_from_days`.
 ///
 /// Written out rather than pulled in: a date crate would be a dependency for
@@ -83,7 +90,17 @@ pub fn stop_inheriting_stdio() {
 
 #[cfg(test)]
 mod tests {
-    use super::civil_from_days;
+    use super::{civil_from_days, url_port};
+
+    #[test]
+    fn the_port_comes_out_of_an_address() {
+        assert_eq!(url_port("http://localhost:5100/"), Some(5100));
+        assert_eq!(url_port("http://127.0.0.1:3000"), Some(3000));
+        assert_eq!(url_port("http://127.0.0.1:3000?ready"), Some(3000));
+        assert_eq!(url_port("http://myapp.localhost"), None);
+        assert_eq!(url_port("http://web.localhost/"), None);
+        assert_eq!(url_port("not a url"), None);
+    }
 
     /// Dates the tooling will actually see, plus the leap-year cases that
     /// catch a wrong civil-date conversion.

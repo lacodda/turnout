@@ -161,31 +161,30 @@ pub fn view() -> Result<StatusView> {
 }
 
 fn gateway() -> Result<GatewayView> {
-    let entry = registry::load(registry::GATEWAY)?;
-    let alive = entry.clone().filter(registry::Entry::is_running).and_then(registry::as_gateway);
-    Ok(match (entry, alive) {
-        (_, Some(gateway)) => {
-            let answering = crate::commands::gateway::probe(&gateway);
-            GatewayView {
-                state: if answering { "running" } else { "not_answering" },
-                pid: Some(gateway.pid),
-                started: Some(iso8601(gateway.started)),
-                front_door: gateway.front_port.filter(|_| answering).map(crate::front::door),
-                signals: if answering {
-                    gateway.signals.iter().map(SignalView::new).collect()
-                } else {
-                    Vec::new()
-                },
-            }
-        }
-        (Some(entry), None) if entry.ended.is_none() => GatewayView {
+    use crate::commands::gateway::GatewayState;
+    Ok(match crate::commands::gateway::state()? {
+        GatewayState::Running(gateway) => GatewayView {
+            state: "running",
+            pid: Some(gateway.pid),
+            started: Some(iso8601(gateway.started)),
+            front_door: gateway.front_port.map(crate::front::door),
+            signals: gateway.signals.iter().map(SignalView::new).collect(),
+        },
+        GatewayState::NotAnswering(gateway) => GatewayView {
+            state: "not_answering",
+            pid: Some(gateway.pid),
+            started: Some(iso8601(gateway.started)),
+            front_door: None,
+            signals: Vec::new(),
+        },
+        GatewayState::Gone(entry) => GatewayView {
             state: "gone",
             pid: Some(entry.pid),
             started: Some(iso8601(entry.started)),
             front_door: None,
             signals: Vec::new(),
         },
-        _ => GatewayView {
+        GatewayState::Stopped => GatewayView {
             state: "stopped",
             pid: None,
             started: None,
