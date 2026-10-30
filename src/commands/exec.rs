@@ -211,13 +211,16 @@ fn clear_dev_port(app: &str, port: u16) -> Result<()> {
 /// What `--open` does once the server answers: open its front door, or say
 /// why there is none to open.
 pub(crate) fn opener(front_door: Option<String>) -> job::OnReady {
-    Box::new(move |_, _| match &front_door {
-        Some(url) => {
-            if let Err(err) = crate::front::open_in_browser(url) {
-                eprintln!("note: cannot open {url}: {err:#}");
+    Box::new(move |_, _| {
+        match &front_door {
+            Some(url) => {
+                if let Err(err) = crate::front::open_in_browser(url) {
+                    eprintln!("note: cannot open {url}: {err:#}");
+                }
             }
+            None => eprintln!("note: --open needs the gateway's front door - start it with `turnout gateway start`"),
         }
-        None => eprintln!("note: --open needs the gateway's front door - start it with `turnout gateway start`"),
+        None
     })
 }
 

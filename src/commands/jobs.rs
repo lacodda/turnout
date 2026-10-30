@@ -13,7 +13,7 @@ use std::io::{BufRead, BufReader, IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
@@ -292,13 +292,11 @@ pub fn supervise(spec: Supervised) -> Result<()> {
     let front_door = registry::gateway()?
         .and_then(|gateway| gateway.front_port)
         .map(|front| crate::front::address(&spec.app, front));
-    // Filled by the ready callback, which runs while the job holds the log.
-    let troubles: Arc<Mutex<Vec<String>>> = Arc::default();
     let was_ready = Arc::new(AtomicBool::new(false));
     let ready = spec.ready.then(|| {
         let open = spec.open.then(|| crate::commands::exec::opener(front_door.clone()));
         let (app, command, dir, log) = (spec.app.clone(), spec.command.clone(), spec.dir.clone(), log.clone());
-        let (troubles, was_ready) = (Arc::clone(&troubles), Arc::clone(&was_ready));
+        let was_ready = Arc::clone(&was_ready);
         let on_ready: job::OnReady = Box::new(move |address, elapsed| {
             was_ready.store(true, Ordering::SeqCst);
             if let Some(open) = open {
@@ -308,12 +306,9 @@ pub fn supervise(spec: Supervised) -> Result<()> {
                 log: log.as_deref(),
                 dir: &dir,
             };
-            if let Err(err) = notify::show(&notify::ready(&app, &command, address.as_deref(), elapsed, &places)) {
-                troubles
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .push(format!("cannot show the notification: {err:#}"));
-            }
+            notify::show(&notify::ready(&app, &command, address.as_deref(), elapsed, &places))
+                .err()
+                .map(|err| format!("cannot show the notification: {err:#}"))
         });
         job::Ready {
             app: &spec.app,
@@ -330,9 +325,6 @@ pub fn supervise(spec: Supervised) -> Result<()> {
         Program::Shell(&line)
     };
     let result = job::run(program, &spec.dir, &[], Mode::Log, &spec.label, &mut job, ready);
-    for trouble in troubles.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).drain(..) {
-        job.note(&trouble);
-    }
     let (toast, code) = match result {
         Ok(outcome) => {
             let places = notify::Places {
@@ -347,18 +339,17 @@ pub fn supervise(spec: Supervised) -> Result<()> {
             };
             (toast, outcome.status.code().unwrap_or(1))
         }
-        // The job never ran: the reason is turnout's own, and it goes where
-        // the job's output would have been.
+        // The job never ran: the reason is turnout's own, and `run` has put
+        // it where the job's output would have been.
         Err(err) => {
-            job.note(&format!("{err:#}"));
-            let kept = job.keep();
             let places = notify::Places {
-                log: kept.as_deref().or(log.as_deref()),
+                log: job.kept().or(log.as_deref()),
                 dir: &spec.dir,
             };
             (notify::failed(&spec.app, &spec.command, "did not start", Some(&format!("{err:#}")), &places), 1)
         }
     };
+    // After the end, by nature: this notification is about the end.
     if let Err(err) = notify::show(&toast) {
         job.note(&format!("cannot show the notification: {err:#}"));
     }

@@ -124,6 +124,8 @@ pub struct Job {
     key: String,
     log_path: PathBuf,
     file: Option<std::fs::File>,
+    /// Where [`Job::keep`] put the copy of a failed run's log.
+    kept: Option<PathBuf>,
 }
 
 impl Job {
@@ -150,7 +152,12 @@ impl Job {
             command: command.to_string(),
         };
         registry::save(&Entry::own(work, detached, file.as_ref().map(|_| log_path.clone())))?;
-        Ok(Self { key, log_path, file })
+        Ok(Self {
+            key,
+            log_path,
+            file,
+            kept: None,
+        })
     }
 
     /// Where the log lives, for the note under a failure.
@@ -167,11 +174,16 @@ impl Job {
         self.write_line(&format!("turnout: {line}"));
     }
 
+    /// Where the copy of this run's log was kept, when the run failed.
+    pub fn kept(&self) -> Option<&Path> {
+        self.kept.as_deref()
+    }
+
     /// Keep a copy of the log aside, as the output of a failure; returns where.
     ///
     /// A copy rather than a move: `logs -f` may be reading the log this very
     /// moment, and it must reach the end of it rather than a missing file.
-    pub fn keep(&mut self) -> Option<PathBuf> {
+    fn keep(&mut self) -> Option<PathBuf> {
         self.file.as_ref()?;
         let kept = registry::failed_log(&self.log_path);
         let copied = kept
@@ -179,7 +191,10 @@ impl Job {
             .map_or(Ok(()), std::fs::create_dir_all)
             .and_then(|()| std::fs::copy(&self.log_path, &kept));
         match copied {
-            Ok(_) => Some(kept),
+            Ok(_) => {
+                self.kept = Some(kept.clone());
+                Some(kept)
+            }
             Err(err) => {
                 self.note(&format!("cannot keep a copy of this log in {}: {err}", kept.display()));
                 None
@@ -206,14 +221,29 @@ impl Job {
         let _ = registry::update_own(&self.key, |entry| entry.ready = Some(registry::Ready { at: registry::now(), url }));
     }
 
-    fn finish(&self, code: Option<i32>) {
-        self.end(code, false);
+    /// The run is over: say why when turnout knows better than the output
+    /// (`reason`), keep the log of a failure, and only then write the end
+    /// into the record; returns where the log was kept.
+    ///
+    /// In this order and no other. `--detach` prints the kept copy the moment
+    /// it sees the record end, and the record used to end first: a failure
+    /// right after another one could print the previous failure's output, and
+    /// a job that never ran had its reason written after the end was read.
+    /// `never_ran` says the program could not be started at all, rather than
+    /// that it ran and was killed.
+    fn close(&mut self, reason: Option<&str>, failed: bool, code: Option<i32>, never_ran: bool) -> Option<PathBuf> {
+        self.close_with(reason, failed, |job| job.end(code, never_ran))
     }
 
-    /// The program could not be started: the record says so, rather than
-    /// claiming a run that never happened or a process that was killed.
-    fn never_ran(&self) {
-        self.end(None, true);
+    /// [`Job::close`], with what ends the record passed in - for the test that
+    /// looks at the kept copy at that very moment.
+    fn close_with(&mut self, reason: Option<&str>, failed: bool, end: impl FnOnce(&Self)) -> Option<PathBuf> {
+        if let Some(reason) = reason {
+            self.note(reason);
+        }
+        let kept = if failed { self.keep() } else { None };
+        end(self);
+        kept
     }
 
     fn end(&self, code: Option<i32>, never_ran: bool) {
@@ -313,6 +343,10 @@ impl Outcome {
 /// `label` names the job for the spinner ("Building myapp"); `ready` is the
 /// detector a [`Mode::UntilReady`] job uses to decide the server is up, and
 /// what to print when it is.
+///
+/// However it returns, the job's record has ended, and an error's reason is
+/// in the log and its kept copy - written before the end, as [`Job::close`]
+/// explains.
 pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode, label: &str, job: &mut Job, mut ready: Option<Ready<'_>>) -> Result<Outcome> {
     let command_line = program.describe();
     let spawned = program.command().and_then(|mut command| {
@@ -328,7 +362,7 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
         Err(err) => {
             // The record must not go on claiming a run that never started,
             // nor read as one that was killed.
-            job.never_ran();
+            job.close(Some(&format!("{err:#}")), true, None, true);
             return Err(err);
         }
     };
@@ -378,8 +412,10 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
                     if let Some(step) = step.take() {
                         step.done(detector.settled(address, started.elapsed()));
                     }
-                    if let Some(on_ready) = detector.on_ready.take() {
-                        on_ready(reached, started.elapsed());
+                    if let Some(on_ready) = detector.on_ready.take()
+                        && let Some(trouble) = on_ready(reached, started.elapsed())
+                    {
+                        job.note(&trouble);
                     }
                 }
                 if streaming {
@@ -428,18 +464,21 @@ pub fn run(program: Program<'_>, dir: &Path, env: &[(&str, String)], mode: Mode,
     crate::term::child_end();
     let _ = out_thread.join();
     let _ = err_thread.join();
-    let status = status.with_context(|| format!("cannot run '{command_line}'"))?;
+    let status = match status.with_context(|| format!("cannot run '{command_line}'")) {
+        Ok(status) => status,
+        Err(err) => {
+            job.close(Some(&format!("{err:#}")), true, None, false);
+            return Err(err);
+        }
+    };
     let elapsed = started.elapsed();
-    job.finish(status.code());
     let mut outcome = Outcome {
         status,
         elapsed,
         tail,
         kept: None,
     };
-    if outcome.failed() {
-        outcome.kept = job.keep();
-    }
+    outcome.kept = job.close(None, outcome.failed(), status.code(), false);
 
     match step {
         Some(step) if status.success() => step.done(format!("{label} finished in {}", human_duration(elapsed))),
@@ -537,8 +576,10 @@ fn spawn_reader(pipe: impl Read + Send + 'static, sender: Sender<Line>, is_err: 
 }
 
 /// What runs once a server is up: given its address, when one is known, and
-/// how long it took to come up.
-pub type OnReady = Box<dyn FnOnce(Option<String>, Duration) + Send>;
+/// how long it took to come up. Returns what went wrong on the way - a
+/// notification that could not be shown, say - which goes into the job's log
+/// at once, while the job runs and before its record ends.
+pub type OnReady = Box<dyn FnOnce(Option<String>, Duration) -> Option<String> + Send>;
 
 /// The detector that decides a dev server is up, and says so.
 pub struct Ready<'a> {
@@ -763,6 +804,50 @@ mod tests {
         );
         // Nothing known anywhere: say so rather than invent an address.
         assert_eq!(detector(None, None).settled(None, at), "myapp ready in 0.8s");
+    }
+
+    /// A job with a log of its own in a scratch directory, as `claim` opens
+    /// one - without a record, which the tests below do not need.
+    fn scratch_job(dir: &Path) -> Job {
+        let log_path = dir.join("myapp.build.log");
+        let file = std::fs::File::create(&log_path).unwrap();
+        Job {
+            key: "myapp.build".to_string(),
+            log_path,
+            file: Some(file),
+            kept: None,
+        }
+    }
+
+    /// By the time the record says a run ended, the kept copy of a failure
+    /// is this run's, reason included: `--detach` prints it the moment it
+    /// sees the end, and could print the previous failure's output.
+    #[test]
+    fn a_failure_is_kept_before_the_record_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("failed")).unwrap();
+        std::fs::write(dir.path().join("failed").join("myapp.build.log"), "the previous failure\n").unwrap();
+        let mut job = scratch_job(dir.path());
+        job.write_line("error: this failure");
+        let mut at_the_end = None;
+        let kept = job.close_with(Some("cannot run 'build'"), true, |job| {
+            at_the_end = Some(std::fs::read_to_string(registry::failed_log(&job.log_path)).unwrap());
+        });
+        let at_the_end = at_the_end.unwrap();
+        assert!(at_the_end.contains("error: this failure"), "{at_the_end}");
+        assert!(
+            at_the_end.contains("turnout: cannot run 'build'"),
+            "the reason came after the end: {at_the_end}"
+        );
+        assert!(!at_the_end.contains("the previous failure"), "{at_the_end}");
+        assert!(kept.is_some());
+        assert_eq!(kept.as_deref(), job.kept());
+
+        // A run that did not fail keeps nothing.
+        let other = tempfile::tempdir().unwrap();
+        let mut job = scratch_job(other.path());
+        assert_eq!(job.close_with(None, false, |_| {}), None);
+        assert_eq!(job.kept(), None);
     }
 
     /// Verbose and a pipe both mean "stream"; the wanted mode only survives on
