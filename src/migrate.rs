@@ -55,6 +55,10 @@ use anyhow::{Context, Result, bail};
 /// gone (ADR 0013).
 pub const CURRENT_VERSION: u32 = 7;
 
+/// The oldest schema a migration reads. Schema 1 is refused instead
+/// ([`refuse_schema_1`]), and `setup` is the way out of it.
+pub const FIRST_MIGRATABLE: u32 = 2;
+
 /// One step from `from` to `from + 1`.
 ///
 /// Steps are deliberately single-version hops: a directory two versions behind

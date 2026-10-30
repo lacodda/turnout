@@ -12,6 +12,9 @@ pub fn run(assume_yes: bool) -> Result<()> {
         return reset(assume_yes);
     }
     if store::is_initialized()? {
+        // An older schema migrates here, the way it would on any command:
+        // what `setup` must never do is take it for one to start over from.
+        store::bring_up_to_date()?;
         println!("turnout is already set up.");
         println!("Data directory: {}", dir.display());
         println!("Run `turnout status` for an overview.");

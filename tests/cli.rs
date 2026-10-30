@@ -85,6 +85,58 @@ fn setup_clears_the_way_out_of_a_refused_data_directory() {
         .stdout(predicate::str::contains("servers      pi"));
 }
 
+/// Every schema after 1 migrates by itself, and `setup` - which the getting
+/// started page tells everyone to run - must migrate it too, not take it for
+/// one to start over from. Until v0.27 `setup --yes` on a v0.20 directory
+/// moved every catalog aside and left an empty one.
+#[test]
+fn setup_migrates_an_older_directory_instead_of_retiring_it() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("meta.json"), r#"{"schema_version": 5}"#).unwrap();
+    std::fs::write(
+        dir.path().join("servers.json"),
+        r#"[{"name":"staging","url":"https://staging.example.com","port":22,"accept_invalid_certs":false}]"#,
+    )
+    .unwrap();
+
+    turnout(dir.path())
+        .args(["setup", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("already set up").and(predicate::str::contains("older turnout").not()));
+    let entries: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        !entries.iter().any(|name| name.starts_with("settings-backup")),
+        "nothing was retired: {entries:?}"
+    );
+    let meta = std::fs::read_to_string(dir.path().join("meta.json")).unwrap();
+    assert!(meta.contains("\"schema_version\": 7"), "{meta}");
+    turnout(dir.path())
+        .args(["server", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("staging"));
+}
+
+/// A marker that cannot be read says so - it is not taken for schema 1,
+/// which would point at the v0.9 walkthrough and offer to retire the catalog.
+#[test]
+fn an_unreadable_settings_marker_is_named_not_guessed() {
+    let dir = tempfile::tempdir().unwrap();
+    turnout(dir.path()).args(["setup", "--yes"]).assert().success();
+    std::fs::write(dir.path().join("meta.json"), "").unwrap();
+    turnout(dir.path())
+        .arg("status")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not say which schema").and(predicate::str::contains("0.8").not()));
+    turnout(dir.path()).args(["setup", "--yes"]).assert().failure();
+    assert!(!dir.path().join("settings-backup-v1").exists());
+}
+
 /// Declining leaves everything exactly as it was - a user who ran `setup` to
 /// see what it says must not lose their catalogs to that.
 #[test]

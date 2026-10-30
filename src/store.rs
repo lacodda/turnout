@@ -26,15 +26,31 @@ pub struct Meta {
 
 /// The schema recorded in `meta.json`.
 ///
-/// A directory from before the marker existed, or one whose marker is
-/// unreadable, is treated as version 1 - that is the only shape that could
-/// have produced it.
-fn stored_version(dir: &Path) -> u32 {
-    std::fs::read_to_string(dir.join(META_FILE))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Meta>(&text).ok())
-        .map(|meta| meta.schema_version)
-        .unwrap_or(1)
+/// A marker that cannot be read is an error, not a guess: read as schema 1
+/// it would send every command to the v0.9 walkthrough, and `setup` would
+/// offer to retire a catalog that is perfectly readable.
+fn stored_version(dir: &Path) -> Result<u32> {
+    let path = dir.join(META_FILE);
+    let text = fs::read_to_string(&path).with_context(|| format!("cannot read {}", path.display()))?;
+    serde_json::from_str::<Meta>(&text).map(|meta| meta.schema_version).with_context(|| {
+        format!(
+            "{} does not say which schema these settings are in - if the catalogs beside it are from this turnout, \
+             write {{\"schema_version\": {SCHEMA_VERSION}}} into it",
+            path.display()
+        )
+    })
+}
+
+/// Write the marker for the current schema the way catalogs are written:
+/// beside, then renamed into place, so a crash leaves the old marker or the
+/// new one and never an empty file.
+fn write_meta(dir: &Path) -> Result<()> {
+    let json = serde_json::to_string_pretty(&Meta {
+        schema_version: SCHEMA_VERSION,
+    })?;
+    let tmp = dir.join(format!("{META_FILE}.tmp"));
+    fs::write(&tmp, json).with_context(|| format!("cannot write {}", tmp.display()))?;
+    fs::rename(&tmp, dir.join(META_FILE)).context("cannot write meta.json")
 }
 
 /// Migrate the data directory if it predates this build, then record the new
@@ -43,15 +59,12 @@ fn stored_version(dir: &Path) -> u32 {
 /// Runs before the first read of any catalog, so no command ever parses files
 /// in a shape it does not understand.
 fn ensure_current_schema(dir: &Path) -> Result<()> {
-    let from = stored_version(dir);
+    let from = stored_version(dir)?;
     if from == SCHEMA_VERSION {
         return Ok(());
     }
     crate::migrate::run(dir, from)?;
-    let json = serde_json::to_string_pretty(&Meta {
-        schema_version: SCHEMA_VERSION,
-    })?;
-    fs::write(dir.join(META_FILE), json).context("cannot update meta.json after migrating")
+    write_meta(dir).context("cannot update meta.json after migrating")
 }
 
 fn meta_path() -> Result<PathBuf> {
@@ -62,21 +75,30 @@ pub fn is_initialized() -> Result<bool> {
     Ok(meta_path()?.exists())
 }
 
-/// Whether the data directory exists but holds a schema this build refuses.
+/// Whether the data directory exists but holds a schema no migration reads.
 ///
 /// Only [`crate::commands::setup`] asks: every other command funnels through
 /// [`require_initialized`] and gets the refusal with its instructions. Setup is
 /// what those instructions point at, so it has to see the state rather than
 /// trip over it.
+///
+/// Only schema 1 qualifies. Every later one migrates by itself on the next
+/// command - until v0.27 this asked "older than this build?", and `setup`
+/// offered to retire a catalog from v0.20 that needed nothing but a migration.
+/// A *newer* directory does not qualify either: the fix there is to update
+/// turnout, and starting fresh would discard settings that are fine.
 pub fn needs_reset() -> Result<bool> {
     let dir = paths::data_dir()?;
     if !dir.join(META_FILE).exists() {
         return Ok(false);
     }
-    let stored = stored_version(&dir);
-    // A *newer* directory is not something to reset over: the fix there is to
-    // update turnout, and starting fresh would discard settings that are fine.
-    Ok(stored < SCHEMA_VERSION)
+    Ok(stored_version(&dir)? < crate::migrate::FIRST_MIGRATABLE)
+}
+
+/// Bring an initialized data directory up to this build's schema now, rather
+/// than on the next command that reads it.
+pub fn bring_up_to_date() -> Result<()> {
+    require_initialized().map(|_| ())
 }
 
 /// Move the unreadable catalogs aside and start a catalog at the current schema.
@@ -85,23 +107,16 @@ pub fn needs_reset() -> Result<bool> {
 /// only record of what the user is about to re-enter.
 pub fn reset_to_current_schema() -> Result<PathBuf> {
     let dir = paths::data_dir()?;
-    let from = stored_version(&dir);
+    let from = stored_version(&dir)?;
     let aside = crate::migrate::retire_catalogs(&dir, from)?;
-    let json = serde_json::to_string_pretty(&Meta {
-        schema_version: SCHEMA_VERSION,
-    })?;
-    fs::write(dir.join(META_FILE), json).context("cannot write meta.json")?;
+    write_meta(&dir)?;
     Ok(aside)
 }
 
 pub fn initialize() -> Result<PathBuf> {
     let dir = paths::data_dir()?;
     fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    let meta = Meta {
-        schema_version: SCHEMA_VERSION,
-    };
-    let json = serde_json::to_string_pretty(&meta)?;
-    fs::write(meta_path()?, json).context("cannot write meta.json")?;
+    write_meta(&dir)?;
     Ok(dir)
 }
 
