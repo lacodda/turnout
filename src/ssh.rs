@@ -159,16 +159,39 @@ impl Session {
     /// upload into the missing directory.
     pub fn mkdir(&self, remote: &str) -> Result<()> {
         let sftp = self.sftp()?;
+        self.runtime.block_on(mkdir(sftp, remote))
+    }
+
+    /// [`Session::mkdir`] for `remote` and every parent it is missing, the
+    /// way `mkdir -p` does - which SFTP has no word for.
+    ///
+    /// The paths are split on both separators: a Windows server's are
+    /// written with `\`. A drive (`C:`) and the root are never created.
+    pub fn mkdir_all(&self, remote: &str) -> Result<()> {
+        let sftp = self.sftp()?;
+        let remote = remote.trim_end_matches(['/', '\\']);
+        let parents = remote.match_indices(['/', '\\']).map(|(at, _)| &remote[..at]);
         self.runtime.block_on(async {
-            if let Err(err) = sftp.create_dir(remote).await {
-                match sftp.metadata(remote).await {
-                    Ok(existing) if existing.is_dir() => {}
-                    _ => return Err(err).with_context(|| format!("cannot create the directory {remote} on the server")),
+            for dir in parents.chain(std::iter::once(remote)) {
+                if dir.is_empty() || dir.ends_with(':') {
+                    continue;
                 }
+                mkdir(sftp, dir).await?;
             }
             Ok(())
         })
     }
+}
+
+/// Create one remote directory, tolerating only "already exists".
+async fn mkdir(sftp: &SftpSession, remote: &str) -> Result<()> {
+    if let Err(err) = sftp.create_dir(remote).await {
+        match sftp.metadata(remote).await {
+            Ok(existing) if existing.is_dir() => {}
+            _ => return Err(err).with_context(|| format!("cannot create the directory {remote} on the server")),
+        }
+    }
+    Ok(())
 }
 
 /// A credential resolved to what the wire can use: the key loaded, the
@@ -1244,6 +1267,22 @@ pub(crate) mod tests {
         std::fs::write(stand.root.path().join("taken"), b"x").expect("plant a file in the way");
         let error = session.mkdir("/taken").expect_err("a file in the way is a refusal").to_string();
         assert!(error.contains("cannot create the directory /taken"), "{error}");
+    }
+
+    /// Every missing parent is made, and what exists is passed over; a file
+    /// in the way is still a refusal.
+    #[test]
+    fn mkdir_all_makes_the_parents_a_directory_is_missing() {
+        let stand = Stand::spawn();
+        let session = stand.session();
+        session.mkdir_all("/srv/deep/er/").expect("create the whole chain");
+        assert!(stand.root.path().join("srv").join("deep").join("er").is_dir());
+        session.mkdir_all("/srv/deep/er/still").expect("an existing chain is not an error");
+        assert!(stand.root.path().join("srv").join("deep").join("er").join("still").is_dir());
+
+        std::fs::write(stand.root.path().join("srv").join("taken"), b"x").unwrap();
+        let error = session.mkdir_all("/srv/taken/below").expect_err("a file in the way").to_string();
+        assert!(error.contains("cannot create the directory /srv/taken"), "{error}");
     }
 
     #[test]

@@ -983,24 +983,41 @@ fn no_tar_note(dialect: Dialect) -> String {
     }
 }
 
+/// A build's file - its path relative and written with `/` - under the deploy
+/// directory, in the separator the deploy directory is written with.
+///
+/// Up to v0.26 only a trailing `/` was trimmed and every join used `/`, so a
+/// Windows deploy directory written `C:\site\` became `C:\site\/assets`.
+fn remote_path(root: &str, relative: &str) -> String {
+    let root = root.trim_end_matches(['/', '\\']);
+    if root.contains('\\') && !root.contains('/') {
+        format!("{root}\\{}", relative.replace('/', "\\"))
+    } else {
+        format!("{root}/{relative}")
+    }
+}
+
 /// SFTP upload of a planned tree; remote directories are created as needed.
 fn upload(session: &Session, remote_root: &str, plan: &Plan, reached: &mut Reached) -> Result<u64> {
-    let remote_root = remote_root.trim_end_matches('/');
-    // Parents before children (the plan is sorted that way), so no directory is
-    // created before the one it sits in.
-    session.mkdir(remote_root)?;
+    let remote_root = remote_root.trim_end_matches(['/', '\\']);
+    // The deploy directory with its parents: a first deploy may be the first
+    // thing ever written under them. Up to v0.26 only the directory itself
+    // was made, and a missing parent failed the deploy.
+    session.mkdir_all(remote_root)?;
     // From here on every step writes into what the stand serves, and a
     // connection that drops after half the files leaves half of them.
     *reached = Reached::Writing;
+    // Parents before children (the plan is sorted that way), so no directory is
+    // created before the one it sits in.
     for dir in &plan.dirs {
-        session.mkdir(&format!("{remote_root}/{dir}"))?;
+        session.mkdir(&remote_path(remote_root, dir))?;
     }
 
     let transfer = Transfer::start(plan.files, plan.bytes);
     let mut files = 0;
     let mut bytes = 0;
     for entry in &plan.entries {
-        let remote = format!("{remote_root}/{}", entry.relative);
+        let remote = remote_path(remote_root, &entry.relative);
         let copied = session
             .upload(&entry.path, &remote, |chunk| transfer.advance(chunk))
             .with_context(|| format!("cannot upload {}", entry.path.display()))?;
@@ -1355,6 +1372,34 @@ mod tests {
         };
         deploy_over_ssh(&target, &Shipment::of(&build), &options, &mut Report::default(), &connect).expect("clearing nothing is not a failure");
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+    }
+
+    /// A file of the build lands under the deploy directory in that
+    /// directory's own separator, whichever one it ends in.
+    #[test]
+    fn a_remote_path_follows_the_separator_of_the_deploy_directory() {
+        assert_eq!(remote_path("C:\\site\\", "assets/app.js"), "C:\\site\\assets\\app.js");
+        assert_eq!(remote_path("C:\\site", "index.html"), "C:\\site\\index.html");
+        assert_eq!(remote_path("/srv/site/", "assets/app.js"), "/srv/site/assets/app.js");
+        assert_eq!(remote_path("C:/site", "assets/app.js"), "C:/site/assets/app.js");
+    }
+
+    /// File by file into a directory whose parents are not there yet: they
+    /// are made, as the archive route's `mkdir -p` makes them.
+    #[test]
+    fn a_file_by_file_deploy_makes_the_missing_parents() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("never").join("made").join("site");
+        let target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1"), ("assets/app.js", "one")]);
+        let options = Options {
+            no_archive: true,
+            ..Options::default()
+        };
+        deploy_over_ssh(&target, &Shipment::of(&build), &options, &mut Report::default(), &connect).expect("the parents are made");
+        assert_eq!(std::fs::read_to_string(site.join("assets").join("app.js")).unwrap(), "one");
     }
 
     /// A deploy that fails before its first write left the stand as it was,
