@@ -3622,8 +3622,12 @@ fn stdout_of(dir: &std::path::Path, args: &[&str]) -> String {
 fn a_detached_job_outlives_turnout_and_stops_with_its_tree() {
     let (dir, project) = workspace();
     // Writes the marker only if it is still alive after the pause: a stop that
-    // killed the shell and left its children would let it through.
-    let serve = format!("echo started-line && {} && echo late> marker.txt", pause_for(4));
+    // killed the shell and left its children would let it through. The job has
+    // to outlive the six commands below that expect it running; 4 seconds did
+    // not, once the suite grew loaded enough that each turnout took most of one,
+    // and the second `run -d` found the job over and started again.
+    const PAUSE: u64 = 15;
+    let serve = format!("echo started-line && {} && echo late> marker.txt", pause_for(PAUSE as u32));
     turnout(dir.path())
         .args(["app", "add", "myapp", "--path"])
         .arg(&project)
@@ -3636,6 +3640,9 @@ fn a_detached_job_outlives_turnout_and_stops_with_its_tree() {
         .assert()
         .success()
         .stdout(predicate::str::contains("myapp serve runs in the background").and(predicate::str::contains("turnout stop myapp serve")));
+    // The job has started by the time `run -d` returns, so its pause ends
+    // no later than this plus the pause.
+    let launched = std::time::Instant::now();
     let ps = stdout_of(dir.path(), &["ps"]);
     assert!(predicate::str::is_match(r"myapp serve\s+running \(bg\)").unwrap().eval(&ps), "{ps}");
     eventually(10, "the job's first line in its log", || {
@@ -3667,7 +3674,8 @@ fn a_detached_job_outlives_turnout_and_stops_with_its_tree() {
         .success()
         .stdout(predicate::str::contains("Nothing of myapp is running"));
     // Past the pause: nothing of the tree survived to write the marker.
-    std::thread::sleep(std::time::Duration::from_secs(6));
+    let past_the_pause = launched + std::time::Duration::from_secs(PAUSE + 2);
+    std::thread::sleep(past_the_pause.saturating_duration_since(std::time::Instant::now()));
     assert!(!project.join("marker.txt").exists(), "a child of the stopped job lived on");
 }
 
