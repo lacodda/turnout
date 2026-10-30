@@ -2637,6 +2637,33 @@ fn missing_names_still_fail_without_a_terminal() {
     }
 }
 
+/// One credential or one path is no answer to a missing name in a script.
+/// Both pickers used to hand back the only entry without a terminal, so
+/// `turnout credential remove -y "$NAME"` with `$NAME` empty removed the only
+/// credential, its secret and every target that used it.
+#[test]
+fn the_only_credential_or_path_is_not_taken_without_a_terminal() {
+    let (dir, project) = workspace();
+    a_full_target(dir.path(), &project, &[]);
+    for args in [
+        vec!["credential", "remove", "--yes"],
+        vec!["path", "remove", "--yes"],
+        vec!["pass", "remove", "--yes"],
+        vec!["credential", "show"],
+    ] {
+        turnout(dir.path())
+            .args(&args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("name is required: no terminal to prompt on"));
+    }
+    turnout(dir.path())
+        .args(["target", "show", "myapp-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("deploy").and(predicate::str::contains("wwwroot")));
+}
+
 /// Confirmations are prompts too: unattended they must name `--yes` rather than
 /// failing with dialoguer's bare "not a terminal", and must remove nothing.
 #[test]

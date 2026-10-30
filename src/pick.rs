@@ -159,11 +159,14 @@ pub fn credential(credentials: &[Credential], prompt: &str) -> Result<String> {
     if credentials.is_empty() {
         bail!("no credentials yet - run `turnout credential add` first");
     }
-    // A single entry needs no picking, so it resolves without a terminal too.
+    ensure_interactive("credential name is required")?;
+    // A single entry needs no picking on a terminal, where the confirmation
+    // that follows a destructive command still names it. Without one it used
+    // to resolve too, so `credential remove -y "$NAME"` with an empty `$NAME`
+    // removed the only credential, its secret and every target using it.
     if let [only] = credentials {
         return Ok(only.name.clone());
     }
-    ensure_interactive("credential name is required")?;
     let width = credentials.iter().map(|c| c.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = credentials.iter().map(|c| format!("{:width$}  {}@  {}", c.name, c.user, c.auth)).collect();
     Ok(credentials[select(prompt, &labels)?].name.clone())
@@ -189,10 +192,12 @@ pub fn path(paths: &[crate::model::Path], prompt: &str) -> Result<String> {
     if paths.is_empty() {
         bail!("no paths yet - run `turnout path add` first");
     }
+    // A terminal first, as for a credential: an empty name in a script is a
+    // missing name, not a choice of the only path there is.
+    ensure_interactive("path name is required")?;
     if let [only] = paths {
         return Ok(only.name.clone());
     }
-    ensure_interactive("path name is required")?;
     let width = paths.iter().map(|p| p.name.len()).max().unwrap_or(0);
     let labels: Vec<String> = paths.iter().map(|p| format!("{:width$}  {}", p.name, p.dir)).collect();
     Ok(paths[select(prompt, &labels)?].name.clone())
