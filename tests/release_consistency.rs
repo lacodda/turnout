@@ -75,10 +75,15 @@ mod tests {
         // published as `kasl-cli`, so the advice in the error message failed.
         let crate_name = cargo_field("name");
 
+        // Counted, so the check cannot pass by finding nothing to check: a
+        // reworded fallback (`cargo  install`, a variable) would otherwise
+        // turn this test into one that asserts over an empty set.
+        let mut suggestions = 0;
         for file in ["tools/install.sh", "tools/install.ps1"] {
             let text = read(file);
             for (line_no, line) in text.lines().enumerate() {
                 let Some(at) = line.find("cargo install ") else { continue };
+                suggestions += 1;
                 // Trim shell quoting around the suggestion, e.g. `... turnout" >&2`.
                 let named = line[at + "cargo install ".len()..]
                     .split_whitespace()
@@ -93,6 +98,10 @@ mod tests {
                 );
             }
         }
+        assert!(
+            suggestions > 0,
+            "no installer suggests `cargo install {crate_name}` any more - the fallback for a platform without a prebuilt binary is gone, or this check no longer recognises it"
+        );
     }
 
     /// The `tn` alias must be a link, never a second copy of the binary.
@@ -264,15 +273,24 @@ mod tests {
     /// Checked here rather than by eye: the doc sweep at the end of a stage is
     /// the step most likely to be rushed, and this is the one line in the README
     /// that is wrong by default.
+    ///
+    /// Any major, not `turnout 0.` alone: matched that way, a stale
+    /// `turnout 1.0.0` after the next release would pass, and so would a
+    /// README whose sample had been deleted - an empty set has nothing stale.
     #[test]
     fn the_readme_sample_shows_the_current_version() {
         let readme = read("README.md");
         let version = cargo_field("version");
-        let stale: Vec<&str> = readme
+        let samples: Vec<&str> = readme
             .lines()
             .map(str::trim)
-            .filter(|line| line.starts_with("turnout 0.") && !line.contains(&version))
+            .filter(|line| line.strip_prefix("turnout ").is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit())))
             .collect();
+        assert!(
+            !samples.is_empty(),
+            "the README has no `turnout <version>` line in its status sample - this check guards nothing"
+        );
+        let stale: Vec<&str> = samples.into_iter().filter(|line| !line.contains(&version)).collect();
         assert!(
             stale.is_empty(),
             "the README shows an old version in a sample: {stale:?} (this release is {version})"
