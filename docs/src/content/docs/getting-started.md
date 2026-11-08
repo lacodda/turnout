@@ -39,12 +39,16 @@ Or download the archive for your platform from [Releases](https://github.com/lac
 
 ### Installer options
 
-Both scripts read two environment variables:
+Both scripts read these environment variables:
 
 | Variable | Effect |
 | --- | --- |
 | `TURNOUT_VERSION` | Install this tag (e.g. `v0.27.0`) instead of the newest release |
 | `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
+| `TURNOUT_NO_PATH` | Leave the `PATH` alone: for an install into a scratch directory that should not end up on it |
+| `TURNOUT_NO_ALIAS` | Do not make the `tn` alias |
+
+An update over a turnout that is running - a gateway, a dev server - goes through: the running binary steps aside and keeps working, and the next start is the new one.
 
 ### The `tn` alias
 

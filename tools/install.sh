@@ -36,7 +36,7 @@ fi
 case "$TAG" in
     v[0-9]*) ;;
     *)
-        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a tag like v0.27.0" >&2
+        echo "Cannot resolve the latest release of $REPO - set TURNOUT_VERSION to a release tag (vX.Y.Z)" >&2
         exit 1
         ;;
 esac
@@ -51,16 +51,21 @@ curl -fsSL "$URL" | tar xz -C "$TMP"
 
 BIN_DIR="${TURNOUT_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$BIN_DIR"
-install -m 755 "$TMP/$NAME/turnout" "$BIN_DIR/turnout"
+# Written beside the old binary and renamed over it: a turnout that is running
+# - a gateway, a dev server - keeps the file it started from, and the next
+# start gets the new one. Writing into the running file would fail instead.
+install -m 755 "$TMP/$NAME/turnout" "$BIN_DIR/.turnout.new.$$"
+mv -f "$BIN_DIR/.turnout.new.$$" "$BIN_DIR/turnout"
 echo "Installed turnout $TAG to $BIN_DIR/turnout"
 
 # Short alias `tn` as a symlink, never a copy: a copy doubles the install for
 # no new code and goes stale the moment self-update replaces the binary.
 # Skipped when something else in PATH already answers to that name (ours from a
-# previous run does not count). TURNOUT_NO_ALIAS=1 skips it.
+# previous run does not count) - unless the PATH is left alone, when this
+# directory is not on it and competes with nothing. TURNOUT_NO_ALIAS=1 skips it.
 if [ -z "${TURNOUT_NO_ALIAS:-}" ]; then
     EXISTING=$(command -v tn 2>/dev/null || true)
-    if [ -z "$EXISTING" ] || [ "$EXISTING" = "$BIN_DIR/tn" ]; then
+    if [ -n "${TURNOUT_NO_PATH:-}" ] || [ -z "$EXISTING" ] || [ "$EXISTING" = "$BIN_DIR/tn" ]; then
         ln -sf turnout "$BIN_DIR/tn"
         echo "Alias tn -> turnout"
     else
@@ -71,7 +76,11 @@ fi
 # Binaries left behind by updates that ran before the alias became a link.
 rm -f "$BIN_DIR/turnout.old" "$BIN_DIR/tn.old"
 
-case ":$PATH:" in
-    *":$BIN_DIR:"*) ;;
-    *) echo "Note: add $BIN_DIR to your PATH." ;;
-esac
+# TURNOUT_NO_PATH: an install into a scratch directory - the release check
+# that proves the installer works - has no PATH to talk about.
+if [ -z "${TURNOUT_NO_PATH:-}" ]; then
+    case ":$PATH:" in
+        *":$BIN_DIR:"*) ;;
+        *) echo "Note: add $BIN_DIR to your PATH." ;;
+    esac
+fi

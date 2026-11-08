@@ -22,7 +22,7 @@ if (-not $tag) {
     }
 }
 if (-not $tag -or $tag -notmatch '^v\d') {
-    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a tag like v0.27.0"
+    throw "Cannot resolve the latest release of $repo - set `$env:TURNOUT_VERSION to a release tag (vX.Y.Z)"
 }
 
 $name = "turnout-$tag-x86_64-pc-windows-msvc"
@@ -31,16 +31,40 @@ $dir = if ($env:TURNOUT_INSTALL_DIR) { $env:TURNOUT_INSTALL_DIR } else { Join-Pa
 $tmp = Join-Path ([IO.Path]::GetTempPath()) "turnout-install-$([guid]::NewGuid())"
 New-Item -ItemType Directory -Force $tmp | Out-Null
 
+$binary = Join-Path $dir "turnout.exe"
+$alias = Join-Path $dir "tn.exe"
+# Asked before anything moves: an alias of ours that steps aside below must
+# not make another `tn` further down the PATH look like the one that answers.
+$existing = Get-Command tn -ErrorAction SilentlyContinue
 try {
     Write-Host "Downloading $url"
     Invoke-WebRequest $url -OutFile (Join-Path $tmp "turnout.zip")
     Expand-Archive (Join-Path $tmp "turnout.zip") -DestinationPath $tmp -Force
     New-Item -ItemType Directory -Force $dir | Out-Null
-    Copy-Item (Join-Path $tmp "$name\turnout.exe") $dir -Force
+    # A running turnout.exe cannot be overwritten or deleted, but it can be
+    # renamed: the old one steps aside, so an update does not fail while a
+    # gateway or a dev server runs. tn.exe is the same file under a second
+    # name, and a process started as `tn` holds it just the same. What stepped
+    # aside is deleted below, or by the next install once it no longer runs.
+    foreach ($old in $binary, $alias) {
+        if (Test-Path $old) {
+            Move-Item $old "$old.old-$([guid]::NewGuid())" -Force
+        }
+    }
+    Copy-Item (Join-Path $tmp "$name\turnout.exe") $binary -Force
 } finally {
     Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
 }
+# What stepped aside, and the copies updates left before the alias became a
+# link. One that still runs stays until the next install.
+Get-ChildItem $dir -ErrorAction SilentlyContinue |
+    Where-Object { $_.Name -match '^(turnout|tn)\.exe\.old' } |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
+# $env:TURNOUT_NO_PATH leaves the PATH alone: an install into a scratch
+# directory - the release check that proves the installer works - must not
+# add that directory to the user's PATH.
+if (-not $env:TURNOUT_NO_PATH) {
 # The user PATH is edited in the registry, not through the .NET environment
 # API: that call rewrites the value as REG_SZ, and a PATH stored as REG_SZ no
 # longer expands entries such as
@@ -74,35 +98,28 @@ public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint M
 } catch {
     Write-Host "Note: could not update the user PATH ($($_.Exception.Message)); add $dir to it yourself."
 }
-Write-Host "Installed turnout $tag to $dir\turnout.exe"
+}
+Write-Host "Installed turnout $tag to $binary"
 
 # Short alias `tn` as a hard link, not a copy: a copy doubles the install for
 # no new code and goes stale the moment self-update replaces the binary. A
 # symlink would need elevation on Windows; a hard link does not, as long as
 # both names are on one volume - and they are, since the alias lands beside the
-# binary. Skipped when another `tn` already answers in PATH;
+# binary. Skipped when another `tn` already answers in PATH - unless the PATH
+# is left alone, when this directory is not on it and competes with nothing;
 # $env:TURNOUT_NO_ALIAS=1 opts out.
 if (-not $env:TURNOUT_NO_ALIAS) {
-    $alias = Join-Path $dir "tn.exe"
-    $existing = Get-Command tn -ErrorAction SilentlyContinue
-    if (-not $existing -or $existing.Source -eq $alias) {
-        # A link cannot be created over an existing name, and an earlier
-        # install may have left a full copy sitting there.
-        Remove-Item $alias -Force -ErrorAction SilentlyContinue
+    if ($env:TURNOUT_NO_PATH -or -not $existing -or $existing.Source -eq $alias) {
         try {
-            New-Item -ItemType HardLink -Path $alias -Target (Join-Path $dir "turnout.exe") -ErrorAction Stop | Out-Null
+            New-Item -ItemType HardLink -Path $alias -Target $binary -ErrorAction Stop | Out-Null
             Write-Host "Alias tn -> turnout"
         } catch {
             # A different volume, or a filesystem without hard links: a copy
             # still works, it just has to be refreshed by the installer.
-            Copy-Item (Join-Path $dir "turnout.exe") $alias -Force
+            Copy-Item $binary $alias -Force
             Write-Host "Alias tn -> turnout (copied - this filesystem has no hard links)"
         }
     } else {
         Write-Host "Note: 'tn' already resolves to $($existing.Source) - alias skipped."
     }
 }
-
-# Binaries left behind by updates that ran before the alias became a link.
-Remove-Item (Join-Path $dir "turnout.exe.old") -Force -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $dir "tn.exe.old") -Force -ErrorAction SilentlyContinue

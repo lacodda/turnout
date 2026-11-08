@@ -241,13 +241,43 @@ mod tests {
         // A copy is still the fallback for filesystems without hard links, so
         // the check is that the link is tried first, not that no copy exists.
         let link_at = windows.find("-ItemType HardLink").expect("checked above");
-        let copy_at = windows.find("Copy-Item (Join-Path $dir \"turnout.exe\") $alias");
-        if let Some(copy_at) = copy_at {
-            assert!(
-                link_at < copy_at,
-                "install.ps1 copies the alias before trying to link it - the copy would always win"
-            );
-        }
+        let copy_at = windows
+            .find("Copy-Item $binary $alias")
+            .expect("install.ps1 has no copy fallback for the alias - or this check lost track of it");
+        assert!(
+            link_at < copy_at,
+            "install.ps1 copies the alias before trying to link it - the copy would always win"
+        );
+    }
+
+    /// A running turnout.exe - a gateway, a dev server - cannot be overwritten,
+    /// so an update that copies over it fails exactly when turnout is in use.
+    /// Both names step aside before the copy: `tn.exe` is the same file, and a
+    /// process started as `tn` holds it just the same.
+    #[test]
+    fn the_windows_installer_moves_a_running_binary_aside() {
+        let windows = read("tools/install.ps1");
+        let moved = windows
+            .find("foreach ($old in $binary, $alias)")
+            .expect("install.ps1 no longer moves turnout.exe and tn.exe aside before the copy");
+        let copied = windows
+            .find("Copy-Item (Join-Path $tmp \"$name\\turnout.exe\") $binary")
+            .expect("install.ps1 no longer copies the binary from the archive");
+        assert!(moved < copied, "install.ps1 copies the new binary before moving the running one aside");
+        assert!(windows.contains("Move-Item $old \"$old.old-"), "install.ps1 must rename, not delete: a running binary cannot be deleted");
+    }
+
+    /// `TURNOUT_NO_PATH` is how a release check installs into a scratch
+    /// directory without leaving that directory on the user's PATH; both
+    /// installers have to honour it, and still make the alias there.
+    #[test]
+    fn the_installers_leave_the_path_alone_when_asked() {
+        let windows = read("tools/install.ps1");
+        let guard = windows.find("if (-not $env:TURNOUT_NO_PATH)").expect("install.ps1 ignores TURNOUT_NO_PATH");
+        let edit = windows.find("Set-ItemProperty -Path \"HKCU:\\Environment\"").expect("install.ps1 no longer edits the PATH");
+        assert!(guard < edit, "install.ps1 edits the PATH before reading TURNOUT_NO_PATH");
+        let unix = read("tools/install.sh");
+        assert!(unix.contains("TURNOUT_NO_PATH"), "install.sh ignores TURNOUT_NO_PATH");
     }
 
     /// The release archive carries one binary. Shipping a second copy under
