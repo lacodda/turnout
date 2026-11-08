@@ -501,13 +501,46 @@ pub fn backup_command(dialect: Dialect, deploy_path: &str, archive_name: &str) -
 pub fn run_backup(session: &Session, dialect: Dialect, deploy_path: &str) -> Result<String> {
     check_quotable(dialect, &[deploy_path, &backups_dir(deploy_path)])?;
     let name = free_backup_name(&backup_name(), &list_backups(session, dialect, deploy_path)?);
-    exec(session, &backup_command(dialect, deploy_path, &name)).map(|_| name).map_err(|err| {
-        if mentions_permission_denial(&err) {
-            anyhow::anyhow!(permission_hint(dialect, deploy_path))
-        } else {
-            err
-        }
-    })
+    exec(session, &backup_command(dialect, deploy_path, &name))
+        .map(|_| name)
+        .map_err(|err| explain_backup_failure(err, dialect, deploy_path))
+}
+
+/// Say which access a failed backup lacked.
+///
+/// A denial has two causes that need opposite fixes. Writing the archive
+/// beside the deploy directory needs its parent - the hint. tar reading a
+/// file inside the deploy directory it may not read - a key root left there,
+/// a log another service owns - is about that file, and the hint would send
+/// the reader to fix a directory that was never the problem. tar names the
+/// file it could not read, and it is not in the backups directory.
+fn explain_backup_failure(err: anyhow::Error, dialect: Dialect, deploy_path: &str) -> anyhow::Error {
+    if !mentions_permission_denial(&err) {
+        return err;
+    }
+    let backups = backups_dir(deploy_path);
+    let text = format!("{err:#}");
+    // What the server said, without the command line quoted before it: that
+    // names the backups directory whatever went wrong.
+    let said = text
+        .split_once("exited with ")
+        .and_then(|(_, rest)| rest.split_once(": "))
+        .map_or(text.as_str(), |(_, said)| said);
+    let unreadable: Vec<&str> = said
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            lower.starts_with("tar") && (lower.contains("permission denied") || lower.contains("access is denied")) && !line.contains(&backups)
+        })
+        .collect();
+    if unreadable.is_empty() {
+        return anyhow::anyhow!(permission_hint(dialect, deploy_path));
+    }
+    anyhow::anyhow!(
+        "the backup could not read everything in {deploy_path} - this account needs read access to every file there:\n  {}",
+        unreadable.join("\n  ")
+    )
 }
 
 /// Put a backup back: empty the deploy directory, then unpack the archive
@@ -712,7 +745,7 @@ fn parent_dir(path: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::{backup_command, backup_name, backups_dir, free_backup_name, join_remote, mentions_permission_denial, parent_dir};
+    use super::{backup_command, backup_name, backups_dir, explain_backup_failure, free_backup_name, join_remote, mentions_permission_denial, parent_dir};
     use crate::shell::Dialect;
 
     #[test]
@@ -761,6 +794,27 @@ mod tests {
 
         let windows = super::permission_hint(Dialect::Windows, "C:\\inetpub\\site");
         assert!(windows.contains("mkdir \"C:\\inetpub\\site.backups\""), "{windows}");
+    #[test]
+    fn a_file_tar_cannot_read_is_named_instead_of_the_backups_hint() {
+        let reading = anyhow::anyhow!(
+            "remote command 'sh -c 'mkdir -p /var/www/myapp.backups ...'' exited with 2: tar: ./certs/site.key: Cannot open: Permission denied\ntar: Exiting with failure status due to previous errors"
+        );
+        let explained = format!("{:#}", explain_backup_failure(reading, Dialect::Posix, "/var/www/myapp"));
+        assert!(explained.starts_with("the backup could not read everything in /var/www/myapp"), "{explained}");
+        assert!(explained.contains("tar: ./certs/site.key: Cannot open: Permission denied"), "{explained}");
+        assert!(!explained.contains("sudo mkdir"), "the backups hint is not this failure's fix: {explained}");
+
+        // Writing beside the deploy directory is still the hint's case: mkdir
+        // says so, and so does tar when the archive is what it cannot open.
+        for writing in [
+            "remote command 'sh -c ...' exited with 1: mkdir: cannot create directory '/var/www/myapp.backups': Permission denied",
+            "remote command 'sh -c ...' exited with 2: tar: /var/www/myapp.backups/20260812-181500.tar.gz.1.part: Cannot open: Permission denied",
+        ] {
+            let explained = format!("{:#}", explain_backup_failure(anyhow::anyhow!("{writing}"), Dialect::Posix, "/var/www/myapp"));
+            assert_eq!(explained, super::permission_hint(Dialect::Posix, "/var/www/myapp"), "{writing}");
+        }
+    }
+
         assert!(!windows.contains("sudo"), "sudo means nothing on Windows: {windows}");
     }
 
