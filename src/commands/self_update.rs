@@ -162,7 +162,7 @@ enum ArchiveKind {
 
 impl Asset {
     fn for_this_platform(version: &str) -> Result<Self> {
-        // Mirrors the matrix in .github/workflows/release.yml (held to it by
+        // Mirrors the matrix in .github/workflows/build.yml (held to it by
         // tests/release_consistency.rs); anything else has no prebuilt binary
         // to download.
         let (target, kind) = match (std::env::consts::OS, std::env::consts::ARCH) {

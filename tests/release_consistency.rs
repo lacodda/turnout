@@ -286,7 +286,7 @@ mod tests {
     }
 
     /// The targets a release ships, as `release.toml` lists them on the
-    /// release page: release.yml has to build each one, and every way of
+    /// release page: build.yml has to build each one, and every way of
     /// getting turnout - self-update, the npm wrapper - has to know each one.
     /// A target added in one place and not the others is a platform where one
     /// install path works and the next says "no prebuilt binary".
@@ -304,7 +304,7 @@ mod tests {
             targets.len()
         );
 
-        let workflow = read(".github/workflows/release.yml");
+        let workflow = read(".github/workflows/build.yml");
         let built: Vec<&str> = workflow.lines().filter_map(|line| line.trim().strip_prefix("target: ")).collect();
         assert_eq!(
             {
@@ -317,7 +317,7 @@ mod tests {
                 t.sort();
                 t
             },
-            "release.yml builds {built:?}, release.toml promises {targets:?}"
+            "build.yml builds {built:?}, release.toml promises {targets:?}"
         );
 
         let self_update = read("src/commands/self_update.rs");
@@ -340,10 +340,10 @@ mod tests {
             "Cargo.toml declares an extra binary; the `tn` alias is a link made at install time, not a packaged copy"
         );
 
-        let workflow = read(".github/workflows/release.yml");
+        let workflow = read(".github/workflows/build.yml");
         assert!(
             !workflow.contains("tn.exe") && !workflow.contains("/tn "),
-            "release.yml packages a `tn` binary; the alias is created by the installer as a link"
+            "build.yml packages a `tn` binary; the alias is created by the installer as a link"
         );
     }
 

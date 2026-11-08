@@ -41,6 +41,11 @@ jobs:
   windows-server:
     uses: ./.github/workflows/windows-server.yml
 
+  # The release archives, built as a tag builds them - on the glibc floor for
+  # Linux - so a tag never meets the build for the first time.
+  release-build:
+    uses: ./.github/workflows/build.yml
+
   # rust-version is a promise to anyone running `cargo install`. Without a job
   # that actually builds on it, the number silently rots the first time a new
   # API is used — so read it from the manifest and hold it to it.

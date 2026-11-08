@@ -45,7 +45,7 @@ Via cargo:
 cargo install turnout
 ```
 
-Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64 and arm64, macOS arm64), unpack and put `turnout` on your `PATH`.
+Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64 and arm64, macOS arm64), unpack and put `turnout` on your `PATH`. The Linux builds start on glibc 2.28 and newer - Debian 10, Ubuntu 20.04, RHEL 8, Raspberry Pi OS and everything since; every build is held to that floor before it ships.
 
 ### Installer options
 
