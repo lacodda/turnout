@@ -264,7 +264,10 @@ mod tests {
             .find("Copy-Item (Join-Path $tmp \"$name\\turnout.exe\") $binary")
             .expect("install.ps1 no longer copies the binary from the archive");
         assert!(moved < copied, "install.ps1 copies the new binary before moving the running one aside");
-        assert!(windows.contains("Move-Item $old \"$old.old-"), "install.ps1 must rename, not delete: a running binary cannot be deleted");
+        assert!(
+            windows.contains("Move-Item $old \"$old.old-"),
+            "install.ps1 must rename, not delete: a running binary cannot be deleted"
+        );
     }
 
     /// `TURNOUT_NO_PATH` is how a release check installs into a scratch
@@ -274,7 +277,9 @@ mod tests {
     fn the_installers_leave_the_path_alone_when_asked() {
         let windows = read("tools/install.ps1");
         let guard = windows.find("if (-not $env:TURNOUT_NO_PATH)").expect("install.ps1 ignores TURNOUT_NO_PATH");
-        let edit = windows.find("Set-ItemProperty -Path \"HKCU:\\Environment\"").expect("install.ps1 no longer edits the PATH");
+        let edit = windows
+            .find("Set-ItemProperty -Path \"HKCU:\\Environment\"")
+            .expect("install.ps1 no longer edits the PATH");
         assert!(guard < edit, "install.ps1 edits the PATH before reading TURNOUT_NO_PATH");
         let unix = read("tools/install.sh");
         assert!(unix.contains("TURNOUT_NO_PATH"), "install.sh ignores TURNOUT_NO_PATH");
@@ -293,7 +298,11 @@ mod tests {
             .filter_map(|line| line.trim().strip_prefix("\"turnout-{tag}-"))
             .map(|rest| rest.split_once('.').map_or(rest, |(target, _)| target))
             .collect();
-        assert!(targets.len() >= 4, "release.toml lists {} targets, expected the four released ones: {targets:?}", targets.len());
+        assert!(
+            targets.len() >= 4,
+            "release.toml lists {} targets, expected the four released ones: {targets:?}",
+            targets.len()
+        );
 
         let workflow = read(".github/workflows/release.yml");
         let built: Vec<&str> = workflow.lines().filter_map(|line| line.trim().strip_prefix("target: ")).collect();
