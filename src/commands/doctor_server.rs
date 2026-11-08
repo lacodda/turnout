@@ -636,6 +636,69 @@ fn commands_of(line: &str) -> Vec<String> {
     parts.into_iter().map(|part| part.trim().to_string()).filter(|part| !part.is_empty()).collect()
 }
 
+/// The words of one command as the shell splits it - on blanks outside
+/// quotes, a backslash keeping the next character - each as it is written,
+/// quotes and all, so that put back together it means to the shell what it
+/// meant before.
+///
+/// Up to v0.27 the words were split on every blank: `sudo -u "web ops" pm2`
+/// lost its user to a quote mark, and two blanks inside quotes became one.
+fn shell_words(command: &str) -> Vec<&str> {
+    let mut words = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (at, c) in command.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match (quote, c) {
+            (Some('\''), '\'') => quote = None,
+            (Some('\''), _) => {}
+            (_, '\\') => {
+                start.get_or_insert(at);
+                escaped = true;
+            }
+            (Some('"'), '"') => quote = None,
+            (Some(_), _) => {}
+            (None, '\'' | '"') => {
+                start.get_or_insert(at);
+                quote = Some(c);
+            }
+            (None, c) if c.is_whitespace() => {
+                if let Some(from) = start.take() {
+                    words.push(&command[from..at]);
+                }
+            }
+            (None, _) => {
+                start.get_or_insert(at);
+            }
+        }
+    }
+    if let Some(from) = start {
+        words.push(&command[from..]);
+    }
+    words
+}
+
+/// A word without the quotes the shell would take off it.
+fn unquoted(word: &str) -> String {
+    let mut out = String::with_capacity(word.len());
+    let mut quote: Option<char> = None;
+    let mut chars = word.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (None, '\'' | '"') => quote = Some(c),
+            (Some('\''), c) => out.push(c),
+            (_, '\\') => out.extend(chars.next()),
+            (_, c) => out.push(c),
+        }
+    }
+    out
+}
+
 /// The program a restart command starts, and whether it goes through sudo:
 /// `sudo -u web pm2 restart api` -> (true, `pm2`). Environment assignments in
 /// front of it are the command's, and sudo's own options - with the
@@ -643,7 +706,7 @@ fn commands_of(line: &str) -> Vec<String> {
 fn restart_program(command: &str) -> Option<(bool, String)> {
     /// sudo options that take the next word as their argument.
     const TAKES: [&str; 8] = ["-u", "-g", "-C", "-h", "-p", "-r", "-t", "-U"];
-    let mut words = command.split_whitespace();
+    let mut words = shell_words(command).into_iter();
     let mut sudo = false;
     let mut word = words.next()?;
     loop {
@@ -665,7 +728,7 @@ fn restart_program(command: &str) -> Option<(bool, String)> {
         }
         break;
     }
-    Some((sudo, word.trim_matches(['"', '\'']).to_string()))
+    Some((sudo, unquoted(word)))
 }
 
 /// One command of a restart that goes through sudo: as whom, and what.
@@ -686,7 +749,7 @@ struct SudoRequest {
 fn sudo_requests(restart: &str) -> Vec<SudoRequest> {
     let mut requests = Vec::new();
     for part in commands_of(restart) {
-        let mut words = part.split_whitespace().skip_while(|word| word.contains('=') && !word.starts_with('-'));
+        let mut words = shell_words(&part).into_iter().skip_while(|word| word.contains('=') && !word.starts_with('-'));
         if words.next() != Some("sudo") {
             continue;
         }
@@ -699,7 +762,7 @@ fn sudo_requests(restart: &str) -> Vec<SudoRequest> {
             }
             let Some(value) = words.next() else { break };
             if word == "-u" {
-                user = value.trim_matches(['"', '\'']).to_string();
+                user = unquoted(value);
             }
             if word == "-u" || word == "-g" {
                 kept.extend([word.to_string(), value.to_string()]);
@@ -950,6 +1013,27 @@ fn web_check(server: &Server, health: Health) -> CheckView {
 mod tests {
     use super::*;
     use crate::commands::doctor::State;
+
+    /// Quoted words stay whole, as written, and come apart again exactly
+    /// where the shell would take them apart.
+    #[test]
+    fn restart_words_are_split_where_the_shell_splits_them() {
+        assert_eq!(
+            shell_words(r#"sudo -u "web ops"  pm2 restart 'my  app' a\ b"#),
+            ["sudo", "-u", r#""web ops""#, "pm2", "restart", "'my  app'", r"a\ b"]
+        );
+        assert_eq!(unquoted(r#""web ops""#), "web ops");
+        assert_eq!(unquoted(r"a\ b"), "a b");
+        assert_eq!(unquoted(r#"'it"s'"#), r#"it"s"#);
+        let requests = sudo_requests(r#"sudo -u "web ops" pm2 restart 'my  app'"#);
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].user, "web ops");
+        assert_eq!(requests[0].words, ["-u", r#""web ops""#, "pm2", "restart", "'my  app'"]);
+        assert_eq!(
+            restart_program(r#"FOO="a b" sudo -u "web ops" pm2 restart api"#),
+            Some((true, "pm2".to_string()))
+        );
+    }
 
     #[test]
     fn the_probe_reads_back_what_the_script_prints() {
