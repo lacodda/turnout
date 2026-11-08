@@ -17,7 +17,7 @@ turnout status [--short | --json]
 One command that answers "what is going on", in sections:
 
 ```text
-turnout 1.0.0  C:\Users\me\AppData\Local\lacodda\turnout
+turnout 1.0.1  C:\Users\me\AppData\Local\lacodda\turnout
 
 Apps
   admin  -> dev      http://admin.localhost  spare :7101 (VITE_API_URL)

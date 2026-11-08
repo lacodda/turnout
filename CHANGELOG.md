@@ -7,6 +7,11 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [1.0.1] - 2026-11-08
+
+### Bug Fixes
+- Build the Linux archives on a glibc floor of 2.28
+
 ## [1.0.0] - 2026-11-08
 
 ### Breaking Changes

@@ -53,7 +53,7 @@ Both scripts read these environment variables:
 
 | Variable | Effect |
 | --- | --- |
-| `TURNOUT_VERSION` | Install this tag (e.g. `v1.0.0`) instead of the newest release |
+| `TURNOUT_VERSION` | Install this tag (e.g. `v1.0.1`) instead of the newest release |
 | `TURNOUT_INSTALL_DIR` | Where the binary lands; defaults to `%LOCALAPPDATA%\Programs\turnout` on Windows and `~/.local/bin` elsewhere |
 | `TURNOUT_NO_PATH` | Leave the `PATH` alone: for an install into a scratch directory that should not end up on it |
 | `TURNOUT_NO_ALIAS` | Do not make the `tn` alias |
