@@ -35,7 +35,7 @@ Via cargo:
 cargo install turnout
 ```
 
-Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64, macOS arm64), unpack and put `turnout` on your `PATH`.
+Or download the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64 and arm64, macOS arm64), unpack and put `turnout` on your `PATH`.
 
 ### Installer options
 

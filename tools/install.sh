@@ -7,6 +7,9 @@ REPO="lacodda/turnout"
 
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64) TARGET="x86_64-unknown-linux-gnu" ;;
+    # A Raspberry Pi, an ARM laptop or server: the kernel says aarch64, some
+    # userlands say arm64.
+    Linux-aarch64|Linux-arm64) TARGET="aarch64-unknown-linux-gnu" ;;
     Darwin-arm64) TARGET="aarch64-apple-darwin" ;;
     # Git Bash, MSYS2 and Cygwin run this script happily on Windows, where it
     # has no business being: the Windows build is installed by install.ps1.

@@ -143,11 +143,13 @@ enum ArchiveKind {
 
 impl Asset {
     fn for_this_platform(version: &str) -> Result<Self> {
-        // Mirrors the matrix in .github/workflows/release.yml; anything else
-        // has no prebuilt binary to download.
+        // Mirrors the matrix in .github/workflows/release.yml (held to it by
+        // tests/release_consistency.rs); anything else has no prebuilt binary
+        // to download.
         let (target, kind) = match (std::env::consts::OS, std::env::consts::ARCH) {
             ("windows", "x86_64") => ("x86_64-pc-windows-msvc", ArchiveKind::Zip),
             ("linux", "x86_64") => ("x86_64-unknown-linux-gnu", ArchiveKind::TarGz),
+            ("linux", "aarch64") => ("aarch64-unknown-linux-gnu", ArchiveKind::TarGz),
             ("macos", "aarch64") => ("aarch64-apple-darwin", ArchiveKind::TarGz),
             (os, arch) => bail!("no prebuilt turnout binary for {os}/{arch} - build it yourself with `cargo install turnout --force`"),
         };
@@ -376,7 +378,7 @@ mod tests {
 
     #[test]
     fn this_platform_has_a_known_asset() {
-        // The host running the tests is one of the three released targets.
+        // The host running the tests is one of the released targets.
         let asset = Asset::for_this_platform("0.5.0").expect("a supported platform");
         assert!(asset.file_name().starts_with("turnout-v0.5.0-"));
     }

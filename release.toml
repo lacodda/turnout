@@ -1,0 +1,57 @@
+# How turnout is released, read by furca's release engine: `furca release
+# plan` says what the next release is and what stands in its way, `furca
+# release verify` checks what went out. `lyrn check` reads it too.
+# Reference: https://lacodda.github.io/furca/reference/release/
+
+[project]
+name = "turnout"
+changelog = "CHANGELOG.md"
+# The crate, and the npm wrapper that downloads its binary from the release.
+manifests = ["Cargo.toml", "npm/package.json"]
+# Left as written: ADRs record what happened, the upgrading guide and the
+# settings history name the versions a change arrived in, and every export
+# fixture is the file its own release wrote.
+as_written = [
+    "docs/adr/",
+    "docs/src/content/docs/guides/upgrading.md",
+    "docs/src/content/docs/concepts/settings-migration.md",
+    "tests/fixtures/",
+]
+
+[gate]
+# Formatting only: it takes seconds and compiles nothing. The rest of the gate
+# is CI, which the release waits for before the tag.
+commands = [
+    "cargo fmt --all --check",
+]
+
+[ci]
+provider = "github"
+workflow = "ci.yml"
+publish = "publish.yml"
+
+[[package]]
+registry = "crates"
+name = "turnout"
+manifest = "Cargo.toml"
+
+[[package]]
+registry = "npm"
+name = "turnout-cli"
+manifest = "npm/package.json"
+wraps = "turnout"
+
+# The files the tag's release page has to carry: checked after the publish,
+# and against the targets the installers ask for on every commit.
+[page]
+assets = [
+    "turnout-{tag}-x86_64-pc-windows-msvc.zip",
+    "turnout-{tag}-x86_64-unknown-linux-gnu.tar.gz",
+    "turnout-{tag}-aarch64-unknown-linux-gnu.tar.gz",
+    "turnout-{tag}-aarch64-apple-darwin.tar.gz",
+]
+
+# turnout is installed from the release by tools/install.ps1 and
+# tools/install.sh, and proven to be the release's own build - the alias too.
+[post.install]
+aliases = ["tn"]

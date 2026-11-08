@@ -280,6 +280,46 @@ mod tests {
         assert!(unix.contains("TURNOUT_NO_PATH"), "install.sh ignores TURNOUT_NO_PATH");
     }
 
+    /// The targets a release ships, as `release.toml` lists them on the
+    /// release page: release.yml has to build each one, and every way of
+    /// getting turnout - self-update, the npm wrapper - has to know each one.
+    /// A target added in one place and not the others is a platform where one
+    /// install path works and the next says "no prebuilt binary".
+    #[test]
+    fn every_released_target_is_built_and_known_to_every_installer() {
+        let manifest = read("release.toml");
+        let targets: Vec<&str> = manifest
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("\"turnout-{tag}-"))
+            .map(|rest| rest.split_once('.').map_or(rest, |(target, _)| target))
+            .collect();
+        assert!(targets.len() >= 4, "release.toml lists {} targets, expected the four released ones: {targets:?}", targets.len());
+
+        let workflow = read(".github/workflows/release.yml");
+        let built: Vec<&str> = workflow.lines().filter_map(|line| line.trim().strip_prefix("target: ")).collect();
+        assert_eq!(
+            {
+                let mut b = built.clone();
+                b.sort();
+                b
+            },
+            {
+                let mut t = targets.clone();
+                t.sort();
+                t
+            },
+            "release.yml builds {built:?}, release.toml promises {targets:?}"
+        );
+
+        let self_update = read("src/commands/self_update.rs");
+        let npm = read("npm/download.js");
+        for target in &targets {
+            let quoted = format!("\"{target}\"");
+            assert!(self_update.contains(&quoted), "self-update does not know {target}");
+            assert!(npm.contains(&quoted), "the npm wrapper does not know {target}");
+        }
+    }
+
     /// The release archive carries one binary. Shipping a second copy under
     /// the alias name would double every download for no new code - the whole
     /// reason the alias is a link.

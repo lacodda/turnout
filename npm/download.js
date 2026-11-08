@@ -15,6 +15,7 @@ const TAG = (pkg.turnout && pkg.turnout.binary) || `v${pkg.version}`;
 const TARGETS = {
   "win32-x64": ["x86_64-pc-windows-msvc", "zip"],
   "linux-x64": ["x86_64-unknown-linux-gnu", "tar.gz"],
+  "linux-arm64": ["aarch64-unknown-linux-gnu", "tar.gz"],
   "darwin-arm64": ["aarch64-apple-darwin", "tar.gz"],
 };
 
