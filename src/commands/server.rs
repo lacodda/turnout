@@ -491,6 +491,36 @@ fn remove(name: &str, assume_yes: bool, force: bool) -> Result<()> {
             if widened.len() == 1 { "it" } else { "them" }
         );
     }
+    // What goes with it is said before the question, not after the answer:
+    // the targets, the allow-lists and the bindings are what the yes agrees to.
+    // With --yes nothing is asked, and the lines below report what happened.
+    if !assume_yes {
+        let allowing: Vec<String> = apps
+            .iter()
+            .filter(|app| app.servers.iter().any(|s| s == name))
+            .map(|app| app.name.clone())
+            .collect();
+        let targets: Vec<String> = store::load_targets()?.into_iter().filter(|t| t.server == name).map(|t| t.name).collect();
+        let bound: Vec<String> = store::load_state()?
+            .bindings
+            .into_iter()
+            .filter(|(_, server)| server == name)
+            .map(|(app, _)| app)
+            .collect();
+        let mut with = Vec::new();
+        if !targets.is_empty() {
+            with.push(format!("  its targets go: {}", targets.join(", ")));
+        }
+        if !allowing.is_empty() {
+            with.push(format!("  it leaves the allow-list of: {}", allowing.join(", ")));
+        }
+        if !bound.is_empty() {
+            with.push(format!("  bound to it now, these are unbound: {}", bound.join(", ")));
+        }
+        if !with.is_empty() {
+            println!("Removing '{name}':\n{}", with.join("\n"));
+        }
+    }
     let confirmed = pick::confirm_destructive(format!("Remove server '{name}' from the catalog?"), assume_yes)?;
     if !confirmed {
         println!("Cancelled.");
