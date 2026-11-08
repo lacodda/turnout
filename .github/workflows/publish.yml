@@ -1,30 +1,62 @@
 name: Publish
 
-# Triggered by the tag push directly (not the release event): releases here
-# are created by release.yml with GITHUB_TOKEN, and such events do not start
-# other workflows.
+# Started by the tag push itself, not by the release event: release.yml
+# creates the release with GITHUB_TOKEN, and such events start no other
+# workflow. workflow_dispatch publishes a tag again.
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Tag to publish (e.g. v0.27.0)
+        description: Tag to publish (vX.Y.Z)
         required: true
 
 permissions: {}
 
 jobs:
-  # No version reaches a registry without passing against a real Windows server.
-  windows-server:
+  # Nothing goes to a registry before the release is out. The npm wrapper
+  # downloads its binary from the release page, so a package published first
+  # answers `npm install` with a 404 until the archives arrive; and a release
+  # that failed to build - or to pass against a real Windows server, which
+  # release.yml runs before it puts anything out - should reach no registry
+  # at all. Every job below needs this one.
+  release:
+    name: Wait for the release
+    runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
-    uses: ./.github/workflows/windows-server.yml
-    with:
-      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+    timeout-minutes: 90
+    steps:
+      - name: Wait for release.yml on the tag's commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          sha=$(gh api "repos/$GH_REPO/commits/$TAG" --jq .sha)
+          started=$(date +%s)
+          while :; do
+            run=$(gh run list --workflow release.yml --commit "$sha" --limit 1 \
+              --json status,conclusion,url --jq '.[0] // {} | "\(.status // "none") \(.conclusion // "none") \(.url // "-")"')
+            read -r status conclusion url <<< "$run"
+            case "$status/$conclusion" in
+              completed/success) echo "release.yml put $TAG out: $url"; exit 0 ;;
+              completed/*) echo "release.yml ended '$conclusion' for $TAG: $url" >&2; exit 1 ;;
+              none/*)
+                if [ $(( $(date +%s) - started )) -gt 600 ]; then
+                  echo "release.yml has not started for $TAG in ten minutes" >&2
+                  exit 1
+                fi
+                ;;
+            esac
+            sleep 30
+          done
 
   crates-io:
-    needs: windows-server
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -36,15 +68,32 @@ jobs:
       - name: Install Linux build deps (keyring secret-service)
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
       - uses: dtolnay/rust-toolchain@stable
+      # A version can only be published once, and a re-run - a tag published
+      # again by hand - would otherwise fail on the duplicate and leave a red
+      # run in the release's history.
+      - name: Check whether this version is already on crates.io
+        id: check
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          if curl -sf "https://crates.io/api/v1/crates/turnout/$version" -H 'user-agent: turnout-ci' > /dev/null; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "turnout $version is already on crates.io; nothing to do."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Get a crates.io token (OIDC trusted publishing)
+        if: steps.check.outputs.published == 'false'
         uses: rust-lang/crates-io-auth-action@v1
         id: auth
-      - run: cargo publish
+      - if: steps.check.outputs.published == 'false'
+        run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
 
+  # The wrapper downloads turnout's binary from the release page - which is why
+  # it waits for the release above.
   npm:
-    needs: windows-server
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -60,10 +109,23 @@ jobs:
           node-version: 24
           check-latest: true
           registry-url: https://registry.npmjs.org
+      - name: Check whether this version is already on npm
+        id: check
+        working-directory: npm
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "turnout-cli@$version" version > /dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "turnout-cli $version is already on npm; nothing to do."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
       # One README for all three pages. npm publishes whatever sits next to
       # package.json, so the root file is copied in here rather than kept as a
       # second copy in the repo, where it drifts from the original.
       - name: Use the root README for the npm page
+        if: steps.check.outputs.published == 'false'
         run: cp README.md npm/README.md
-      - run: npm publish
+      - if: steps.check.outputs.published == 'false'
+        run: npm publish
         working-directory: npm
