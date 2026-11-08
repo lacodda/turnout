@@ -173,11 +173,10 @@ fn obtain_key(credential: &Credential, key_path: Option<String>) -> Result<KeyIn
         default.display().to_string()
     };
 
-    // Refused here, before the network, rather than when the key is written:
-    // a key already at the path is never overwritten, and finding that out
-    // after signing in would cost a round trip for nothing.
     if std::path::Path::new(&path).exists() {
-        bail!("{path} already exists - remove it or point the credential at it instead");
+        let key = key_left_at(path)?;
+        progress::info(&format!("Using the key already at {} - it is not overwritten", key.path));
+        return Ok(key);
     }
     let generated = keysetup::generate(&comment())?;
     Ok(KeyInHand {
@@ -185,6 +184,29 @@ fn obtain_key(credential: &Credential, key_path: Option<String>) -> Result<KeyIn
         public: generated.public,
         passphrase: None,
         generated: Some(generated.private),
+    })
+}
+
+/// The key already at the path a new one was to be generated at.
+///
+/// A key there is never overwritten. One that opens without a passphrase is
+/// used instead: it is most often the key an earlier run wrote before its
+/// install or its check failed, and refusing it - as up to v0.27 - left that
+/// run's own key in the way of every run after it. Using it also keeps the
+/// server from collecting a key per attempt. One that does not open is
+/// refused here, before the network.
+fn key_left_at(path: String) -> Result<KeyInHand> {
+    // The private half itself, not its `.pub`: the sign-in check after the
+    // install opens it, and a `.pub` beside a locked key says nothing.
+    russh::keys::load_secret_key(&path, None).map_err(|_| {
+        anyhow::anyhow!("{path} already exists and does not open without a passphrase - remove it, or point the credential at it with its passphrase stored")
+    })?;
+    let public = keysetup::public_line(&path, None, &comment())?;
+    Ok(KeyInHand {
+        path,
+        public,
+        passphrase: None,
+        generated: None,
     })
 }
 
@@ -414,6 +436,33 @@ mod tests {
     /// A credential that already has its key needs no password: it is being
     /// authorized on one more server, and the key it already has is what signs
     /// in there.
+    /// A key an earlier, failed run left behind is used by the next run, not
+    /// in its way; a locked one is refused before anything is asked of the
+    /// server.
+    #[test]
+    fn a_key_left_at_the_path_is_used_unless_it_is_locked() {
+        use russh::keys::ssh_key::LineEnding;
+        use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
+        let scratch = tempfile::tempdir().unwrap();
+        let key = russh::keys::PrivateKey::new(KeypairData::Ed25519(Ed25519Keypair::from_seed(&[5; 32])), "left").unwrap();
+        let open = scratch.path().join("id_ed25519_deploy");
+        std::fs::write(&open, key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        let reused = key_left_at(open.display().to_string()).expect("an open key is used");
+        assert!(reused.generated.is_none(), "nothing is generated over it");
+        assert!(reused.public.starts_with("ssh-ed25519 "), "{}", reused.public);
+
+        let locked = scratch.path().join("id_locked");
+        let encrypted = key.encrypt(&mut rand::rng(), "passphrase").unwrap();
+        std::fs::write(&locked, encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        // A `.pub` beside it must not pass for an open key.
+        std::fs::write(format!("{}.pub", locked.display()), reused.public.clone()).unwrap();
+        let refused = match key_left_at(locked.display().to_string()) {
+            Ok(_) => panic!("a locked key was taken as one to use"),
+            Err(err) => err.to_string(),
+        };
+        assert!(refused.contains("does not open without a passphrase"), "{refused}");
+    }
+
     #[test]
     fn a_key_credential_needs_no_stored_password() {
         let credential = Credential {
