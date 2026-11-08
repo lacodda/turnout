@@ -129,3 +129,33 @@ jobs:
       - if: steps.check.outputs.published == 'false'
         run: npm publish
         working-directory: npm
+
+  # winget takes each version as a pull request to microsoft/winget-pkgs,
+  # opened from the owner's account: WINGET_TOKEN is a classic token of that
+  # account with the public_repo scope. Without it the job says so and passes,
+  # and the version goes to winget by hand. Homebrew and Scoop need nothing
+  # here: lacodda/homebrew-tap and lacodda/scoop-bucket follow the releases
+  # by themselves.
+  winget:
+    needs: release
+    runs-on: windows-latest
+    permissions: {}
+    steps:
+      - name: Look for WINGET_TOKEN
+        id: token
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::WINGET_TOKEN is not set - this version goes to winget by hand"
+          fi
+      - if: steps.token.outputs.present == 'true'
+        uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: lacodda.turnout
+          installers-regex: 'x86_64-pc-windows-msvc\.zip$'
+          release-tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          token: ${{ secrets.WINGET_TOKEN }}
