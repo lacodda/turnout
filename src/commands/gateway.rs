@@ -90,7 +90,13 @@ fn start() -> Result<()> {
         }
         if started.elapsed() > START_TIMEOUT {
             let _ = process::end(child.id(), None, process::Ending::Kill);
-            let _ = registry::remove(registry::GATEWAY);
+            // Only the record this child wrote, if it got that far: a gateway
+            // another `start` brought up in the meantime keeps its own.
+            if let Ok(Some(entry)) = registry::load(registry::GATEWAY)
+                && entry.pid == child.id()
+            {
+                let _ = registry::remove_if(registry::GATEWAY, entry.pid, entry.birth);
+            }
             replay(&log);
             bail!(
                 "the gateway did not answer on port {} within {}s - run `turnout gateway run` in the foreground to see why",

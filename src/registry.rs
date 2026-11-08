@@ -404,11 +404,8 @@ pub(crate) fn lock_in(dir: &Path, key: &str) -> Result<Slot> {
     }
 }
 
-/// Remove the record under `key`, if any.
-pub fn remove(key: &str) -> Result<()> {
-    remove_in(&jobs_dir()?, key)
-}
-
+/// Remove the record under `key`, if any. Never by the key alone from outside
+/// this module: [`remove_if`] and [`remove_own`] say whose record it is.
 fn remove_in(dir: &Path, key: &str) -> Result<()> {
     let path = record_path(dir, key);
     match std::fs::remove_file(&path) {
