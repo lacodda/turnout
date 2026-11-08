@@ -76,6 +76,8 @@ pub fn run(assume_yes: bool, force: bool) -> Result<()> {
 enum Installation {
     Cargo,
     Npm,
+    Homebrew,
+    Scoop,
     SystemPackage(PathBuf),
 }
 
@@ -91,6 +93,17 @@ impl Installation {
         }
         if text.contains("/node_modules/") || text.contains("/npm/") {
             return Some(Self::Npm);
+        }
+        // Before the system locations: Homebrew's own prefix is /opt/homebrew
+        // on Apple silicon, and on Linux the binary resolves into the Cellar
+        // under the linuxbrew home - which no system prefix would catch, and a
+        // self-update would write over the file brew keeps a record of.
+        if text.contains("/Cellar/turnout/") || text.contains("/homebrew/") || text.contains("/.linuxbrew/") {
+            return Some(Self::Homebrew);
+        }
+        // Scoop runs the binary from its app directory behind a shim.
+        if text.to_ascii_lowercase().contains("/scoop/apps/turnout/") {
+            return Some(Self::Scoop);
         }
         // System-wide locations are owned by a package manager, and writing
         // there needs privileges we should not be asking for.
@@ -110,6 +123,12 @@ impl Installation {
                 .to_string(),
             Self::Npm => "turnout was installed from npm, which keeps its own record of what is installed.\n\n\
                  Update it with:\n  npm install -g turnout-cli@latest"
+                .to_string(),
+            Self::Homebrew => "turnout was installed with Homebrew, which keeps its own record of what is installed.\n\n\
+                 Update it with:\n  brew upgrade turnout"
+                .to_string(),
+            Self::Scoop => "turnout was installed with Scoop, which keeps its own record of what is installed.\n\n\
+                 Update it with:\n  scoop update turnout"
                 .to_string(),
             Self::SystemPackage(path) => format!(
                 "turnout lives in {}, which belongs to your system package manager.\n\n\
@@ -324,6 +343,24 @@ mod tests {
         assert!(matches!(Installation::detect(&exe), Some(Installation::Cargo)));
         let windows = PathBuf::from(r"C:\Users\dev\.cargo\bin\turnout.exe");
         assert!(matches!(Installation::detect(&windows), Some(Installation::Cargo)));
+    }
+
+    #[test]
+    fn homebrew_and_scoop_installs_are_recognized() {
+        for brew in [
+            "/opt/homebrew/Cellar/turnout/1.0.0/bin/turnout",
+            "/home/linuxbrew/.linuxbrew/Cellar/turnout/1.0.0/bin/turnout",
+            "/usr/local/Cellar/turnout/1.0.0/bin/turnout",
+        ] {
+            assert!(matches!(Installation::detect(&PathBuf::from(brew)), Some(Installation::Homebrew)), "{brew}");
+        }
+        let scoop = PathBuf::from(r"C:\Users\dev\scoop\apps\turnout\current\turnout.exe");
+        assert!(matches!(Installation::detect(&scoop), Some(Installation::Scoop)));
+        assert!(Installation::Homebrew.explain().contains("brew upgrade turnout"));
+        assert!(Installation::Scoop.explain().contains("scoop update turnout"));
+        // The installers' own directories stay self-updating.
+        assert!(Installation::detect(&PathBuf::from(r"C:\Users\dev\AppData\Local\Programs\turnout\turnout.exe")).is_none());
+        assert!(Installation::detect(&PathBuf::from("/home/dev/.local/bin/turnout")).is_none());
     }
 
     #[test]

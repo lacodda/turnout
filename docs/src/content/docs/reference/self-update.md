@@ -26,7 +26,7 @@ It exits without doing anything when you are already on the latest release.
 
 ## Installations it does not touch
 
-Only installations that came from a release archive - the [installers](/turnout/getting-started/) or a manually unpacked release - are replaced in place. When cargo, npm or a system package manager put turnout there, that tool keeps its own record of what is installed, and overwriting the file behind its back would leave it convinced the old version is still present.
+Only installations that came from a release archive - the [installers](/turnout/getting-started/) or a manually unpacked release - are replaced in place. When cargo, npm, Homebrew, Scoop or a system package manager put turnout there, that tool keeps its own record of what is installed, and overwriting the file behind its back would leave it convinced the old version is still present.
 
 Those cases print the command that actually updates them:
 
@@ -82,4 +82,4 @@ One consequence worth knowing: while the old image is still executing, its `.old
 
 The tag is read from the `/releases/latest` redirect on github.com and the matching archive is downloaded from that release - the same source the installers use, and deliberately not `api.github.com`, whose unauthenticated rate limit is shared by everyone behind your IP address. See [the update check](/turnout/concepts/update-check/) for the rest of that reasoning.
 
-Prebuilt binaries exist for x86-64 Windows, x86-64 Linux and Apple Silicon macOS. On any other platform the command says so and points at `cargo install turnout --force`.
+Prebuilt binaries exist for x86-64 Windows, x86-64 and arm64 Linux, and Apple Silicon macOS. On any other platform the command says so and points at `cargo install turnout --force`.
