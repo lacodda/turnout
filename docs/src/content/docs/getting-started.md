@@ -5,6 +5,16 @@ description: Install turnout and run the first-time setup.
 
 ## Install
 
+With a package manager:
+
+```bash
+brew install lacodda/tap/turnout                                    # Homebrew, macOS and Linux
+scoop bucket add lacodda https://github.com/lacodda/scoop-bucket    # Scoop, Windows
+scoop install turnout
+```
+
+Both take the release's own archive, check it against the checksum the tap or bucket records, and set up the `tn` alias; `brew upgrade` and `scoop update` move to the next release, and `turnout self-update` leaves them to it.
+
 One line on Windows (PowerShell):
 
 ```powershell

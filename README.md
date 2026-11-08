@@ -13,11 +13,11 @@
 
 Working against several backend stands scatters the day: you `cd` into a folder to start a project, edit `.env` files across repositories to switch a stand, dig through notes for a password, and keep deploy paths in your head.
 
-turnout keeps all of it in one place and works from any directory.
+turnout keeps all of it in one place and works from any directory. What it is, on one screen: [lacodda.github.io/turnout/what-is-turnout](https://lacodda.github.io/turnout/what-is-turnout/).
 
 ## A day in the life
 
-Point an app at a stand:
+Point an app at a stand - the app keeps talking to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it there, with a cookie jar per app **and** stand so the switch does not log you out:
 
 ```console
 $ turnout use web staging
@@ -26,9 +26,7 @@ The running gateway picks this up automatically.
 'staging' is up: https://staging.example.com/health answered 200 in 84 ms.
 ```
 
-Nothing in the project changed - the app still talks to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it to the stand you picked. Your session survives the switch, because cookies are kept per app **and** stand.
-
-Start working, from wherever you happen to be:
+Start working, from wherever you happen to be. The console stays quiet once the server is up - until something breaks:
 
 ```console
 $ cd ~/dev/web/src/components
@@ -38,43 +36,18 @@ $ turnout dev --open
 ◇  web ready in 1.4s - http://web.localhost
 ```
 
-The server is up, the page is open, and the console stays quiet from here -
-until something breaks, which is when you want it loud.
-
-Move the whole contour at once when the frontend and the API must agree:
-
-```console
-$ turnout use contour prod-eu
-Group 'contour' now uses 'prod-eu':
-  web -> prod-eu
-  api -> prod-eu
-```
-
-Forgot a name? Leave it out and pick from a list that shows where things point:
-
-```console
-$ turnout use
-? Switch ›
-❯ contour   group: web, api
-  api       -> staging
-  web       -> staging
-```
-
-Ship it:
+Ship it - build, back up, upload as one archive, restart, and ask the stand whether it works:
 
 ```console
 $ turnout deploy web-prod-eu -b
 [web] pnpm build
 ✓ Connected to deploy@prod-eu.example.com:22
 ✓ Backup 20260809-011500.tar.gz created in /var/www/web.backups
-================>          2.02 MiB/3.11 MiB · 1.81 MiB/s · eta 1s  assets/index-b3f0a1.js
 Uploaded 142 files (3.11 MiB) to prod-eu:/var/www/web
 ✓ Restarted: systemctl restart web
 ✓ Healthy: GET https://prod-eu.example.com/health - 200 in 38 ms
 Deploy of 'web' to 'prod-eu' finished.
 ```
-
-Every long flag has a short form, and nothing runs silently: the upload reports throughput and an ETA, and the steps that talk to the server say so while they wait.
 
 And see what has been going on:
 
@@ -87,87 +60,48 @@ Apps
   web  -> prod-eu  http://web.localhost  spare :7100 (VITE_API_URL)
 
 Gateway  running · pid 24180 · up 2h 05m
-  front door  http://localhost
   ! 'staging' answers 502 - the stand is down, not the app (3m)
 
 Jobs  2 running - `turnout ps` shows the rest
-  api dev  ready      9m  http://api.localhost
-  web dev  ready     14m  http://web.localhost
 
 Recent
    3m ago  deploy  web -> prod-eu (142 files)
-   6m ago  use     web -> prod-eu
-
-$ turnout status --short
-prod-eu · gw ok · 2 dev
 ```
 
 ## What you get
 
-- **A dev gateway.** Apps always talk to `localhost`; turnout forwards to the selected stand over HTTP or HTTPS (self-signed certificates allowed per server), rewrites redirects, proxies WebSockets, and keeps a cookie jar per app+stand pair so switching does not log you out.
-- **One address per app.** `http://myapp.localhost` reaches the dev server turnout started for `myapp`, whichever port it took - the gateway's front door routes by name, and `*.localhost` needs no hosts file. The port is assigned once and handed to the server as `PORT` and `{port}`; `turnout open myapp` opens the address.
-- **You never type a port.** turnout assigns an app's gateway port when you register it and its dev port on the first `dev`; both live in turnout only, and the app is handed the address - `turnout dev` sets it as an environment variable the framework can see (`VITE_API_URL`, `REACT_APP_API_URL`, your pick), and a `.env.development.local` that turnout keeps in step covers a dev server started from an IDE. `build` never gets it, so a production bundle cannot bake in localhost.
-- **Servers, logins and paths kept apart.** A machine, the credential that logs into it and the directory files land in are three named entities. Define a deploy account once and point every stand at it; declare a web root once and reuse it across servers.
-- **Named deploy targets.** The four of them under one name: `turnout deploy web-prod-eu` from any directory, no flags to re-type. A first deploy that has no target yet offers to save the one it just used.
-- **Key access set up, not just used.** `turnout key setup prod` generates an ed25519 key, authorizes it on the server, proves it signs in and only then switches the credential over - so a server-side misconfiguration never costs you the password that still works. Windows servers included: an administrator account keeps its keys in a different file that sshd reads instead, and turnout writes to the right one.
-- **The SSH agent signs for you.** A credential can authenticate with a key the agent already holds unlocked, so a passphrase is typed once per login session instead of once per command - turnout never reads the key file at all. `SSH_AUTH_SOCK` on Linux and macOS; on Windows, Pageant or the OpenSSH agent service, whichever is running. An agent holding several keys is the normal case: they are offered in turn and the first the server accepts wins.
-- **Secrets in the OS keyring** - Windows Credential Manager, macOS Keychain, Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand that credential reaches. Copy it to the clipboard with one command; nothing lands in a config file, and `status` only ever reports *that* a credential exists.
-- **Commands from any directory.** `dev`, `build`, `test`, `lint` and any custom command run in the right project folder. Commands are taken from your actual `package.json` scripts, so a project whose dev script is `serve` still answers to `turnout dev`.
-- **A quiet console.** A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it reports itself and speaks again only when something breaks. A failure prints its output on the spot - no re-run to see what went wrong - and every job's output is kept in a log file whatever the terminal showed. `-v` gives you all of it, and so does any pipe, so scripts and CI logs are unchanged.
-- **Jobs in the background.** `turnout dev --detach` gives the terminal back and the server keeps running; so do `build`, `run` and `deploy`. When one is done, a desktop notification says so and opens the page, the stand or the log of the failure. `turnout ps` shows everything turnout runs, `logs -f` follows any of it, and `stop` takes a job down with every process it started.
-- **A hand on the server.** `turnout ssh web-prod` opens a session with host, port, user and key from the catalogs, in the deploy directory, the password already on the clipboard; `turnout exec web-prod -- docker compose ps` runs one command there and hands back its exit code.
-- **Deploy over SSH/SFTP** - build, upload, restart, with remote backup and restore. Artifacts travel as a single archive instead of thousands of round trips. Linux and Windows servers alike: turnout detects which shell answers SSH and phrases every remote command in it.
-- **A deploy that checks itself.** Give a target a health check and a deploy asks the stand after the restart - and rolls it back when it does not answer. `--diff` shows what would change before anything is written; `deploy web-stage web-prod` ships one build to both; a long restart survives a dropped connection.
-- **A history of deploys, and the way back.** Every deploy is recorded with its version, commit and how it ended - files uploaded but the restart failed included, with what the restart said. `turnout history` lists them, `history --diff 12 14` shows the commits between two, and `turnout rollback` sends the build before back to the stand. Server backups are pruned to what each stand keeps.
-- **Portable settings.** `export` writes your apps, servers, credentials, paths, targets and groups to one file and `import` merges it on another machine; secrets come along only when you ask, sealed with a passphrase.
-- **Stays current.** A once-a-day check mentions a new release without ever delaying a command, and `self-update` installs it - leaving package-manager installs to their package manager.
-- **One window onto it all.** `status` shows where every app points, the gateway, running jobs and the latest actions, with clickable addresses; `status --short` puts `prod · gw ok · 2 dev` into a starship or tmux line; `use -` goes back to the stand before. Every command that reports takes `--json`.
-- **A gateway that speaks up.** A stand answering 502 or a session the stand refused shows in `status` and the prompt line, and once on the desktop - not as a mystery in your app. Stands behind single sign-on get their browser session handed over with `turnout cookie set`.
-- **A doctor.** `turnout doctor` answers "why does it not work": a dev server left on the app's port, a dotenv file naming an old port, a stand that is down, a session that lapsed overnight, a tool missing from PATH - each with its fix, and `--fix` repairs what is turnout's to repair. `doctor --server prod` says where a deploy would stop, before it starts.
-- **Groups.** Bind a whole contour to one stand with a single `use`.
-- **Nothing to memorize.** Leave a name out and pick it from a list; in bash, Tab completes app, server, credential, path and group names from your own catalogs. The short alias `tn` is installed alongside.
-- **An action journal.** Every state change appends one JSON line - what happened and to which entities, never secrets or output. `tail`, `grep` and `jq` work on it directly.
+- **A dev gateway.** One address per app (`http://web.localhost`), ports assigned for you, redirects and WebSockets proxied, a session per app and stand. [Gateway](https://lacodda.github.io/turnout/concepts/gateway/)
+- **Servers, logins and paths, apart** - joined into named targets, so `turnout deploy web-prod` works from any directory. [Entities](https://lacodda.github.io/turnout/concepts/entities/)
+- **A deploy that checks itself.** `--diff` before, a health check after and a rollback when it fails, a history of every deploy; Linux and Windows servers alike. [deploy](https://lacodda.github.io/turnout/reference/deploy/)
+- **Access set up, not just used.** Secrets in the OS keyring, `key setup` that proves a key before switching to it, the SSH agent, and every server's host key checked. [SSH access](https://lacodda.github.io/turnout/guides/ssh-access/)
+- **A quiet console and jobs in the background.** A loader instead of scrollback, the output on the spot when something fails, `--detach` with a desktop notification at the end. [Quiet console](https://lacodda.github.io/turnout/concepts/quiet-console/)
+- **A doctor.** `turnout doctor` says why it does not work, and `doctor --server prod` where a deploy would stop - each with its fix. [doctor](https://lacodda.github.io/turnout/reference/doctor/)
+- **One window onto it all.** `status`, `status --short` for a prompt line, `--json` on every command that reports, an action journal of every change.
+- **Portable settings.** `export` and `import` between machines, secrets sealed with a passphrase; a file from any release since 0.11 still imports.
 
-## Examples
-
-Three small apps under `examples/` exist to see turnout at work rather than read about it:
-
-- [`vue-demo`](https://github.com/lacodda/turnout/tree/main/examples/vue-demo) and [`react-demo`](https://github.com/lacodda/turnout/tree/main/examples/react-demo) - the gateway end to end: the app's own address through the front door, the gateway URL handed over by `turnout dev`, requests reaching the stand, and the cookie jar keeping what the browser never sees. Each README is the setup, three commands long.
-- [`deploy-demo`](https://github.com/lacodda/turnout/tree/main/examples/deploy-demo) - a page that shows when its bundle was built, so a deploy is verifiable at a glance.
+The whole tour is on [the documentation site](https://lacodda.github.io/turnout/).
 
 ## Install
 
-**One-line installers.** Windows (PowerShell):
+```bash
+brew install lacodda/tap/turnout                                    # macOS, Linux
+scoop bucket add lacodda https://github.com/lacodda/scoop-bucket    # Windows
+scoop install turnout
+npm i -g turnout-cli                                                # anywhere with Node
+cargo install turnout                                               # from source
+```
+
+Or the one-line installers - PowerShell on Windows, `sh` on macOS and Linux:
 
 ```powershell
 irm https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.ps1 | iex
 ```
 
-macOS / Linux:
-
 ```bash
 curl -fsSL https://raw.githubusercontent.com/lacodda/turnout/main/tools/install.sh | sh
 ```
 
-On Windows use the PowerShell line above: `install.sh` carries the macOS and Linux builds only, and run from Git Bash it stops with a pointer back here.
-
-**With npm:**
-
-```bash
-npm i -g turnout-cli
-```
-
-**With cargo:**
-
-```bash
-cargo install turnout
-```
-
-**Binary releases** - grab the archive for your platform from [Releases](https://github.com/lacodda/turnout/releases/latest) (Windows x86_64, Linux x86_64 and arm64, macOS arm64), unpack and put `turnout` on your `PATH`.
-
-The installers and the npm package also register the short alias `tn` (skipped if the name is already taken; `TURNOUT_NO_ALIAS=1` opts out). `cargo install` gives you `turnout` only. The alias is a link to the binary rather than a copy of it, so an install costs one binary and both names always answer with the same version.
-
-Both installers take the newest release by default; set `TURNOUT_VERSION` to a tag to pin one, and `TURNOUT_INSTALL_DIR` to choose where the binary lands.
+Every way but `cargo install` also sets up the short alias `tn`. Archives for Windows x86_64, Linux x86_64 and arm64, and macOS arm64 are on [the releases page](https://github.com/lacodda/turnout/releases/latest); what each installer reads is in [Getting started](https://lacodda.github.io/turnout/getting-started/).
 
 ## Quick start
 
@@ -180,20 +114,13 @@ turnout gateway start          # route traffic through the gateway
 turnout deploy-setup           # to deploy: walks the credential, path and target
 ```
 
-Data lives in the platform user data directory (e.g. `%LOCALAPPDATA%\lacodda\turnout` on Windows); set `TURNOUT_DATA_DIR` to override.
-
-Full command reference and concepts: **[lacodda.github.io/turnout](https://lacodda.github.io/turnout/)**.
-
 ## Status
 
-v0.27.0, in daily use and being stabilised for 1.0: everything above works
-today, deploys are proven against real Linux and Windows servers, and a
-settings export from any version since v0.11 still imports. What landed in each
-version: [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).
+v0.27.0. The format of the settings has held since v0.11 - every release's export still imports - deploys are proven against real Linux and Windows servers on every push, and what landed in each version is in [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).
 
 ## Documentation
 
-The documentation site (Astro Starlight) lives in [`docs/`](https://github.com/lacodda/turnout/tree/main/docs); architecture decision records are in [`docs/adr/`](https://github.com/lacodda/turnout/tree/main/docs/adr).
+Commands, concepts and guides: **[lacodda.github.io/turnout](https://lacodda.github.io/turnout/)**. The site's source is in [`docs/`](https://github.com/lacodda/turnout/tree/main/docs), and architecture decision records are in [`docs/adr/`](https://github.com/lacodda/turnout/tree/main/docs/adr).
 
 ## License
 

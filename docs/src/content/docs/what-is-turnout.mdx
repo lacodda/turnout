@@ -1,0 +1,40 @@
+---
+title: What is turnout
+description: turnout on one screen - what it is, what it does in a working day, and how to get it.
+template: splash
+hero:
+  title: What is turnout
+  tagline: A developer's switchyard. Your local apps keep talking to localhost; turnout points them at whichever backend stand you pick, keeps the servers and secrets that reach those stands, and builds and deploys - from any directory.
+  actions:
+    - text: Get started
+      link: /turnout/getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/lacodda/turnout
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+	<Card title="Switch stands, stay signed in" icon="link">
+		`turnout use web staging` - the app's own address, `http://web.localhost`, now reaches staging. A session is kept per app and stand, so switching back does not log you out. [The gateway](/turnout/concepts/gateway/)
+	</Card>
+	<Card title="Work from any directory" icon="setting">
+		`dev`, `build`, `test` and any script of the project run in its folder, quietly until something breaks, in the foreground or as a background job that ends with a desktop notification. [Background jobs](/turnout/concepts/background-jobs/)
+	</Card>
+	<Card title="Deploy, and trust it" icon="rocket">
+		A named target ships one build over SSH to Linux and Windows servers: a backup first, a health check after, a rollback when it fails, a history of every deploy. [deploy](/turnout/reference/deploy/)
+	</Card>
+	<Card title="Access in one place" icon="seti:lock">
+		Passwords in the OS keyring, keys set up and proven for you, the SSH agent, host keys checked on every connection - and all of it carried to another machine with `export`. [SSH access](/turnout/guides/ssh-access/)
+	</Card>
+</CardGrid>
+
+```bash
+brew install lacodda/tap/turnout      # or: scoop install turnout, npm i -g turnout-cli, cargo install turnout
+turnout setup && turnout app add && turnout server add && turnout use
+```
+
+**1.0** means the settings are a contract: an export written by any release since 0.11 imports into this one, and nothing in 1.x breaks it. Every push is proven against real Linux and Windows servers.
