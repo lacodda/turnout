@@ -158,12 +158,17 @@ impl Step {
     /// Finish the phase without a result line of its own; the caller prints
     /// something more specific in its place. Off-terminal the step still
     /// announces what it was doing, so the output that follows has context.
+    ///
+    /// On stderr, where what follows - the note, the error - goes too. On
+    /// stdout it could be read after the note it introduces: the two streams
+    /// of a command run over `ssh` or `docker exec` travel apart and are
+    /// merged in whatever order they arrive.
     pub fn clear(self) {
         match self.bar {
             Some(bar) => bar.clear(),
             None => {
                 if let Some(message) = &self.pending {
-                    plain(message);
+                    eprintln!("{message}");
                 }
             }
         }
