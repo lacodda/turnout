@@ -16,7 +16,9 @@ turnout target add --app myapp --server prod --credential prod-deploy --path www
 turnout deploy myapp-prod        # from any directory
 ```
 
+<!-- historical versions -->
 Before v0.11.0 this relationship lived inside the server as a map from app to path. It had no name, so it could not be listed, renamed or reused, and a deploy had to be re-described every time it differed from the default. See [ADR 0013](https://github.com/lacodda/turnout/blob/main/docs/adr/0013-named-builds.md).
+<!-- /historical versions -->
 
 ## add
 

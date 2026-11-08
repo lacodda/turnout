@@ -53,9 +53,11 @@ Refused 1 item(s) this catalog cannot hold:
 
 An import is the one way into the catalog that does not go through [`app add`](/turnout/reference/app/), so it holds an arriving app to the same rule: every app has a [gateway port](/turnout/reference/app/#ports-turnout-hands-out) of its own.
 
+<!-- historical versions -->
 - An app that **arrives without a gateway port** - from an export written before v0.18.0, when the port was a question you could leave empty - is given one from 7100-7199.
 - An app that **arrives on a port an app here already holds** - the other machine handed out the same number - moves to a free one. The app already here keeps its number, because its dotenv file carries it.
 - A **dev port** an app here already uses is dropped from the arriving app; its next `turnout dev` picks a free one.
+<!-- /historical versions -->
 
 The import names each app it moved:
 
@@ -93,14 +95,20 @@ With no terminal the passphrase is read from stdin:
 printf '%s' "$PASSPHRASE" | turnout import backup.json
 ```
 
+<!-- historical versions -->
 An export written by a newer turnout is refused rather than half-read, with the version it needs. Format 4 (v0.24.0) is why: its targets can carry a [health check](/turnout/reference/target/#health-check), and an older turnout importing one would drop the check and deploy unchecked. Format 5 (v0.25.0) for the same reason: a target can say how many [backups its stand keeps](/turnout/reference/target/#backups), and an older turnout would drop the number and prune to its default.
+<!-- /historical versions -->
 
 The [deploy history](/turnout/reference/history/) does not travel: it is a record of what this machine did, not configuration.
 
 ## Files from older versions
 
+<!-- historical versions -->
 An export written by any release since v0.11.0 imports into this one with nothing lost. That is not a promise kept by reading the code: the repository holds the file each of those releases wrote, made by its own binary, and every build imports all of them and checks that each entity and each field comes back as it left.
+<!-- /historical versions -->
 
 ## Files from turnout 0.8
 
+<!-- historical versions -->
 Exports moved to format 2 in v0.9.0, when logins and remote directories became [credentials](/turnout/reference/credential/) and [paths](/turnout/reference/path/). A file from 0.8 or earlier holds servers with a `user@host` inside them and no separate entities to put that in, so it is refused rather than imported into a catalog of servers nobody can log into. It is still plain JSON and still readable - use it as your reference while re-entering, as described in [Upgrading](/turnout/guides/upgrading/#from-08-or-older).
+<!-- /historical versions -->

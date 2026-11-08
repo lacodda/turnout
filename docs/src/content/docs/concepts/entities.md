@@ -58,7 +58,9 @@ A named deploy route: which app, to which server, logging in as which credential
 - name (`myapp-prod`, defaulting to `APP-SERVER`);
 - the app, server, credential and path it joins, each by name.
 
+<!-- historical versions -->
 Before v0.11.0 this join lived inside the server, as a map from app name to path name. That put it in the wrong place: the pair it describes is "this app, on this server", not "this server, for whichever apps"; it could not be listed, renamed or reused on its own; and a deploy that wanted anything other than the default had to be re-described with flags every time rather than named once. Pulling it out into its own entity makes it a thing you can list, `show`, rename and address directly - `turnout deploy myapp-prod` from anywhere, no project directory or binding required. See [`turnout target`](/turnout/reference/target/).
+<!-- /historical versions -->
 
 ## State
 

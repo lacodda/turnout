@@ -11,7 +11,9 @@ turnout app <add|list|show|edit|remove> [...]
 
 An **app** is a local project: its path, its commands (`dev`, `build`, ...), its gateway port and the servers it is allowed to use. See [Entities](/turnout/concepts/entities/).
 
+<!-- historical versions -->
 You are not asked for a port of either kind. Since v0.18.0 turnout assigns the gateway port when the app is added and the dev port on the first `turnout dev`; both flags are still there for a project that insists on a specific number.
+<!-- /historical versions -->
 
 ## add
 

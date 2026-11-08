@@ -41,7 +41,9 @@ The answer is stored on the server entry, so it costs one round trip once rather
 
 `turnout server show` names it on its **Shell** line. sshd's shell does not change on its own, so the answer stays valid until the server is pointed somewhere else: a new `--url` or `--host` forgets it, and the next command asks again. If the shell does change on the same machine - someone repoints `DefaultShell` - give the server the address it already has (`turnout server edit prod --host HOST`), and turnout asks again.
 
+<!-- historical versions -->
 When the probe itself fails, turnout assumes POSIX. That is what every release before v0.7.0 assumed unconditionally, so a broken probe degrades to the old behavior instead of to a new failure.
+<!-- /historical versions -->
 
 ## Deploy paths
 
