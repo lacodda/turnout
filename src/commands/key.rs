@@ -91,7 +91,7 @@ pub fn setup(server_name: Option<String>, credential_name: Option<String>, key_p
 
     // 7. Prove it. A fresh session, key only.
     let step = Step::start("Checking that the key signs in");
-    match Session::open_with_key(&server.ssh_host(), server.port, &credential.user, &key.path, key.passphrase.as_deref()) {
+    match Session::open_with_key(&server, &credential.user, &key.path, key.passphrase.as_deref()) {
         Ok(_) => step.done("The key signs in"),
         Err(err) => {
             step.clear();
@@ -395,7 +395,7 @@ pub fn check(server_name: Option<String>, credential_name: Option<String>) -> Re
     };
     let passphrase = secrets::get(&credential.name).ok();
     let step = Step::start(format!("Signing in as {who} with {path}"));
-    match Session::open_with_key(&server.ssh_host(), server.port, &credential.user, &path, passphrase.as_deref()) {
+    match Session::open_with_key(&server, &credential.user, &path, passphrase.as_deref()) {
         Ok(_) => {
             step.done(format!("{who} signs in with its key ({}, key {path})", credential.name));
             Ok(())

@@ -19,6 +19,8 @@ The session itself belongs to the system `ssh` client - a terminal is its job, a
 
 Landing in the deploy directory needs the server's shell, which the catalog knows after the first remote command (a deploy, an `exec`); when it does not, turnout asks with one extra login, and a login that fails only costs the directory.
 
+`ssh` checks the server's host key against `~/.ssh/known_hosts`, the same file turnout's own connections use, so a key one of them trusts the other trusts too - see [Host keys](/turnout/concepts/host-keys/). When `TURNOUT_KNOWN_HOSTS` names another file, turnout hands it to `ssh` as `-o UserKnownHostsFile=...`.
+
 `TURNOUT_SSH` names another client binary when `ssh` is not the one on PATH.
 
 ```bash

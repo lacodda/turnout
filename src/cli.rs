@@ -944,4 +944,12 @@ pub enum ServerCommand {
         #[arg(short, long)]
         force: bool,
     },
+    /// Trust the host key the server presents now - after it was reinstalled, or to check it before the first connection
+    Trust {
+        /// Server name; picked interactively when omitted
+        name: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+    },
 }

@@ -15,35 +15,130 @@
 
 use std::cell::OnceCell;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use russh::client::{self, Handle, Msg};
-use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKeyOrCertificate, load_secret_key};
+use russh::keys::{Algorithm, HashAlg, PrivateKey, PrivateKeyWithHashAlg, PublicKey, PublicKeyOrCertificate, load_secret_key};
 use russh::{Channel, ChannelMsg};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::OpenFlags;
 use tokio::runtime::Runtime;
 
 use crate::agent;
+use crate::known_hosts::{self, Verdict};
 use crate::model::{Auth, Credential, Server};
 use crate::secrets;
 
-/// Accepts whatever host key the server presents.
+/// Checks the host key a server presents against `known_hosts`, and learns
+/// the key of a host met for the first time (see [`crate::known_hosts`]).
 ///
-/// turnout does not pin host keys (it never has - libssh2 was used without a
-/// known-hosts check too), so the honest thing is to say so in one place rather
-/// than pretend otherwise. Host-key trust is a candidate for a later stage; for
-/// now the transport's job is to connect where the old one could not.
-struct AcceptAnyHostKey;
+/// The check runs inside the key exchange, before a password or a signature
+/// leaves this machine: a server that is not the one recorded gets nothing.
+struct HostKeyCheck {
+    file: PathBuf,
+    host: String,
+    port: u16,
+    /// The server's name in the catalog, for the command a refusal suggests.
+    server: Option<String>,
+}
 
-impl client::Handler for AcceptAnyHostKey {
+impl client::Handler for HostKeyCheck {
     type Error = anyhow::Error;
 
-    async fn check_server_key(&mut self, _key: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
-        Ok(true)
+    async fn check_server_key(&mut self, presented: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+        let key = presented_key(presented);
+        match known_hosts::check(&self.file, &self.host, self.port, &key)? {
+            Verdict::Known | Verdict::Learned => Ok(true),
+            Verdict::Changed { line, known } => {
+                let trust = match &self.server {
+                    Some(name) => format!("`turnout server trust {name}`"),
+                    None => "`turnout server trust NAME`".to_string(),
+                };
+                bail!(
+                    "{REFUSED} {host}:{port}: its host key has changed\n  \
+                     it presents {presented}\n  \
+                     {file} holds {known} for it (line {line})\n\
+                     Someone may be intercepting the connection - or the server was reinstalled and has a new key.\n\
+                     Once you know it is the server: {trust} shows the new key and asks to trust it.",
+                    host = self.host,
+                    port = self.port,
+                    presented = known_hosts::describe(&key),
+                    file = self.file.display(),
+                )
+            }
+            Verdict::Revoked { line } => bail!(
+                "{REFUSED} {}:{}: its host key {} is marked @revoked in {} (line {line})",
+                self.host,
+                self.port,
+                known_hosts::describe(&key),
+                self.file.display()
+            ),
+        }
     }
+}
+
+/// How a refusal over the host key begins; [`authenticate`] tells it from a
+/// network failure by it.
+const REFUSED: &str = "refusing to connect to";
+
+/// The key a server presented: a host certificate is checked by the key it
+/// certifies - turnout trusts keys, not certificate authorities.
+fn presented_key(presented: &PublicKeyOrCertificate) -> PublicKey {
+    match presented {
+        PublicKeyOrCertificate::PublicKey { key, .. } => key.clone(),
+        PublicKeyOrCertificate::Certificate(certificate) => PublicKey::from(certificate.public_key().clone()),
+    }
+}
+
+/// The client configuration for `host:port`: the host key algorithms
+/// `known_hosts` already holds for it asked for first. A server offers
+/// several host keys and presents the one the client prefers; without this, a
+/// server known by its RSA key would present a new ED25519 one and be refused
+/// as changed.
+fn client_config(file: &Path, host: &str, port: u16) -> client::Config {
+    let known = known_hosts::algorithms(file, host, port);
+    let mut keys = russh::Preferred::default().key.into_owned();
+    // Stable: within each side the default order stands.
+    let rsa = |a: &Algorithm| matches!(a, Algorithm::Rsa { .. });
+    keys.sort_by_key(|algorithm| !known.iter().any(|k| k == algorithm || (rsa(k) && rsa(algorithm))));
+    client::Config {
+        preferred: russh::Preferred {
+            key: std::borrow::Cow::Owned(keys),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+/// The host key `host:port` presents, without signing in: what `turnout
+/// server trust` shows before it is trusted. Asked for with the preferences a
+/// session uses, so it is the key a session would meet.
+pub fn host_key(host: &str, port: u16) -> Result<PublicKey> {
+    struct Capture(Arc<std::sync::Mutex<Option<PublicKey>>>);
+    impl client::Handler for Capture {
+        type Error = anyhow::Error;
+        async fn check_server_key(&mut self, presented: &PublicKeyOrCertificate) -> Result<bool, Self::Error> {
+            *self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(presented_key(presented));
+            Ok(true)
+        }
+    }
+    let file = known_hosts::file()?;
+    let seen = Arc::new(std::sync::Mutex::new(None));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("cannot start the SSH runtime")?;
+    runtime.block_on(async {
+        let handle = client::connect(Arc::new(client_config(&file, host, port)), (host, port), Capture(seen.clone()))
+            .await
+            .with_context(|| format!("cannot reach {host}:{port}"))?;
+        let _ = handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+        anyhow::Ok(())
+    })?;
+    let key = seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
+    key.ok_or_else(|| anyhow::anyhow!("{host}:{port} presented no host key"))
 }
 
 /// A live SSH connection, plus the runtime that drives it.
@@ -58,7 +153,7 @@ pub struct Session {
     /// for each one.
     sftp: OnceCell<SftpSession>,
     runtime: Runtime,
-    handle: Handle<AcceptAnyHostKey>,
+    handle: Handle<HostKeyCheck>,
 }
 
 impl Session {
@@ -75,7 +170,7 @@ impl Session {
     /// trip that could not have succeeded anyway.
     pub fn connect(server: &Server, credential: &Credential) -> Result<Self> {
         let material = auth_material(credential)?;
-        Self::open(&server.ssh_host(), server.port, &credential.user, material)
+        Self::open_as(Some(&server.name), &server.ssh_host(), server.port, &credential.user, material)
     }
 
     /// Open a session authenticating with one named key file, and nothing else.
@@ -85,17 +180,36 @@ impl Session {
     /// switched over, so going through it would sign in with the password and
     /// prove nothing about the key. Offering only the key is what makes a
     /// success mean the server accepted it.
-    pub fn open_with_key(host: &str, port: u16, user: &str, key_path: &str, passphrase: Option<&str>) -> Result<Self> {
-        Self::open(host, port, user, key_material(key_path, passphrase)?)
+    pub fn open_with_key(server: &Server, user: &str, key_path: &str, passphrase: Option<&str>) -> Result<Self> {
+        Self::open_as(Some(&server.name), &server.ssh_host(), server.port, user, key_material(key_path, passphrase)?)
     }
 
-    /// Open a session with already-resolved auth material.
+    /// Open a session with already-resolved auth material, to an address the
+    /// catalog has no name for.
+    #[cfg(test)]
     fn open(host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Self> {
+        Self::open_as(None, host, port, user, material)
+    }
+
+    /// Open a session to the server the catalog calls `server` - the name a
+    /// refused host key gives in its advice.
+    fn open_as(server: Option<&str>, host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Self> {
+        Self::open_checked(known_hosts::file()?, server, host, port, user, material)
+    }
+
+    /// [`Session::open_as`] with the host key checked against `file`.
+    fn open_checked(file: PathBuf, server: Option<&str>, host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Self> {
+        let check = HostKeyCheck {
+            file,
+            host: host.to_string(),
+            port,
+            server: server.map(str::to_string),
+        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .context("cannot start the SSH runtime")?;
-        let handle = runtime.block_on(authenticate(host, port, user, material))?;
+        let handle = runtime.block_on(authenticate(check, user, material))?;
         Ok(Self {
             sftp: OnceCell::new(),
             runtime,
@@ -265,7 +379,7 @@ fn key_material(path: &str, passphrase: Option<&str>) -> Result<AuthMaterial> {
 /// best of those is used. A server that names nothing predates the extension
 /// (RFC 8308) and with it SHA-2 signatures: for that one SHA-1 is right, and
 /// it is what `ssh` itself falls back to.
-async fn rsa_hash(handle: &Handle<AcceptAnyHostKey>, algorithm: Algorithm, best: &mut Option<Option<HashAlg>>) -> Result<Option<HashAlg>> {
+async fn rsa_hash(handle: &Handle<HostKeyCheck>, algorithm: Algorithm, best: &mut Option<Option<HashAlg>>) -> Result<Option<HashAlg>> {
     if !algorithm.is_rsa() {
         return Ok(None);
     }
@@ -280,11 +394,16 @@ async fn rsa_hash(handle: &Handle<AcceptAnyHostKey>, algorithm: Algorithm, best:
 }
 
 /// Connect and authenticate, returning the live handle.
-async fn authenticate(host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Handle<AcceptAnyHostKey>> {
-    let config = Arc::new(client::Config::default());
-    let mut handle = client::connect(config, (host, port), AcceptAnyHostKey)
-        .await
-        .with_context(|| format!("cannot reach {host}:{port}"))?;
+async fn authenticate(check: HostKeyCheck, user: &str, material: AuthMaterial) -> Result<Handle<HostKeyCheck>> {
+    let (host, port) = (check.host.clone(), check.port);
+    let config = Arc::new(client_config(&check.file, &host, port));
+    let mut handle = match client::connect(config, (host.as_str(), port), check).await {
+        Ok(handle) => handle,
+        // A refused host key is the whole message: "cannot reach" in front
+        // of it would send the reader looking at the network.
+        Err(err) if err.to_string().starts_with(REFUSED) => return Err(err),
+        Err(err) => return Err(err).with_context(|| format!("cannot reach {host}:{port}")),
+    };
 
     let ok = match material {
         AuthMaterial::Key(key) => {
@@ -317,7 +436,7 @@ async fn authenticate(host: &str, port: u16, user: &str, material: AuthMaterial)
 /// a refusal of the first is not a failure - only running out of keys is. This
 /// is what `ssh` itself does, and why the loop exists rather than a single
 /// attempt on the first identity.
-async fn authenticate_with_agent(mut handle: Handle<AcceptAnyHostKey>, user: &str) -> Result<Handle<AcceptAnyHostKey>> {
+async fn authenticate_with_agent(mut handle: Handle<HostKeyCheck>, user: &str) -> Result<Handle<HostKeyCheck>> {
     let mut agent = agent::connect().await?;
     let identities = agent::identities(&mut agent).await?;
     if identities.is_empty() {
@@ -354,7 +473,7 @@ async fn authenticate_with_agent(mut handle: Handle<AcceptAnyHostKey>, user: &st
 
 /// Run a command over a fresh channel and collect stdout, stderr and the exit
 /// status.
-async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<Vec<u8>> {
+async fn exec(handle: &Handle<HostKeyCheck>, command: &str) -> Result<Vec<u8>> {
     let mut channel: Channel<Msg> = handle
         .channel_open_session()
         .await
@@ -399,7 +518,7 @@ async fn exec(handle: &Handle<AcceptAnyHostKey>, command: &str) -> Result<Vec<u8
 ///
 /// A channel that closes without an exit status is a dropped connection,
 /// exactly as in [`exec`]; nothing here reads a missing status as success.
-async fn run(handle: &Handle<AcceptAnyHostKey>, command: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> Result<u32> {
+async fn run(handle: &Handle<HostKeyCheck>, command: &str, stdout: &mut impl Write, stderr: &mut impl Write) -> Result<u32> {
     let mut channel: Channel<Msg> = handle
         .channel_open_session()
         .await
@@ -428,7 +547,7 @@ async fn run(handle: &Handle<AcceptAnyHostKey>, command: &str, stdout: &mut impl
 }
 
 /// Open an SFTP subsystem over a fresh channel.
-async fn open_sftp(handle: &Handle<AcceptAnyHostKey>) -> Result<SftpSession> {
+async fn open_sftp(handle: &Handle<HostKeyCheck>) -> Result<SftpSession> {
     let channel = handle.channel_open_session().await.context("cannot open an SFTP channel")?;
     channel.request_subsystem(true, "sftp").await.context("cannot start the SFTP subsystem")?;
     SftpSession::new(channel.into_stream()).await.context("cannot open SFTP")
@@ -528,6 +647,20 @@ pub(crate) mod tests {
         let mut rng = rand::rngs::StdRng::from_seed([seed; 32]);
         let pair = russh::keys::ssh_key::private::RsaKeypair::random(&mut rng, 2048).expect("an RSA key from a fixed seed");
         russh::keys::PrivateKey::new(KeypairData::Rsa(pair), comment).expect("an RSA key")
+    }
+
+    /// The catalog's view of a stand on this machine.
+    fn loopback(port: u16) -> Server {
+        Server {
+            name: "stand".into(),
+            label: None,
+            url: "http://127.0.0.1".into(),
+            host: Some("127.0.0.1".into()),
+            port,
+            accept_invalid_certs: false,
+            shell: None,
+            credential: None,
+        }
     }
 
     /// One running test server: its port, the directory SFTP writes into, and
@@ -899,6 +1032,73 @@ pub(crate) mod tests {
         }
     }
 
+    /// The first session to a host writes its key down, and the next one
+    /// finds it there. A file of the test's own: the process-wide one is
+    /// shared by every test running beside it.
+    #[test]
+    fn the_first_session_learns_the_host_key_and_the_next_finds_it() {
+        let stand = Stand::spawn();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("known_hosts");
+        let key = ed25519_key(7, "test host key").public_key().clone();
+        let open = || Session::open_checked(file.clone(), None, "127.0.0.1", stand.port, USER, AuthMaterial::Password(PASSWORD.into()));
+        open().expect("a first session");
+        let trusted = known_hosts::trusted(&file, "127.0.0.1", stand.port).unwrap();
+        assert_eq!(trusted.len(), 1, "one line for the new host");
+        assert_eq!(known_hosts::describe(&trusted[0].key), known_hosts::describe(&key));
+        open().expect("a second session");
+        assert_eq!(
+            known_hosts::trusted(&file, "127.0.0.1", stand.port).unwrap().len(),
+            1,
+            "a known host is not written twice"
+        );
+    }
+
+    /// A server presenting another key than the one on record is refused
+    /// before the password is sent - the stand would accept it, so a session
+    /// here would mean the check let it through.
+    #[test]
+    fn a_changed_host_key_is_refused_before_signing_in() {
+        let stand = Stand::spawn();
+        let scratch = tempfile::tempdir().unwrap();
+        let file = scratch.path().join("known_hosts");
+        let other = ed25519_key(8, "someone else").public_key().clone();
+        known_hosts::replace(&file, "127.0.0.1", stand.port, &other).unwrap();
+        let open = || {
+            Session::open_checked(
+                file.clone(),
+                Some("stand"),
+                "127.0.0.1",
+                stand.port,
+                USER,
+                AuthMaterial::Password(PASSWORD.into()),
+            )
+        };
+        let error = match open() {
+            Ok(_) => panic!("a session to a server with another host key"),
+            Err(err) => format!("{err:#}"),
+        };
+        assert!(
+            error.starts_with(&format!("refusing to connect to 127.0.0.1:{}: its host key has changed", stand.port)),
+            "{error}"
+        );
+        assert!(error.contains(&known_hosts::describe(&other)), "the key on record is named: {error}");
+        assert!(error.contains("`turnout server trust stand`"), "the way out is named: {error}");
+        assert!(!error.contains("cannot reach"), "a refusal is not a network failure: {error}");
+
+        // Trusted again, it signs in.
+        known_hosts::replace(&file, "127.0.0.1", stand.port, &host_key("127.0.0.1", stand.port).unwrap()).unwrap();
+        open().expect("the trusted key signs in");
+    }
+
+    /// What `server trust` shows is the key a session meets.
+    #[test]
+    fn the_host_key_is_read_without_signing_in() {
+        let stand = Stand::spawn_key_only();
+        let key = host_key("127.0.0.1", stand.port).expect("the host key, with no credential at all");
+        assert_eq!(known_hosts::describe(&key), known_hosts::describe(ed25519_key(7, "").public_key()));
+    }
+
     #[test]
     fn exec_returns_stdout_on_a_zero_exit() {
         let stand = Stand::spawn();
@@ -999,7 +1199,7 @@ pub(crate) mod tests {
             .expect("serialize the key");
         std::fs::write(&key_path, openssh.as_bytes()).expect("write the key file");
 
-        Session::open_with_key("127.0.0.1", stand.port, USER, &key_path.display().to_string(), None).expect("the RSA key signs in with SHA-2");
+        Session::open_with_key(&loopback(stand.port), USER, &key_path.display().to_string(), None).expect("the RSA key signs in with SHA-2");
     }
 
     /// A real SSH agent, in-process on a loopback socket.
@@ -1241,14 +1441,14 @@ pub(crate) mod tests {
         let refused = Session::open("127.0.0.1", stand.port, USER, AuthMaterial::Password(PASSWORD.into()));
         assert!(refused.is_err(), "this stand must not accept passwords");
 
-        Session::open_with_key("127.0.0.1", stand.port, USER, &key_path.display().to_string(), None).expect("the key signs in");
+        Session::open_with_key(&loopback(stand.port), USER, &key_path.display().to_string(), None).expect("the key signs in");
     }
 
     /// A key that does not exist must fail as a missing file, not as a network
     /// problem: `key setup` resolves the key before it dials anywhere.
     #[test]
     fn a_named_key_that_is_not_there_fails_before_dialing() {
-        let error = match Session::open_with_key("127.0.0.1", 1, USER, "definitely/not/a/key", None) {
+        let error = match Session::open_with_key(&loopback(1), USER, "definitely/not/a/key", None) {
             Ok(_) => panic!("there is no such key"),
             Err(error) => error.to_string(),
         };

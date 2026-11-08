@@ -16,6 +16,7 @@ mod jar;
 mod job;
 mod journal;
 mod keysetup;
+mod known_hosts;
 mod manifest;
 mod migrate;
 mod model;

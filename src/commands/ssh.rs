@@ -20,7 +20,17 @@ pub fn run(name: Option<String>, credential: Option<String>) -> Result<()> {
     let host = remote::resolve_host(name, credential)?;
     let client = std::env::var(ENV_CLIENT).unwrap_or_else(|_| "ssh".to_string());
 
-    let mut args: Vec<String> = vec!["-p".into(), host.server.port.to_string()];
+    let mut args: Vec<String> = Vec::new();
+    // One file of host keys for both: `ssh` reads ~/.ssh/known_hosts by itself,
+    // and only a file named elsewhere has to be handed to it.
+    if let Some(file) = std::env::var_os(crate::known_hosts::FILE_ENV) {
+        args.push("-o".into());
+        let file = std::path::Path::new(&file).display().to_string();
+        // The option takes a list split on blanks, so a path with one is quoted.
+        let file = if file.contains(char::is_whitespace) { format!("\"{file}\"") } else { file };
+        args.push(format!("UserKnownHostsFile={file}"));
+    }
+    args.extend(["-p".into(), host.server.port.to_string()]);
     if host.credential.auth == Auth::Key
         && let Some(key) = &host.credential.key
     {

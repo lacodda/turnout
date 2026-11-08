@@ -18,7 +18,8 @@ use assert_cmd::Command;
 /// - notifications into a file, not onto the desktop of whoever runs the suite;
 /// - secrets into a file, not the OS keyring - a credential named `deploy` is
 ///   the default name, and a real one on the machine must not answer;
-/// - the clipboard into a file, not over whatever the person had copied.
+/// - the clipboard into a file, not over whatever the person had copied;
+/// - host keys into a known_hosts of its own, not the person's ~/.ssh one.
 ///
 /// The few tests that exercise one of these switch it back on themselves.
 pub fn isolation(data_dir: &Path) -> Vec<(&'static str, PathBuf)> {
@@ -28,6 +29,7 @@ pub fn isolation(data_dir: &Path) -> Vec<(&'static str, PathBuf)> {
         ("TURNOUT_TOASTS", toast_file(data_dir)),
         ("TURNOUT_KEYRING", PathBuf::from("insecure-file")),
         ("TURNOUT_CLIPBOARD", clipboard_file(data_dir)),
+        ("TURNOUT_KNOWN_HOSTS", data_dir.join("known_hosts")),
     ]
 }
 

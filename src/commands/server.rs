@@ -6,7 +6,7 @@ use serde::Serialize;
 use crate::cli::{Format, ServerCommand};
 use crate::model::{Server, parse_host, validate_name, validate_url};
 use crate::shell::Dialect;
-use crate::{output, pick, store};
+use crate::{known_hosts, output, pick, store};
 
 pub fn run(command: ServerCommand) -> Result<()> {
     match command {
@@ -36,7 +36,65 @@ pub fn run(command: ServerCommand) -> Result<()> {
             let name = resolve(name, "Remove server")?;
             remove(&name, assume_yes, force)
         }
+        ServerCommand::Trust { name, assume_yes } => {
+            let name = resolve(name, "Trust the host key of")?;
+            trust(&name, assume_yes)
+        }
     }
+}
+
+/// Trust the host key `name` presents now, in place of whatever
+/// `known_hosts` held for it.
+///
+/// The key is shown before it is trusted, with how to read the server's own
+/// fingerprint: comparing the two is the only thing that tells a reinstalled
+/// server from someone in between, and nothing here can do it for you.
+fn trust(name: &str, assume_yes: bool) -> Result<()> {
+    let server = store::load_servers()?
+        .into_iter()
+        .find(|s| s.name == name)
+        .ok_or_else(|| unknown_server(name))?;
+    let (host, port) = (server.ssh_host(), server.port);
+    let file = known_hosts::file()?;
+    let presented = crate::ssh::host_key(&host, port)?;
+    let shown = known_hosts::describe(&presented);
+    let trusted = known_hosts::trusted(&file, &host, port)?;
+    if let Some(known) = trusted.iter().find(|k| known_hosts::same_key(&k.key, &presented)) {
+        println!(
+            "'{name}' is trusted already: {host}:{port} presents {shown}, line {} of {}.",
+            known.line,
+            file.display()
+        );
+        return Ok(());
+    }
+
+    println!("{host}:{port} presents {shown}.");
+    match trusted.first() {
+        Some(known) => println!(
+            "{} holds {} for it (line {}): this is not the key turnout last saw there.",
+            file.display(),
+            known_hosts::describe(&known.key),
+            known.line
+        ),
+        None => println!("{} holds nothing for it yet.", file.display()),
+    }
+    let kind = match presented.algorithm() {
+        russh::keys::Algorithm::Rsa { .. } => "rsa",
+        russh::keys::Algorithm::Ecdsa { .. } => "ecdsa",
+        _ => "ed25519",
+    };
+    println!(
+        "Compare it with the server's own before trusting it - there: ssh-keygen -lf /etc/ssh/ssh_host_{kind}_key.pub \
+         (C:\\ProgramData\\ssh\\ssh_host_{kind}_key.pub on Windows)"
+    );
+    if !pick::confirm_destructive(format!("Trust this key for '{name}'?"), assume_yes)? {
+        println!("Nothing changed.");
+        return Ok(());
+    }
+    known_hosts::replace(&file, &host, port, &presented)?;
+    crate::journal::record("server.trust", None, Some(name), Some(&shown));
+    println!("'{name}' is {shown} from now on.");
+    Ok(())
 }
 
 /// Take the server name as given, or let the user pick one.
@@ -176,6 +234,9 @@ pub struct ServerView {
     pub credential: Option<String>,
     /// Self-signed and otherwise invalid certificates are accepted here.
     pub accept_invalid_certs: bool,
+    /// The SSH host key known_hosts trusts for it (`ED25519 SHA256:...`);
+    /// `null` until the first connection learns one.
+    pub host_key: Option<String>,
     /// The deploy targets that land on this server.
     pub targets: Vec<Landing>,
     /// Apps whose allow-list names this server.
@@ -201,6 +262,9 @@ pub fn views() -> Result<Vec<ServerView>> {
     let paths = store::load_paths()?;
     let apps = store::load_apps()?;
     let state = store::load_state()?;
+    // Unreadable is shown as unknown: a listing is not where a broken
+    // known_hosts is reported - the next connection says so.
+    let known_hosts = known_hosts::file().ok();
     Ok(store::load_servers()?
         .iter()
         .map(|server| ServerView {
@@ -213,6 +277,10 @@ pub fn views() -> Result<Vec<ServerView>> {
             shell: server.shell,
             credential: server.credential.clone(),
             accept_invalid_certs: server.accept_invalid_certs,
+            host_key: known_hosts
+                .as_deref()
+                .and_then(|file| known_hosts::trusted(file, &server.ssh_host(), server.port).ok())
+                .and_then(|trusted| trusted.first().map(|known| known_hosts::describe(&known.key))),
             // Which deploy targets land here. The server used to own this
             // list; since v0.11.0 the targets do, and this reads it back the
             // other way round.
@@ -277,6 +345,10 @@ fn show(name: &str, format: Format) -> Result<()> {
             Some(Dialect::Windows) => "  Shell:      cmd.exe".to_string(),
             Some(Dialect::Posix) => "  Shell:      sh".to_string(),
             None => "  Shell:      not asked yet - learned on the first command that needs it".to_string(),
+        });
+        lines.push(match &server.host_key {
+            Some(key) => format!("  Host key:   {key}"),
+            None => "  Host key:   not seen yet - trusted on the first connection".to_string(),
         });
         lines.push(match &server.credential {
             Some(credential) => format!("  Credential: {credential}"),
