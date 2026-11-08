@@ -30,6 +30,20 @@ pub(crate) type Jars = Arc<Mutex<HashMap<(String, String), Jar>>>;
 /// any certificate (see [`client_for`]).
 pub(crate) type Clients = Arc<Mutex<HashMap<(String, bool), reqwest::Client>>>;
 
+/// The cookie jars, as whatever went wrong while they were held left them.
+///
+/// The same reasoning as the signal board's: a jar a panic interrupted
+/// mid-request still holds cookies worth sending, while a poisoned lock
+/// would fail every request after it until the gateway restarts.
+pub(crate) fn lock_jars(jars: &Jars) -> MutexGuard<'_, HashMap<(String, String), Jar>> {
+    jars.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The stand clients, the same way: a cache is rebuilt on a miss anyway.
+fn lock_clients(clients: &Clients) -> MutexGuard<'_, HashMap<(String, bool), reqwest::Client>> {
+    clients.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// How long the session check waits for the stand. A proving request
 /// answered within [`crate::jar::QUICK`] once; this is the margin for a stand
 /// that is slower this morning, not for one that is gone.
@@ -152,7 +166,7 @@ impl Watch {
 /// `println!` panics when stdout cannot be written: a full disk under the
 /// log file `gateway start` points it at, the end of a pipe whose `tee`
 /// exited. A log line is not worth a request, let alone all of them.
-fn say(out: &mut impl Write, lines: &[String]) {
+pub(crate) fn say(out: &mut impl Write, lines: &[String]) {
     for line in lines {
         if writeln!(out, "{line}").is_err() {
             return;
@@ -390,7 +404,7 @@ async fn forward(ctx: Ctx, req: Request) -> Result<Response> {
         },
     );
     {
-        let mut jars = ctx.jars.lock().expect("cookie jar poisoned");
+        let mut jars = lock_jars(&ctx.jars);
         let jar = jars.entry(jar_key).or_default();
         let taken = take_cookies(jar, &url, &resp_headers);
         if sent_cookies {
@@ -622,7 +636,7 @@ fn stand_to_client(message: StandMessage) -> Option<ClientMessage> {
 /// reads it fresh, already obeyed it.
 fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
     let key = (server.name.clone(), server.accept_invalid_certs);
-    let mut cache = clients.lock().expect("client cache poisoned");
+    let mut cache = lock_clients(clients);
     if let Some(client) = cache.get(&key) {
         return Ok(client.clone());
     }
@@ -641,7 +655,7 @@ fn client_for(clients: &Clients, server: &Server) -> Result<reqwest::Client> {
 /// Shared by the HTTP and WebSocket proxies and the session check, so the
 /// "stored cookie is not a valid header value" complaint has exactly one home.
 fn stored_cookie_header(jars: &Jars, key: &(String, String), url: &reqwest::Url) -> Result<Option<HeaderValue>> {
-    let cookie = jars.lock().expect("cookie jar poisoned").get(key).and_then(|jar| jar.header(url));
+    let cookie = lock_jars(jars).get(key).and_then(|jar| jar.header(url));
     cookie
         .map(|cookie| HeaderValue::from_str(&cookie).context("stored cookie is not a valid header value"))
         .transpose()
@@ -665,7 +679,7 @@ pub(crate) async fn check_session(jars: &Jars, clients: &Clients, watch: &Watch,
         .ok_or_else(|| anyhow!("server '{server_name}' is gone from the catalog"))?;
     let key = (app.to_string(), server_name.to_string());
     let (proof, empty) = {
-        let jars = jars.lock().expect("cookie jar poisoned");
+        let jars = lock_jars(jars);
         let jar = jars.get(&key);
         (jar.and_then(Jar::proof).cloned(), jar.is_none_or(Jar::is_empty))
     };
@@ -714,7 +728,7 @@ pub(crate) async fn check_session(jars: &Jars, clients: &Clients, watch: &Watch,
         },
     );
     {
-        let mut jars = jars.lock().expect("cookie jar poisoned");
+        let mut jars = lock_jars(jars);
         let jar = jars.entry(key).or_default();
         take_cookies(jar, &url, answer.headers());
         jar.answered(Answer {
@@ -862,6 +876,34 @@ mod tests {
     /// A panic while the board was held used to poison it, and every
     /// proxied request after that panicked on the lock: the gateway was up
     /// and answered nothing. The board carries on as it was left.
+    #[test]
+    fn poisoned_jars_and_clients_still_answer() {
+        let jars: Jars = Arc::default();
+        let clients: Clients = Arc::default();
+        for poisoner in [
+            {
+                let jars = jars.clone();
+                std::thread::spawn(move || {
+                    let _held = jars.lock().unwrap();
+                    panic!("a request that panicked while it held the jars");
+                })
+            },
+            {
+                let clients = clients.clone();
+                std::thread::spawn(move || {
+                    let _held = clients.lock().unwrap();
+                    panic!("a request that panicked while it held the clients");
+                })
+            },
+        ] {
+            assert!(poisoner.join().is_err());
+        }
+        assert!(jars.is_poisoned() && clients.is_poisoned());
+        lock_jars(&jars).insert(("web".into(), "staging".into()), Jar::default());
+        assert_eq!(lock_jars(&jars).len(), 1);
+        assert!(lock_clients(&clients).is_empty());
+    }
+
     #[test]
     fn a_poisoned_board_still_takes_what_the_stands_say() {
         let watch = quiet_watch();

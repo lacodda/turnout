@@ -152,7 +152,7 @@ async fn list(State(ctx): State<Ctx>, headers: HeaderMap) -> Response {
     if !authorized(&ctx, &headers) {
         return refused();
     }
-    let jars = ctx.jars.lock().expect("cookie jar poisoned");
+    let jars = crate::gateway::lock_jars(&ctx.jars);
     let mut views: Vec<JarView> = jars
         .iter()
         .filter(|(_, jar)| !jar.is_empty())
@@ -189,13 +189,16 @@ async fn set(State(ctx): State<Ctx>, Path((app, server)): Path<(String, String)>
     // A name given twice keeps the last value, as a header read left to right would.
     let pairs: Vec<(String, String)> = body.cookies.into_iter().collect::<HashMap<_, _>>().into_iter().collect();
     let count = pairs.len();
-    ctx.jars
-        .lock()
-        .expect("cookie jar poisoned")
+    crate::gateway::lock_jars(&ctx.jars)
         .entry((app.clone(), server.clone()))
         .or_default()
         .replace(&url, pairs);
-    println!("{app} -> {server}: {count} cookies handed over with `turnout cookie set`");
+    // Through the gateway's own writer: a stdout that cannot be written - a
+    // full disk under the log, a closed pipe - must not fail the request.
+    crate::gateway::say(
+        &mut std::io::stdout().lock(),
+        &[format!("{app} -> {server}: {count} cookies handed over with `turnout cookie set`")],
+    );
     ctx.watch.renewed(&app, &server);
     StatusCode::NO_CONTENT.into_response()
 }
@@ -204,8 +207,11 @@ async fn clear(State(ctx): State<Ctx>, Path((app, server)): Path<(String, String
     if !authorized(&ctx, &headers) {
         return refused();
     }
-    ctx.jars.lock().expect("cookie jar poisoned").remove(&(app.clone(), server.clone()));
-    println!("{app} -> {server}: cookies forgotten with `turnout cookie clear`");
+    crate::gateway::lock_jars(&ctx.jars).remove(&(app.clone(), server.clone()));
+    crate::gateway::say(
+        &mut std::io::stdout().lock(),
+        &[format!("{app} -> {server}: cookies forgotten with `turnout cookie clear`")],
+    );
     StatusCode::NO_CONTENT.into_response()
 }
 
