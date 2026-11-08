@@ -37,6 +37,9 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+import deployCast from '../../../screens/v1.0.1/deploy.gif';
+import doctorServer from '../../../screens/v1.0.1/doctor-server.png';
+import status from '../../../screens/v1.0.1/status.png';
 
 ## A day in the life
 
@@ -57,6 +60,14 @@ $ turnout dev --open
 ```
 
 Nothing in the project changed - the app still talks to `localhost`, and the [gateway](/turnout/concepts/gateway/) routes it to the stand you picked. Cookies are kept per app **and** stand, so the switch does not log you out.
+
+A deploy, a stand checked before one, and the window onto it all - recorded from a real run of the release against a stand:
+
+<img src={deployCast.src} alt="turnout deploy: connect, back up, pack, upload, unpack, restart and a health check, each step a line of the checklist" width="760" />
+
+<img src={doctorServer.src} alt="turnout doctor --server: the sign-in, tar, the deploy directory, disk space, the restart command and the web server, each checked" width="760" />
+
+<img src={status.src} alt="turnout status: where each app points, the gateway, the catalog and the latest actions" width="760" />
 
 ## What turnout does
 

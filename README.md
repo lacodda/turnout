@@ -17,6 +17,8 @@ turnout keeps all of it in one place and works from any directory. What it is, o
 
 ## A day in the life
 
+<p align="center"><img src="https://github.com/lacodda/turnout/raw/main/docs/screens/v1.0.1/deploy.gif" alt="turnout deploy: connect, back up, pack, upload, unpack, restart and a health check, each step a line of the checklist" width="760"></p>
+
 Point an app at a stand - the app keeps talking to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it there, with a cookie jar per app **and** stand so the switch does not log you out:
 
 ```console
