@@ -19,7 +19,7 @@ pub fn run(name: Option<String>, credential: Option<String>, dir: Option<String>
     // directory and the command runs where the login lands.
     let remote_command = match &dir {
         Some(dir) => {
-            let dialect = remote::dialect(&session, &host.server);
+            let dialect = remote::dialect(&session, &host.server)?;
             remote::check_quotable(dialect, &[dir])?;
             dialect.run_in(dir, &command)
         }

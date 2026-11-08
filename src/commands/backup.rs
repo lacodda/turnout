@@ -18,7 +18,7 @@ pub fn backup(target_name: Option<String>, overrides: remote::Overrides) -> Resu
     let dir = &target.path.dir;
     let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
-    let dialect = remote::dialect(&session, &target.server);
+    let dialect = remote::dialect(&session, &target.server)?;
     step.update(format!("Backing up {dir} ..."));
     let name = remote::run_backup(&session, dialect, dir)?;
     step.done(format!("Backup {} created in {}", name.trim(), remote::backups_dir(dir)));
@@ -73,7 +73,7 @@ pub fn prune(target_name: Option<String>, overrides: remote::Overrides, keep: Op
     let dir = remote::backups_dir(&target.path.dir);
     let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
-    let dialect = remote::dialect(&session, &target.server);
+    let dialect = remote::dialect(&session, &target.server)?;
     step.update(format!("Pruning {dir} ..."));
     let pruned = remote::prune_backups(&session, dialect, &target.path.dir, keep)?;
     step.clear();
@@ -129,7 +129,7 @@ pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: 
     let backups_raw = remote::backups_dir(&deploy_dir);
     let step = Step::start(format!("Connecting to {} ...", target.connection_label()));
     let session = remote::connect(&target.server, &target.credential)?;
-    let dialect = remote::dialect(&session, &target.server);
+    let dialect = remote::dialect(&session, &target.server)?;
     remote::check_quotable(dialect, &[&deploy_dir, &backups_raw])?;
     step.clear();
 

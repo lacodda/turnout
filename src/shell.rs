@@ -63,7 +63,14 @@ impl fmt::Display for Dialect {
 ///
 /// `echo` exists in both and quotes nothing away, so the reply is unambiguous:
 /// a line mentioning `cmd.exe` can only have come from `cmd.exe`.
-pub const PROBE: &str = "echo %COMSPEC%";
+///
+/// `$PSHOME` tells the third shell an sshd can be set to apart. PowerShell
+/// expands neither `%COMSPEC%` nor anything `cmd.exe` would, so without it
+/// its reply - the literal `%COMSPEC%` - reads exactly as a POSIX shell's,
+/// and every command after would be phrased for `sh`. PowerShell substitutes
+/// its own install directory, which names it; `sh` has no such variable and
+/// prints nothing for it; `cmd.exe` leaves it as text.
+pub const PROBE: &str = "echo %COMSPEC% $PSHOME";
 
 /// Read the dialect out of a [`PROBE`] reply.
 ///
@@ -75,6 +82,30 @@ pub const PROBE: &str = "echo %COMSPEC%";
 pub fn read_probe(reply: &str) -> Dialect {
     let reply = reply.trim().to_ascii_lowercase();
     if reply.contains("cmd.exe") { Dialect::Windows } else { Dialect::Posix }
+}
+
+/// Whether a [`PROBE`] reply came from PowerShell: `%COMSPEC%` left alone,
+/// and `$PSHOME` turned into a directory that names PowerShell -
+/// `...\WindowsPowerShell\v1.0`, `...\PowerShell\7`, or the Store's
+/// `Microsoft.PowerShell_7...`.
+pub fn is_powershell(reply: &str) -> bool {
+    let reply = reply.to_ascii_lowercase();
+    !reply.contains("cmd.exe") && reply.contains("powershell")
+}
+
+/// The refusal for a server whose sshd answers with PowerShell.
+///
+/// turnout phrases every remote command for `cmd.exe` or `sh`; sent to
+/// PowerShell, `mkdir -p`, `del /f /q` and the quoting of either would do
+/// something other than what they say. Refusing with the fix is better than
+/// a deploy that half works.
+pub fn powershell_refusal(server: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "'{server}' answers SSH with PowerShell, and turnout speaks cmd.exe and sh to a server, not PowerShell.\n\
+         Point sshd's DefaultShell back at cmd.exe - on the server, in an elevated PowerShell:\n  \
+         Remove-ItemProperty -Path HKLM:\\SOFTWARE\\OpenSSH -Name DefaultShell\n\
+         New SSH sessions get cmd.exe; interactive `turnout ssh` sessions can still start powershell from there."
+    )
 }
 
 impl Dialect {
@@ -500,7 +531,7 @@ fn base64(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{Dialect, PROBE, base64, encoded, read_probe};
+    use super::{Dialect, PROBE, base64, encoded, is_powershell, powershell_refusal, read_probe};
 
     #[test]
     fn base64_matches_the_standard_vectors() {
@@ -708,8 +739,27 @@ mod tests {
     /// expansion, so it echoes the variable name back verbatim.
     #[test]
     fn reads_the_replies_the_shells_actually_give() {
-        assert_eq!(read_probe("C:\\Windows\\system32\\cmd.exe"), Dialect::Windows);
+        assert_eq!(read_probe("C:\\Windows\\system32\\cmd.exe $PSHOME"), Dialect::Windows);
         assert_eq!(read_probe("%COMSPEC%"), Dialect::Posix);
+        assert!(!is_powershell("C:\\Windows\\system32\\cmd.exe $PSHOME"));
+        assert!(!is_powershell("%COMSPEC%"));
+    }
+
+    /// The replies Windows PowerShell and PowerShell 7 give, as captured from
+    /// each: `%COMSPEC%` as text, then the install directory.
+    #[test]
+    fn recognizes_powershell_by_its_home() {
+        assert!(is_powershell("%COMSPEC%\r\nC:\\Windows\\System32\\WindowsPowerShell\\v1.0\r\n"));
+        assert!(is_powershell("%COMSPEC%\nC:\\Program Files\\PowerShell\\7\n"));
+        assert!(is_powershell(
+            "%COMSPEC%\nC:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.9.0_x64__8wekyb3d8bbwe\n"
+        ));
+        let refusal = powershell_refusal("prod").to_string();
+        assert!(refusal.contains("'prod' answers SSH with PowerShell"), "{refusal}");
+        assert!(
+            refusal.contains("Remove-ItemProperty -Path HKLM:\\SOFTWARE\\OpenSSH -Name DefaultShell"),
+            "{refusal}"
+        );
     }
 
     /// Case varies with how the variable was set; the reply is a path, and

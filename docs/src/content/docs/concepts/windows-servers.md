@@ -25,10 +25,10 @@ Sending POSIX syntax to `cmd.exe` does not usually fail loudly. It does somethin
 On the first command that needs a shell, turnout asks:
 
 ```
-echo %COMSPEC%
+echo %COMSPEC% $PSHOME
 ```
 
-This is the one question both shells answer without choking. `cmd.exe` expands `%COMSPEC%` into the path to itself; a POSIX shell has no `%` expansion and echoes the text back unchanged. The reply decides the dialect, and every command turnout sends afterwards is phrased in it.
+This is the one question every shell sshd may hand it to answers without choking. `cmd.exe` expands `%COMSPEC%` into the path to itself and leaves `$PSHOME` as text; a POSIX shell has no `%` expansion, echoes `%COMSPEC%` back unchanged and prints nothing for `$PSHOME`. The reply decides the dialect, and every command turnout sends afterwards is phrased in it.
 
 The answer is stored on the server entry, so it costs one round trip once rather than one per command:
 
@@ -44,6 +44,19 @@ The answer is stored on the server entry, so it costs one round trip once rather
 <!-- historical versions -->
 When the probe itself fails, turnout assumes POSIX. That is what every release before v0.7.0 assumed unconditionally, so a broken probe degrades to the old behavior instead of to a new failure.
 <!-- /historical versions -->
+
+## PowerShell as the SSH shell
+
+An administrator can point sshd's `DefaultShell` at PowerShell. turnout does not speak PowerShell to a server - its quoting and its `mkdir`, `del` and `tar` would do something other than what they say - so it recognizes it and stops before the first command. PowerShell leaves `%COMSPEC%` alone, which is how a POSIX shell answers too, but it fills in `$PSHOME` with its own install directory:
+
+```text
+error: 'prod' answers SSH with PowerShell, and turnout speaks cmd.exe and sh to a server, not PowerShell.
+Point sshd's DefaultShell back at cmd.exe - on the server, in an elevated PowerShell:
+  Remove-ItemProperty -Path HKLM:\SOFTWARE\OpenSSH -Name DefaultShell
+New SSH sessions get cmd.exe; interactive `turnout ssh` sessions can still start powershell from there.
+```
+
+The refusal is not remembered: once `DefaultShell` is gone, the next command asks again and gets `cmd.exe`. [`turnout doctor --server`](/turnout/reference/doctor/) reports the same thing as a failed sign-in check, with the same fix.
 
 ## Deploy paths
 

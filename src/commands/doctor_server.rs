@@ -235,6 +235,9 @@ fn through(server: &Server, login: &Login) -> Vec<CheckView> {
         Ok(session) => session,
         Err(err) => {
             let fix = match credential.auth {
+                // The server was never asked about the credential: it was
+                // refused for presenting another host key.
+                _ if crate::ssh::is_host_key_refusal(&err) => format!("check the key, then: turnout server trust {}", server.name),
                 Auth::Password => format!("turnout pass set {} - or set up a key: turnout key setup {}", credential.name, server.name),
                 Auth::Key => format!("turnout key setup {} --credential {}", server.name, credential.name),
                 Auth::Agent => "add the key to the agent: ssh-add".to_string(),
@@ -243,7 +246,16 @@ fn through(server: &Server, login: &Login) -> Vec<CheckView> {
             return checks;
         }
     };
-    let dialect = remote::dialect(&session, server);
+    let dialect = match remote::dialect(&session, server) {
+        Ok(dialect) => dialect,
+        Err(err) => {
+            checks.push(
+                CheckView::fail(SERVER, "sign_in", who, format!("{}@ signs in, but {err:#}", credential.user))
+                    .fix("on the server, in an elevated PowerShell: Remove-ItemProperty -Path HKLM:\\SOFTWARE\\OpenSSH -Name DefaultShell".to_string()),
+            );
+            return checks;
+        }
+    };
     let how = match credential.auth {
         Auth::Password => "password".to_string(),
         Auth::Key => format!("key {}", credential.key.as_deref().unwrap_or_default()),

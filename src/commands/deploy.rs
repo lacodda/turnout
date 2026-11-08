@@ -536,7 +536,7 @@ fn deploy_over_ssh(target: &Resolved, shipment: &Shipment, options: &Options, re
     // the dialect this answers with. Under the same step - it is a round trip
     // on a first contact, and a silent one would look like a hang.
     step.update("Detecting the server shell ...");
-    let dialect = remote::dialect(&session, server);
+    let dialect = remote::dialect(&session, server)?;
     step.done(format!("Connected to {where_to}"));
     remote::check_quotable(dialect, &[&path.dir])?;
 
@@ -836,7 +836,7 @@ fn compare_all(targets: &[Resolved], artifacts: &[Artifact], clear: bool, json: 
         let path = &target.path;
         if json {
             let session = remote::connect(&target.server, &target.credential)?;
-            let dialect = remote::dialect(&session, &target.server);
+            let dialect = remote::dialect(&session, &target.server)?;
             remote::check_quotable(dialect, &[&path.dir])?;
             all.push(Compared {
                 target: label(target),
@@ -850,7 +850,7 @@ fn compare_all(targets: &[Resolved], artifacts: &[Artifact], clear: bool, json: 
         let where_to = target.connection_label();
         let step = Step::start(format!("Connecting to {where_to} ..."));
         let session = remote::connect(&target.server, &target.credential)?;
-        let dialect = remote::dialect(&session, &target.server);
+        let dialect = remote::dialect(&session, &target.server)?;
         step.done(format!("Connected to {where_to}"));
         remote::check_quotable(dialect, &[&path.dir])?;
         let step = Step::start(format!("Comparing {} files with {} ...", artifact.plan.files, path.dir));

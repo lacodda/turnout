@@ -83,6 +83,12 @@ impl client::Handler for HostKeyCheck {
 /// network failure by it.
 const REFUSED: &str = "refusing to connect to";
 
+/// Whether a failed connection was the host key check refusing the server -
+/// which no password or key can mend, and `turnout server trust` can.
+pub fn is_host_key_refusal(err: &anyhow::Error) -> bool {
+    err.to_string().starts_with(REFUSED)
+}
+
 /// The key a server presented: a host certificate is checked by the key it
 /// certifies - turnout trusts keys, not certificate authorities.
 fn presented_key(presented: &PublicKeyOrCertificate) -> PublicKey {
@@ -401,7 +407,7 @@ async fn authenticate(check: HostKeyCheck, user: &str, material: AuthMaterial) -
         Ok(handle) => handle,
         // A refused host key is the whole message: "cannot reach" in front
         // of it would send the reader looking at the network.
-        Err(err) if err.to_string().starts_with(REFUSED) => return Err(err),
+        Err(err) if is_host_key_refusal(&err) => return Err(err),
         Err(err) => return Err(err).with_context(|| format!("cannot reach {host}:{port}")),
     };
 

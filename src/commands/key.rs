@@ -69,7 +69,7 @@ pub fn setup(server_name: Option<String>, credential_name: Option<String>, key_p
 
     // 4. Where the key goes. Both answers come from the server rather than
     //    from a guess: the shell it speaks, and the home of the account.
-    let dialect = remote::dialect(&session, &server);
+    let dialect = remote::dialect(&session, &server)?;
     keysetup::check_line(&key.public)?;
     let placed = locate(&session, dialect)?;
     if placed.administrators {

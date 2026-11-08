@@ -115,7 +115,7 @@ fn landing_shell(host: &Host) -> Option<Dialect> {
         return Some(known);
     }
     let session = remote::connect(&host.server, &host.credential).ok()?;
-    Some(remote::dialect(&session, &host.server))
+    remote::dialect(&session, &host.server).ok()
 }
 
 /// The command that turns a login into a shell in `dir`.

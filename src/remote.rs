@@ -339,16 +339,21 @@ pub fn exec(session: &Session, command: &str) -> Result<String> {
 /// A failed probe is not an error. It means we could not ask, and the honest
 /// fallback is the assumption every release before this one made unconditionally
 /// - POSIX. Deploys on Unix keep working even if the probe itself breaks.
-pub fn dialect(session: &Session, server: &Server) -> Dialect {
+pub fn dialect(session: &Session, server: &Server) -> Result<Dialect> {
     if let Some(known) = server.shell {
-        return known;
+        return Ok(known);
     }
     let Ok(reply) = exec(session, shell::PROBE) else {
-        return Dialect::default();
+        return Ok(Dialect::default());
     };
+    // Not remembered: once the administrator points sshd back at cmd.exe,
+    // the next command asks again and finds it.
+    if shell::is_powershell(&reply) {
+        return Err(shell::powershell_refusal(&server.name));
+    }
     let learned = shell::read_probe(&reply);
     remember_dialect(&server.name, learned);
-    learned
+    Ok(learned)
 }
 
 /// Persist a probed dialect, best-effort.
