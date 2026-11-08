@@ -39,9 +39,11 @@ An import is the one way into the catalog that does not go through `add`, so eve
 - a name that is not one (lowercase letters, digits and dashes);
 - an app whose name a group here already has, or a group whose name an app has - [`use`](/turnout/reference/use/) takes either, and could only ever reach one of them;
 - an app whose dotenv file is not a bare file name in the project, or whose variable is not a variable name;
+- an app whose allow-list names a server that is neither here nor imported - refused rather than trimmed, since a list trimmed to nothing would allow every server;
 - a server whose URL is not `http://` or `https://`;
 - a path whose directory is not an absolute directory on a server;
-- a group with a member that is not an app here, and a target naming an app, server, credential or path that is neither here nor imported - including one refused above.
+- a group with a member that is not an app here, and a target naming an app, server, credential or path that is neither here nor imported - including one refused above;
+- a target whose server its app's allow-list does not let it use - a deploy would refuse it later, at a worse moment.
 
 ```text
 Imported 6 item(s).

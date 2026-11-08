@@ -85,23 +85,8 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
     // an import, and `use web prod` silently bound only the app.
     let mut report = Report::default();
     let mut groups = store::load_groups()?;
-    // Apps are saved only after their ports are settled: an older export can
-    // bring an app with no gateway port, or a port an app here already holds.
-    let mut apps = store::load_apps()?;
-    let arrived = merge(
-        &mut apps,
-        snapshot.apps,
-        |app| app.name.clone(),
-        force,
-        "app",
-        &mut report,
-        |app| admit_app(app, &groups),
-        |_| Ok(()),
-    )?;
-    report.ports = crate::front::settle_arrivals(&mut apps, &arrived);
-    if !arrived.is_empty() {
-        store::save_apps(&apps)?;
-    }
+    // Servers before apps: an app's allow-list names servers, which may be
+    // here already or arrive in the same file.
     let mut servers = store::load_servers()?;
     merge(
         &mut servers,
@@ -116,6 +101,23 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
         },
         store::save_servers,
     )?;
+    // Apps are saved only after their ports are settled: an older export can
+    // bring an app with no gateway port, or a port an app here already holds.
+    let mut apps = store::load_apps()?;
+    let arrived = merge(
+        &mut apps,
+        snapshot.apps,
+        |app| app.name.clone(),
+        force,
+        "app",
+        &mut report,
+        |app| admit_app(app, &groups, &servers),
+        |_| Ok(()),
+    )?;
+    report.ports = crate::front::settle_arrivals(&mut apps, &arrived);
+    if !arrived.is_empty() {
+        store::save_apps(&apps)?;
+    }
     merge(
         &mut groups,
         snapshot.groups,
@@ -306,13 +308,19 @@ struct Catalog<'a> {
 }
 
 /// What `app add` refuses: a name that is not one, a name a group already
-/// has, and a dotenv file or variable turnout could not write safely - the
-/// file is written inside the project, and a name with a slash would land
-/// outside it.
-fn admit_app(app: &App, groups: &[Group]) -> Result<()> {
+/// has, an allow-list naming a server that is not there, and a dotenv file or
+/// variable turnout could not write safely - the file is written inside the
+/// project, and a name with a slash would land outside it.
+///
+/// Refused rather than trimmed: dropping the unknown names from the list
+/// could empty it, and an empty allow-list allows any server.
+fn admit_app(app: &App, groups: &[Group], servers: &[crate::model::Server]) -> Result<()> {
     validate_name(&app.name)?;
     if groups.iter().any(|group| group.name == app.name) {
         bail!("a group named '{}' exists here - app names must not clash with group names", app.name);
+    }
+    if let Some(missing) = app.servers.iter().find(|allowed| !servers.iter().any(|s| &s.name == *allowed)) {
+        bail!("its allow-list names server '{missing}', which is neither here nor imported");
     }
     if let Some(env_var) = &app.gateway_env {
         super::app::validate_env_name(env_var.clone())?;
@@ -339,7 +347,9 @@ fn admit_group(group: &Group, apps: &[App]) -> Result<()> {
     Ok(())
 }
 
-/// What `target add` refuses: a bad name, and any of the four parts missing.
+/// What `target add` refuses: a bad name, any of the four parts missing, and
+/// a server its app may not use - a deploy would refuse it later, at the
+/// worst moment, instead of here.
 fn admit_target(target: &Target, around: &Catalog) -> Result<()> {
     validate_name(&target.name)?;
     let parts = [
@@ -350,6 +360,9 @@ fn admit_target(target: &Target, around: &Catalog) -> Result<()> {
     ];
     if let Some((kind, name, _)) = parts.iter().find(|(_, _, present)| !present) {
         bail!("it names {kind} '{name}', which is neither here nor imported");
+    }
+    if let Some(app) = around.apps.iter().find(|a| a.name == target.app) {
+        app.check_allowed(&target.server)?;
     }
     Ok(())
 }
@@ -588,7 +601,7 @@ mod tests {
             true,
             "app",
             &mut report,
-            |a| admit_app(a, &[]),
+            |a| admit_app(a, &[], &[]),
             |_| Ok(()),
         )
         .unwrap();
@@ -605,7 +618,7 @@ mod tests {
             name: "web".into(),
             apps: vec!["api".into()],
         };
-        let refused = admit_app(&app("web", "/web"), std::slice::from_ref(&group)).unwrap_err().to_string();
+        let refused = admit_app(&app("web", "/web"), std::slice::from_ref(&group), &[]).unwrap_err().to_string();
         assert!(refused.contains("a group named 'web' exists here"), "{refused}");
         let refused = admit_group(&group, &[app("web", "/web"), app("api", "/api")]).unwrap_err().to_string();
         assert!(refused.contains("an app named 'web' exists here"), "{refused}");
@@ -620,7 +633,18 @@ mod tests {
     fn an_arriving_dotenv_file_stays_inside_the_project() {
         let mut outside = app("web", "/web");
         outside.env_file = Some("../../.bashrc".into());
-        assert!(admit_app(&outside, &[]).is_err());
+        assert!(admit_app(&outside, &[], &[]).is_err());
+    }
+
+    /// An arriving app whose allow-list names a server neither here nor in
+    /// the file is refused, not trimmed into allowing every server.
+    #[test]
+    fn an_allow_list_naming_an_unknown_server_is_refused() {
+        let mut web = app("web", "/web");
+        web.servers = vec!["prod".into(), "gone".into()];
+        let refused = admit_app(&web, &[], &[server("prod")]).unwrap_err().to_string();
+        assert!(refused.contains("server 'gone'"), "{refused}");
+        assert!(admit_app(&web, &[], &[server("prod"), server("gone")]).is_ok());
     }
 
     /// A target is refused when a part it names is neither here nor arrived.
@@ -661,5 +685,14 @@ mod tests {
         let paths = [path];
         around.paths = &paths;
         assert!(admit_target(&target, &around).is_ok());
+
+        // Every part there, but a server the app may not use: deploy would
+        // refuse it, so the import does now.
+        let mut fenced = app("web", "/web");
+        fenced.servers = vec!["staging".into()];
+        let fenced = [fenced];
+        around.apps = &fenced;
+        let refused = admit_target(&target, &around).unwrap_err().to_string();
+        assert!(refused.contains("server 'prod' is not allowed for 'web'"), "{refused}");
     }
 }
