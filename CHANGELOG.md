@@ -7,6 +7,46 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [1.0.0] - 2026-11-08
+
+### Breaking Changes
+
+- **Check every server's host key against known_hosts**
+a server whose host key differs from the one
+~/.ssh/known_hosts holds for it is refused. After checking the
+fingerprint, `turnout server trust NAME` trusts the new key.
+
+### Bug Fixes
+- Keep the launcher alive until turnout handles Ctrl+C
+- Reach the registries only after the release is out
+- Refuse a server whose SSH shell is PowerShell, with the fix
+- Keep answering after a request panicked holding the cookie jars
+- Remove only the record of the gateway that did not come up
+- Announce a step that ended without a result on stderr
+- Name the file tar cannot read instead of the backups hint
+- Make a deploy directory that is gone before unpacking
+- Treat a file --clear cannot remove alike on Linux and Windows
+- Refuse an allow-list naming an unknown server, and a target its app may not use
+- Say what goes with a server before asking to remove it
+- Use the key an earlier failed setup left instead of refusing it
+- Split a restart command as the shell does when asking sudo about it
+- Leave a Homebrew or Scoop install to its package manager
+
+### Build
+- Describe the release in release.toml
+
+### CI
+- Submit each version to winget once WINGET_TOKEN is set
+
+### Documentation
+- Show turnout at work in the README, and say what it is on one page
+- Say what 1.0 changes for scripts
+
+### Features
+- Update over a running turnout, and leave PATH alone on request
+- Ship turnout for aarch64 Linux
+- Check every server's host key against known_hosts
+
 ## [0.27.0] - 2026-10-30
 
 ### Breaking Changes
@@ -95,9 +135,6 @@ Settings and exports are unchanged.
 - Let the detached job outlive a loaded suite
 - Wait out ETXTBSY before handing the fake ssh client over
 - Take the machine and the clock out of four tests' verdicts
-
-### style
-- Apply rustfmt to the stabilisation fixes
 
 ## [0.26.0] - 2026-10-22
 
