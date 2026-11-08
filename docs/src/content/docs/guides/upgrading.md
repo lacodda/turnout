@@ -45,6 +45,18 @@ An older turnout refuses settings a newer one has written, rather than reading h
 
 A filesystem root - `/`, `C:\`, a bare `\\server\share` - is no longer accepted as a deploy directory anywhere: `deploy --clear` would empty it. A catalog that already holds one is refused when a deploy, backup or restore reaches it; point the path at the directory the files belong in with `turnout path edit NAME --dir DIR`. And [`import`](/turnout/reference/import/) now holds arriving entries to the checks `add` makes, naming each it refuses - which matters only for a file edited by hand.
 
+## Scripts after 1.0
+
+1.0 changed no settings either - the schema and the export format are 0.27's. What changed is whom turnout talks to: every SSH connection checks the server's [host key](/turnout/concepts/host-keys/) against `~/.ssh/known_hosts` before anything is sent.
+
+| What a script met | What 1.0 does | What to write instead |
+| --- | --- | --- |
+| a server it never connected to before | trusts the key on first contact and writes it into `~/.ssh/known_hosts`, as `ssh -o StrictHostKeyChecking=accept-new` does | nothing - or, where the machine's own file is not the one to write, `TURNOUT_KNOWN_HOSTS=FILE` |
+| a server reinstalled with new host keys | refuses every command: `refusing to connect ... its host key has changed` | compare the fingerprint with the server's own, then `turnout server trust NAME --yes` |
+| a server whose sshd answers with PowerShell | refuses with the registry line that points sshd back at `cmd.exe`, where 0.27 sent it commands for `sh` | point `DefaultShell` back at `cmd.exe` on the server |
+
+An import also refuses two things it took before: an app whose allow-list names a server neither on this machine nor in the file, and a target whose server its app may not use. And `key setup` uses a key already at the path it would generate one at, when that key opens without a passphrase, instead of refusing it.
+
 ## Exports
 
 A file written by [`turnout export`](/turnout/reference/export/) imports into any newer turnout:
