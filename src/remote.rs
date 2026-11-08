@@ -550,6 +550,10 @@ fn explain_backup_failure(err: anyhow::Error, dialect: Dialect, deploy_path: &st
 /// process holds, a directory this account may not write to. The archive is
 /// unpacked regardless: with one stuck file, refusing to unpack would leave
 /// the stand with nothing at all instead of the backup plus that file.
+///
+/// A deploy directory that is gone - removed by hand, or never recreated
+/// after a failed deploy - is made again: the backup is the way back to a
+/// working stand, and tar cannot unpack into a directory that is not there.
 pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, name: &str) -> Result<Vec<String>> {
     let backups = backups_dir(deploy_dir);
     check_quotable(dialect, &[deploy_dir, &backups, name])?;
@@ -557,10 +561,7 @@ pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, nam
     let dir = deploy_dir.trim_end_matches(['/', '\\']);
     let left = exec(
         session,
-        &dialect.and_then(
-            &dialect.file_exists(&archive),
-            &dialect.and_then(&dialect.clear_dir_listing_the_rest(dir), &dialect.untar(&archive, dir)),
-        ),
+        &dialect.and_then(&dialect.file_exists(&archive), &dialect.and_then(&dialect.mkdir_p(dir), &unpack)),
     )?;
     Ok(left.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
 }
@@ -1008,6 +1009,11 @@ mod tests {
     /// what was left. Now both unpack, and both name what stayed.
     ///
     /// What cannot be removed: on Windows a file this process holds open
+
+        // The deploy directory gone altogether: the restore makes it again.
+        std::fs::remove_dir_all(&site).unwrap();
+        super::restore_backup(&session, dialect, &dir, &first).expect("a restore into a directory that is gone");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
     /// without sharing, on POSIX a directory without write permission.
     #[test]
     fn a_restore_unpacks_past_what_it_could_not_remove() {
