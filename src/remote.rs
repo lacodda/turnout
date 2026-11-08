@@ -559,6 +559,7 @@ pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, nam
     check_quotable(dialect, &[deploy_dir, &backups, name])?;
     let archive = join_remote(&backups, name);
     let dir = deploy_dir.trim_end_matches(['/', '\\']);
+    let unpack = dialect.and_then(&dialect.clear_dir_listing_the_rest(dir), &dialect.untar(&archive, dir));
     let left = exec(
         session,
         &dialect.and_then(&dialect.file_exists(&archive), &dialect.and_then(&dialect.mkdir_p(dir), &unpack)),
@@ -566,15 +567,22 @@ pub fn restore_backup(session: &Session, dialect: Dialect, deploy_dir: &str, nam
     Ok(left.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
 }
 
-/// What to say about the entries a restore could not remove: they stay in
-/// the directory beside the backup's files.
-pub fn not_removed_note(dir: &str, left: &[String]) -> String {
+/// What to say about the entries an emptying could not remove: they stay in
+/// the directory beside what comes in - `the backup's` files, `the build's`.
+pub fn not_removed_note(dir: &str, left: &[String], arriving: &str) -> String {
     let plural = if left.len() == 1 { "y" } else { "ies" };
     format!(
-        "{} entr{plural} in {dir} could not be removed before the backup was unpacked, and stay beside its files: {}",
+        "{} entr{plural} in {dir} could not be removed, and stay{} beside {arriving} files: {}",
         left.len(),
+        if left.len() == 1 { "s" } else { "" },
         left.join(", ")
     )
+}
+
+/// Empty `dir` as far as it goes; returns the entries that would not go.
+pub fn clear_dir(session: &Session, dialect: Dialect, dir: &str) -> Result<Vec<String>> {
+    let left = exec(session, &dialect.clear_dir_listing_the_rest(dir))?;
+    Ok(left.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
 }
 
 /// Delete one backup archive.
@@ -787,15 +795,6 @@ mod tests {
     /// The message has one job: say why uploading works while backing up does
     /// not, and give the command that fixes it - in the server's own idiom.
     #[test]
-    fn permission_hint_names_the_parent_and_the_fix() {
-        let hint = super::permission_hint(Dialect::Posix, "/var/www/myapp");
-        assert!(hint.contains("/var/www/myapp.backups"), "{hint}");
-        assert!(hint.contains("write access to /var/www"), "{hint}");
-        assert!(hint.contains("sudo mkdir -p /var/www/myapp.backups"), "{hint}");
-
-        let windows = super::permission_hint(Dialect::Windows, "C:\\inetpub\\site");
-        assert!(windows.contains("mkdir \"C:\\inetpub\\site.backups\""), "{windows}");
-    #[test]
     fn a_file_tar_cannot_read_is_named_instead_of_the_backups_hint() {
         let reading = anyhow::anyhow!(
             "remote command 'sh -c 'mkdir -p /var/www/myapp.backups ...'' exited with 2: tar: ./certs/site.key: Cannot open: Permission denied\ntar: Exiting with failure status due to previous errors"
@@ -816,6 +815,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn permission_hint_names_the_parent_and_the_fix() {
+        let hint = super::permission_hint(Dialect::Posix, "/var/www/myapp");
+        assert!(hint.contains("/var/www/myapp.backups"), "{hint}");
+        assert!(hint.contains("write access to /var/www"), "{hint}");
+        assert!(hint.contains("sudo mkdir -p /var/www/myapp.backups"), "{hint}");
+
+        let windows = super::permission_hint(Dialect::Windows, "C:\\inetpub\\site");
+        assert!(windows.contains("mkdir \"C:\\inetpub\\site.backups\""), "{windows}");
         assert!(!windows.contains("sudo"), "sudo means nothing on Windows: {windows}");
     }
 
@@ -1001,6 +1009,11 @@ mod tests {
 
         super::remove_backup(&session, dialect, &dir, &second).unwrap();
         assert!(!backups.join(&second).exists());
+
+        // The deploy directory gone altogether: the restore makes it again.
+        std::fs::remove_dir_all(&site).unwrap();
+        super::restore_backup(&session, dialect, &dir, &first).expect("a restore into a directory that is gone");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
     }
 
     /// One entry the clearing cannot remove must not cost the restore. Up to
@@ -1009,11 +1022,6 @@ mod tests {
     /// what was left. Now both unpack, and both name what stayed.
     ///
     /// What cannot be removed: on Windows a file this process holds open
-
-        // The deploy directory gone altogether: the restore makes it again.
-        std::fs::remove_dir_all(&site).unwrap();
-        super::restore_backup(&session, dialect, &dir, &first).expect("a restore into a directory that is gone");
-        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
     /// without sharing, on POSIX a directory without write permission.
     #[test]
     fn a_restore_unpacks_past_what_it_could_not_remove() {
@@ -1059,7 +1067,7 @@ mod tests {
         let left = left.expect("the restore goes on past what it could not remove");
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1", "the backup was unpacked");
         assert_eq!(left, ["stuck"], "and what stayed is named");
-        let note = super::not_removed_note(&dir, &left);
+        let note = super::not_removed_note(&dir, &left, "the backup's");
         assert!(note.contains("1 entry") && note.contains("stuck"), "{note}");
     }
 

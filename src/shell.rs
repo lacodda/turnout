@@ -152,46 +152,23 @@ impl Dialect {
         }
     }
 
-    /// Remove everything *inside* a directory, leaving the directory itself.
+    /// Remove what can be removed inside a directory, leaving the directory
+    /// itself, then print the names of what is still there, one per line.
+    /// Never fails: what could not go is the answer, not an error.
     ///
     /// The directory has to survive: it is the deploy target, someone may own
     /// it or have granted rights on it, and re-creating it can silently change
     /// both. On POSIX that means `find -mindepth 1`; on Windows, the pair of
-    /// `del` and `rd` that between them cover files and subdirectories.
+    /// `del` and `rd` that between them cover files and subdirectories. A
+    /// directory that is not there has nothing in it.
     ///
-    /// Both arms tolerate an empty directory rather than reporting failure,
-    /// and a directory that is not there at all: it has nothing in it. Up to
-    /// v0.26 the POSIX arm ran `find` on it regardless, which exits 1 for a
-    /// missing directory - so `deploy --clear` failed on every first deploy
-    /// to a POSIX server. The test runs under `sh` so that the `||` stays
-    /// inside this one command, whatever chain it is put in and whatever the
-    /// login shell is.
-    pub fn clear_dir(&self, dir: &str) -> String {
-        let quoted = self.quote(dir);
-        match self {
-            Dialect::Posix => format!(
-                "sh -c {}",
-                self.quote(&format!("[ ! -d {quoted} ] || find {quoted} -mindepth 1 -maxdepth 1 -exec rm -rf {{}} +"))
-            ),
-            // `del /q /s` empties the files, `for /d ... rd /s /q` the
-            // subdirectories. The trailing `(call )` keeps "nothing to
-            // delete" from surfacing as a failed deploy step: it sets the
-            // exit code to 0 without leaving, where `exit /b 0` would end the
-            // whole command line and skip whatever is chained after it.
-            Dialect::Windows => format!("(del /f /q /s {quoted}\\* >nul 2>&1 & for /d %i in ({quoted}\\*) do @rd /s /q \"%i\" & (call ))"),
-        }
-    }
-
-    /// Remove what can be removed inside a directory, then print the names of
-    /// what is still there, one per line. Never fails: what could not go is
-    /// the answer, not an error.
-    ///
-    /// For a restore, which must go on to unpack whatever the clearing
-    /// managed. Up to v0.26 it ran [`Dialect::clear_dir`] and unpacked only
-    /// if that succeeded: on POSIX one file `rm` could not delete stopped the
-    /// chain after everything else was gone, and the directory was left empty
-    /// with nothing restored. Listing what is left, rather than repeating the
-    /// errors, says the same in both shells.
+    /// One command for every emptying - `deploy --clear` and a restore - so
+    /// the two shells cannot disagree about a file that will not go. Up to
+    /// v0.27 the deploy's own command failed on POSIX at the first such file,
+    /// after everything else was gone, and on Windows said nothing at all; a
+    /// restore built on it was left with an empty directory and nothing
+    /// unpacked. Listing what is left, rather than repeating the errors, says
+    /// the same in both shells, and the caller goes on with the rest.
     pub fn clear_dir_listing_the_rest(&self, dir: &str) -> String {
         let quoted = self.quote(dir);
         match self {
@@ -799,12 +776,12 @@ mod tests {
     /// or ACLs that re-creating it would quietly drop.
     #[test]
     fn clearing_keeps_the_directory_itself() {
-        let posix = Dialect::Posix.clear_dir("/var/www/site");
+        let posix = Dialect::Posix.clear_dir_listing_the_rest("/var/www/site");
         assert!(posix.contains("-mindepth 1"), "{posix}");
         assert!(!posix.contains("rm -rf '/var/www/site'"), "the directory itself must not be removed: {posix}");
         assert!(posix.starts_with("sh -c "), "the `||` stays inside one command: {posix}");
 
-        let windows = Dialect::Windows.clear_dir("C:\\site");
+        let windows = Dialect::Windows.clear_dir_listing_the_rest("C:\\site");
         assert!(windows.contains("\\*"), "only the contents are targeted: {windows}");
         assert!(
             !windows.contains("rd /s /q \"C:\\site\""),
@@ -817,7 +794,7 @@ mod tests {
     fn listing_and_clearing_tolerate_nothing_there() {
         assert!(Dialect::Posix.list_dir("/backups").contains("|| true"));
         assert!(Dialect::Windows.list_dir("C:\\backups").contains("(call )"));
-        assert!(Dialect::Windows.clear_dir("C:\\site").contains("(call )"));
+        assert!(Dialect::Windows.clear_dir_listing_the_rest("C:\\site").contains("(call )"));
         assert!(Dialect::Windows.remove_file("C:\\x.tar.gz").contains("(call )"));
     }
 

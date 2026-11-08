@@ -162,7 +162,7 @@ pub fn restore(target_name: Option<String>, overrides: remote::Overrides, from: 
     let left = remote::restore_backup(&session, dialect, &deploy_dir, &name)?;
     step.done(format!("Restored {name} into {deploy_dir}"));
     if !left.is_empty() {
-        progress::warn(&remote::not_removed_note(&deploy_dir, &left));
+        progress::warn(&remote::not_removed_note(&deploy_dir, &left, "the backup's"));
     }
     crate::journal::record("restore", Some(&target.app.name), Some(&target.server.name), Some(&name));
     if let Some(restart) = &target.path.restart {

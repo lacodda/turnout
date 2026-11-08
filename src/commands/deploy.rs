@@ -650,8 +650,13 @@ fn write_build(session: &Session, dialect: Dialect, shipment: &Shipment, path: &
         // Emptying the directory is itself a change to the stand: failing in
         // it or after it leaves the stand serving less than it did.
         *reached = Reached::Writing;
-        remote::exec(session, &dialect.clear_dir(&path.dir))?;
+        let left = remote::clear_dir(session, dialect, &path.dir)?;
         step.done(format!("Cleared {}", path.dir));
+        // What would not go stays beside the build, as a restore leaves it:
+        // stopping here would leave the stand serving half a directory.
+        if !left.is_empty() {
+            progress::warn(&remote::not_removed_note(&path.dir, &left, "the build's"));
+        }
     }
 
     let files = match archive_upload(session, dialect, &path.dir, artifact, options.no_archive, reached)? {
@@ -760,7 +765,7 @@ fn roll_back(
     *reached = Reached::RolledBack;
     step.done(format!("Rolled back {} to {backup}", path.dir));
     if !left.is_empty() {
-        progress::warn(&remote::not_removed_note(&path.dir, &left));
+        progress::warn(&remote::not_removed_note(&path.dir, &left, "the backup's"));
     }
     if let Some(restart) = &path.restart {
         run_restart(session, dialect, path, restart, connect)?;
