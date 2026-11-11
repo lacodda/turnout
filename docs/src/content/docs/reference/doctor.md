@@ -1,6 +1,6 @@
 ---
 title: "doctor"
-description: Find out why something does not work - tools, ports, dotenv files, the gateway, stands and sessions; or, for a server, what would stop a deploy.
+description: Find out why something does not work - tools, ports, dotenv files, the gateway, tunnels, stands and sessions; or, for a server, what would stop a deploy.
 sidebar:
   order: 2.5
 ---
@@ -60,6 +60,8 @@ turnout doctor --server [NAME] [--json]
 
 **The gateway** - running and answering, its front door open (when it is closed, the processes holding ports 80 and 7000 are named), its control channel answering.
 
+**Tunnels** - each [tunnel](/turnout/reference/tunnel/) open and carrying. One whose SSH connection is down is a problem, with the reason and `doctor --server` for the server it goes through; the record of one that no longer runs - gone, or ended by itself - is a warning `--fix` clears.
+
 **Stands and sessions**
 
 - **Every stand** in the catalog is probed at once, as [`use`](/turnout/reference/use/) does. One an app is bound to that does not answer is a problem; one nobody uses right now is a warning. A stand whose certificate this machine does not trust is told apart from one that is down.
@@ -89,7 +91,7 @@ What the stand answers also goes where every answer goes: an expired session rai
 
 - **the dotenv block** - written as the port says, or taken out when the app has no port;
 - **`.gitignore`** - the dotenv file added to the nearest one in the repository;
-- **a gateway record** whose process is gone;
+- **a gateway record** whose process is gone, and **a tunnel's record** once the tunnel no longer runs;
 - **a binding** to a server that is not in the catalog;
 - **a process on an app's dev port** - only after a yes. turnout cannot tell a dev server left behind from one somebody is using right now, so it asks, naming the program and the pid. Off a terminal it leaves the process alone unless `--yes` is given. After the yes it looks again: a process that has gone in the meantime - its pid perhaps another program's by now - or that no longer holds the port is left alone.
 
@@ -172,7 +174,7 @@ Nothing on the server changes. The one write is a probe file, created and delete
 }
 ```
 
-`state` is `ok`, `info`, `warn` or `fail`; `check` is a stable word for each kind of check (`tools`, `keyring`, `dev_port`, `gateway_port`, `env_file`, `stand`, `session`, `credential`, `sshd`, `sign_in`, `writable`, `disk`, `restart`, `web`, ...); `subject` is the app, server, credential, path or target the line is about. With `--server`, `server` is its name and `deploy_stops_at` the step.
+`state` is `ok`, `info`, `warn` or `fail`; `check` is a stable word for each kind of check (`tools`, `keyring`, `dev_port`, `gateway_port`, `env_file`, `tunnel`, `stand`, `session`, `credential`, `sshd`, `sign_in`, `writable`, `disk`, `restart`, `web`, ...); `subject` is the app, server, credential, path or target the line is about. With `--server`, `server` is its name and `deploy_stops_at` the step.
 
 ```bash
 turnout doctor --json | jq -r '.checks[] | select(.state == "fail") | "\(.subject): \(.message)"'

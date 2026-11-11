@@ -10,9 +10,9 @@
 //!
 //! It only looks. `--fix` repairs what is turnout's own to repair and can be
 //! proven wrong - its block in a dotenv file, the file's line in
-//! `.gitignore`, the record of a gateway that is gone, a binding to a server
-//! that is not in the catalog - and ends a process that holds an app's dev
-//! port only after a yes. Everything else names the command for a person.
+//! `.gitignore`, the record of a gateway or a tunnel that is gone, a binding
+//! to a server that is not in the catalog - and ends a process that holds an
+//! app's dev port only after a yes. Everything else names the command for a person.
 //!
 //! `--server NAME` turns to a machine instead: see
 //! [`crate::commands::doctor_server`]. Both print the same checklist, and
@@ -54,7 +54,8 @@ pub enum State {
 #[derive(Serialize, Clone, Debug)]
 pub struct CheckView {
     /// The part of the checklist it belongs to: `environment`, `apps`,
-    /// `gateway`, `stands`, `catalog`; `server`, `paths`, `web` for `--server`.
+    /// `gateway`, `tunnels`, `stands`, `catalog`; `server`, `paths`, `web`
+    /// for `--server`.
     pub section: &'static str,
     /// What was checked, as a stable word for scripts: `node`, `dev_port`,
     /// `env_file`, `session`, `disk`, ...
@@ -82,6 +83,9 @@ enum Repair {
     /// Clear the record of a gateway whose process is gone - that record, the
     /// process `pid` born at `birth`, and not one a gateway started since.
     GatewayRecord { pid: u32, birth: u64 },
+    /// Clear the record of a tunnel that no longer runs - the same care: that
+    /// record, not one a tunnel opened since under the name.
+    TunnelRecord { name: String, pid: u32, birth: u64 },
     /// Drop a binding to a server that is not in the catalog.
     Unbind { app: String },
     /// End the process holding the app's dev port - after a yes, and only
@@ -219,6 +223,7 @@ fn while_checking<T>(format: Format, label: &str, work: impl FnOnce() -> Result<
 const ENVIRONMENT: &str = "environment";
 const APPS: &str = "apps";
 const GATEWAY: &str = "gateway";
+const TUNNELS: &str = "tunnels";
 const STANDS: &str = "stands";
 const CATALOG: &str = "catalog";
 
@@ -291,6 +296,7 @@ fn local() -> Result<Vec<CheckView>> {
         checks.extend(app_checks(app, &catalogs, &gateway, &tools));
     }
     checks.extend(gateway_checks(&catalogs, &gateway));
+    checks.extend(tunnel_checks(&crate::commands::jobs::tunnels()?));
     checks.extend(stands);
     checks.extend(sessions);
     checks.extend(catalog_checks(&catalogs));
@@ -870,6 +876,47 @@ fn gateway_checks(catalogs: &Catalogs, gateway: &GatewayState) -> Vec<CheckView>
     checks
 }
 
+// --- tunnels ---------------------------------------------------------------------------
+
+/// A line per tunnel with a record: one that carries, one whose connection is
+/// down - the database client that uses it is about to fail - and the record
+/// of one that no longer runs, which `--fix` clears.
+fn tunnel_checks(entries: &[registry::Entry]) -> Vec<CheckView> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.tunnel().map(|route| (entry, route)))
+        .map(|(entry, route)| {
+            let name = Some(route.name.as_str());
+            let clear = Repair::TunnelRecord {
+                name: route.name.clone(),
+                pid: entry.pid,
+                birth: entry.birth,
+            };
+            match entry.status() {
+                registry::Status::Running => match &entry.trouble {
+                    None => CheckView::ok(TUNNELS, "tunnel", name, format!("open · {} · pid {}", route.describe(), entry.pid)),
+                    Some(trouble) => CheckView::fail(TUNNELS, "tunnel", name, format!("down: {} - it keeps trying by itself", trouble.reason))
+                        .fix(format!("turnout doctor --server {}", route.server)),
+                },
+                registry::Status::Gone => CheckView::warn(
+                    TUNNELS,
+                    "tunnel",
+                    name,
+                    format!("the tunnel (pid {}) is gone and its record stayed behind", entry.pid),
+                )
+                .repair(clear),
+                registry::Status::Exited(exit) => CheckView::warn(
+                    TUNNELS,
+                    "tunnel",
+                    name,
+                    format!("ended by itself ({}) - `turnout logs tunnel {}` says why", exit.describe(), route.name),
+                )
+                .repair(clear),
+            }
+        })
+        .collect()
+}
+
 // --- stands and sessions --------------------------------------------------------------------
 
 /// Every stand in the catalog, probed at once. A stand an app is bound to and
@@ -1141,6 +1188,11 @@ fn repair(checks: &[CheckView], assume_yes: bool) -> Result<Vec<String>> {
                     done.push("cleared the record of the gateway that is gone".to_string());
                 }
             }
+            Repair::TunnelRecord { name, pid, birth } => {
+                if registry::remove_if(&registry::tunnel_key(name), *pid, *birth)? {
+                    done.push(format!("cleared the record of tunnel {name}, which no longer runs"));
+                }
+            }
             Repair::Unbind { app } => {
                 let mut state = store::load_state()?;
                 if let Some(server) = state.bindings.remove(app) {
@@ -1282,6 +1334,44 @@ fn summary(view: &DoctorView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each state of a tunnel reads as what it means for its clients, and only
+    /// a record of one that no longer runs is offered to `--fix`.
+    #[test]
+    fn a_tunnel_is_checked_by_whether_it_carries() {
+        let route = crate::tunnel::Route {
+            name: "db".into(),
+            server: "staging".into(),
+            credential: "deploy".into(),
+            local_port: 5432,
+            host: "localhost".into(),
+            port: 5432,
+        };
+        let open = registry::Entry::own(registry::Work::Tunnel(route.clone()), true, None);
+        let mut down = open.clone();
+        down.trouble = Some(registry::Trouble {
+            since: 0,
+            reason: "staging.example.com:22 did not answer within 20s".into(),
+        });
+        let mut gone = open.clone();
+        gone.birth = gone.birth.wrapping_add(1);
+        let mut ended = open.clone();
+        ended.ended = Some(registry::Ended {
+            at: 0,
+            code: Some(1),
+            never_ran: false,
+        });
+        let checks = tunnel_checks(&[open, down, gone, ended]);
+        let states: Vec<State> = checks.iter().map(|check| check.state).collect();
+        assert_eq!(states, [State::Ok, State::Fail, State::Warn, State::Warn]);
+        assert!(checks[0].message.contains("localhost:5432 -> staging:5432"), "{}", checks[0].message);
+        assert!(checks[1].message.contains("did not answer"), "{}", checks[1].message);
+        assert_eq!(checks[1].fix.as_deref(), Some("turnout doctor --server staging"));
+        assert!(!checks[0].fixable && !checks[1].fixable, "a running tunnel is not the doctor's to clear");
+        assert!(checks[2].fixable && checks[3].fixable);
+        assert!(checks[3].message.contains("exit 1"), "{}", checks[3].message);
+        assert!(checks.iter().all(|check| check.section == TUNNELS && check.subject.as_deref() == Some("db")));
+    }
 
     #[test]
     fn the_runner_is_the_first_word_that_is_not_an_assignment() {

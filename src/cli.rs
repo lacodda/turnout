@@ -50,12 +50,12 @@ pub enum Command {
         #[arg(short = 'y', long = "yes")]
         assume_yes: bool,
     },
-    /// Find out why something does not work: tools, ports, dotenv files, the gateway, stands, sessions
+    /// Find out why something does not work: tools, ports, dotenv files, the gateway, tunnels, stands, sessions
     Doctor {
         /// Check a server instead: sshd, the sign-in, deploy directories, disk space, the restart, the web server
         #[arg(short, long, value_name = "NAME", num_args = 0..=1, conflicts_with = "fix")]
         server: Option<Option<String>>,
-        /// Repair what turnout can: dotenv files, .gitignore, stale records - and end a process on a dev port after a yes
+        /// Repair what turnout can: dotenv files, .gitignore, stale records of the gateway and tunnels - and end a process on a dev port after a yes
         #[arg(long)]
         fix: bool,
         /// With --fix: end such a process without asking
