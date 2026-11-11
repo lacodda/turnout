@@ -13,8 +13,11 @@ turnout tunnel stop [NAME]... [--all]
 
 Opens a tunnel: a port on this machine that reaches a port the server reaches, carried over SSH. The stand's database answers at `localhost:5432` here, for whatever client asks - `psql`, a GUI, an app's own `DATABASE_URL` - without opening the database to the network and without a terminal kept open on `ssh -L`.
 
-```console
-$ turnout tunnel db@staging 5432
+```bash
+turnout tunnel db@staging 5432
+```
+
+```text
 ✓ Tunnel db open: localhost:5432 -> staging:5432
   pid 31877 · log: turnout logs tunnel db
   close: turnout tunnel stop db
@@ -42,8 +45,8 @@ The tunnel signs in the way the credential says - its key, the password in the k
 
 Before it says it is open, a tunnel asks the server once whether it reaches the far end, so what cannot work is refused on the spot rather than at the first client:
 
-```console
-$ turnout tunnel db@staging 5433
+```text
+turnout tunnel db@staging 5433
 error: 'staging' cannot connect to localhost:5433: nothing listens on port 5433 there - is the service running?
 ```
 
