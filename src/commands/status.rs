@@ -1,8 +1,8 @@
 //! `turnout status`: one window onto the whole switchyard.
 //!
 //! Where every app points, whether the gateway is up and what it has noticed
-//! about the stands, which jobs are running, what is in the catalogs and what
-//! happened last. Three renderings of one [`StatusView`]: sections for a
+//! about the stands, which jobs and tunnels are running, what is in the
+//! catalogs and what happened last. Three renderings of one [`StatusView`]: sections for a
 //! person, `--short` for a prompt, `--json` for a program.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -15,6 +15,7 @@ use crate::cli::Format;
 use crate::commands::app::AppView;
 use crate::commands::group::GroupView;
 use crate::commands::jobs::JobView;
+use crate::commands::tunnel::TunnelView;
 use crate::output::{self, iso8601};
 use crate::progress::human_span;
 use crate::signal::{self, Kind, Signal};
@@ -31,6 +32,8 @@ pub struct StatusView {
     pub gateway: GatewayView,
     /// The apps' jobs that are running; the gateway has its own block.
     pub jobs: Vec<JobView>,
+    /// The tunnels that are open, carrying or down.
+    pub tunnels: Vec<TunnelView>,
     pub catalog: CatalogView,
     /// The latest entries of the journal, newest last.
     pub recent: Vec<RecentView>,
@@ -128,6 +131,7 @@ pub fn view() -> Result<StatusView> {
             signals: Vec::new(),
         },
         jobs: Vec::new(),
+        tunnels: Vec::new(),
         catalog: CatalogView::default(),
         recent: Vec::new(),
     };
@@ -141,6 +145,7 @@ pub fn view() -> Result<StatusView> {
         .into_iter()
         .filter(|job| job.app.is_some() && job.is_running())
         .collect();
+    view.tunnels = crate::commands::tunnel::views()?.into_iter().filter(TunnelView::is_open).collect();
     view.catalog = CatalogView {
         servers: store::load_servers()?.into_iter().map(|s| s.name).collect(),
         credentials: store::load_credentials()?.into_iter().map(|c| c.name).collect(),
@@ -245,6 +250,10 @@ fn text(view: &StatusView) -> String {
     if !view.jobs.is_empty() {
         out.push(String::new());
         out.extend(jobs_section(&view.jobs, now));
+    }
+    if !view.tunnels.is_empty() {
+        out.push(String::new());
+        out.extend(tunnels_section(&view.tunnels));
     }
     out.push(String::new());
     out.extend(catalog_section(&view.catalog));
@@ -388,6 +397,34 @@ fn jobs_section(jobs: &[JobView], now: u64) -> Vec<String> {
     lines
 }
 
+fn tunnels_section(tunnels: &[TunnelView]) -> Vec<String> {
+    let down = tunnels.iter().filter(|tunnel| tunnel.state == "down").count();
+    let count = match (tunnels.len() - down, down) {
+        (open, 0) => format!("{open} open"),
+        (0, down) => format!("{down} down"),
+        (open, down) => format!("{open} open, {down} down"),
+    };
+    let mut lines = vec![format!(
+        "{}  {count} {}",
+        style::heading("Tunnels"),
+        style::dim("- `turnout tunnel list` shows them whole")
+    )];
+    let width = tunnels.iter().map(|tunnel| tunnel.name.len()).max().unwrap_or(0);
+    for tunnel in tunnels {
+        let state = if tunnel.state == "down" { style::bad("down") } else { style::good("open") };
+        let mut line = format!(
+            "  {}  {state}  {}",
+            style::pad(&style::name(&tunnel.name), &tunnel.name, width),
+            tunnel.describe()
+        );
+        if let Some(trouble) = &tunnel.trouble {
+            line.push_str(&format!("  {}", style::dim(&format!("- {trouble}"))));
+        }
+        lines.push(line);
+    }
+    lines
+}
+
 fn catalog_section(catalog: &CatalogView) -> Vec<String> {
     let mut lines = vec![style::heading("Catalog")];
     let rows = [
@@ -441,7 +478,7 @@ fn recent_section(recent: &[RecentView], now: u64) -> Vec<String> {
 // --- the one line ----------------------------------------------------------------
 
 /// The `--short` line: where things point, whether the gateway carries them,
-/// what runs. `prod · gw ok · 2 dev`.
+/// what runs. `prod · gw ok · 2 dev · 1 tunnel`.
 ///
 /// In an app's directory the stand is that app's; elsewhere it is every stand
 /// an app is bound to. A stand the gateway has a signal about says so in its
@@ -503,6 +540,18 @@ pub fn short_line(view: &StatusView, here: Option<&str>) -> String {
         }
     }
     parts.extend(counts.iter().map(|(command, count)| format!("{count} {command}")));
+
+    // A tunnel that is down is what the person at the prompt has to hear
+    // about: their database client is about to fail.
+    if !view.tunnels.is_empty() {
+        let plural = if view.tunnels.len() == 1 { "" } else { "s" };
+        let down = view.tunnels.iter().filter(|tunnel| tunnel.state == "down").count();
+        parts.push(if down == 0 {
+            format!("{} tunnel{plural}", view.tunnels.len())
+        } else {
+            format!("{} tunnel{plural} ({down} down)", view.tunnels.len())
+        });
+    }
     parts.join(" · ")
 }
 
@@ -544,6 +593,7 @@ mod tests {
             app: Some(app.into()),
             command: Some(command.into()),
             state: "running",
+            trouble: None,
             exit_code: None,
             never_ran: false,
             pid: Some(1),
@@ -581,6 +631,7 @@ mod tests {
                 signals,
             },
             jobs,
+            tunnels: Vec::new(),
             catalog: CatalogView::default(),
             recent: Vec::new(),
         }
@@ -649,5 +700,34 @@ mod tests {
         assert_eq!(short_line(&view, None), "");
         view.set_up = false;
         assert_eq!(short_line(&view, None), "");
+    }
+
+    /// Tunnels count at the end of the line, and the ones down say so.
+    #[test]
+    fn the_short_line_counts_the_tunnels_and_says_which_are_down() {
+        let tunnel = |name: &str, down: bool| {
+            let route = crate::tunnel::Route {
+                name: name.into(),
+                server: "prod".into(),
+                credential: "deploy".into(),
+                local_port: 5432,
+                host: "localhost".into(),
+                port: 5432,
+            };
+            let mut entry = registry::Entry::own(registry::Work::Tunnel(route.clone()), true, None);
+            if down {
+                entry.trouble = Some(registry::Trouble {
+                    since: 0,
+                    reason: "prod.example.com:22 did not answer".into(),
+                });
+            }
+            TunnelView::new(&entry, &route)
+        };
+        let mut view = status(vec![app("web", Some("prod"))], "running", Vec::new(), vec![job("web", "dev")]);
+        view.tunnels = vec![tunnel("db", false)];
+        assert_eq!(short_line(&view, None), "prod · gw ok · 1 dev · 1 tunnel");
+        view.tunnels.push(tunnel("cache", true));
+        assert_eq!(short_line(&view, None), "prod · gw ok · 1 dev · 2 tunnels (1 down)");
+        assert_eq!(view.tunnels[1].state, "down");
     }
 }

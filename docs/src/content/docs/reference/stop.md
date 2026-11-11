@@ -1,6 +1,6 @@
 ---
 title: "stop"
-description: Stop a job - an app's background dev server, a build, a deploy, or the gateway.
+description: Stop a job - an app's background dev server, a build, a deploy, the gateway or a tunnel.
 sidebar:
   order: 8.3
 ---
@@ -8,6 +8,7 @@ sidebar:
 ```bash
 turnout stop [APP] [COMMAND]
 turnout stop gateway
+turnout stop tunnel [NAME]
 ```
 
 Ends a running [job](/turnout/concepts/background-jobs/) and everything it started - the dev server, its watchers, esbuild's helper processes - and removes it from [`ps`](/turnout/reference/ps/).
@@ -18,6 +19,7 @@ Ends a running [job](/turnout/concepts/background-jobs/) and everything it start
 - **`APP COMMAND`** - that one: `turnout stop web storybook`.
 - **Nothing** - the app of the current directory.
 - **`gateway`** - the gateway; the same as [`turnout gateway stop`](/turnout/reference/gateway/#start--stop).
+- **`tunnel NAME`** - that [tunnel](/turnout/reference/tunnel/), and **`tunnel`** alone every one; the same as [`turnout tunnel stop`](/turnout/reference/tunnel/#stop). An app that happens to be called `tunnel` keeps its jobs under the commands no tunnel is named after.
 
 ## How a job is ended
 

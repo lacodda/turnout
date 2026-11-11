@@ -242,6 +242,19 @@ pub fn stand_down(server: &str, status: Option<u16>, app: &str, url: &str) -> To
     }
 }
 
+/// A tunnel lost its SSH connection and cannot get it back yet. Its clients
+/// see their connections refused; the tunnel keeps trying by itself.
+pub fn tunnel_down(route: &crate::tunnel::Route, reason: &str, log: Option<&Path>) -> Toast {
+    Toast {
+        title: format!("Tunnel {} is down", route.name),
+        body: format!("{} - {}", route.describe(), cut(reason, REASON_CHARS)),
+        note: Some("turnout keeps trying - turnout tunnel list".to_string()),
+        open: log.map(file_url),
+        buttons: log.map(|log| Button::new("Show log", file_url(log))).into_iter().collect(),
+        failure: true,
+    }
+}
+
 /// How long a toast line may run before it is cut.
 const REASON_CHARS: usize = 160;
 

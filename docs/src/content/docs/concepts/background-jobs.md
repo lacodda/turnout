@@ -19,7 +19,7 @@ gateway  running (bg)  24180  80    http://localhost      2h 03m
 web dev  ready (bg)    31412  5100  http://web.localhost  12s
 ```
 
-`dev`, `build`, `test`, `lint`, `run` and `deploy` all take `-d` / `--detach`.
+`dev`, `build`, `test`, `lint`, `run` and `deploy` all take `-d` / `--detach`. A [tunnel](/turnout/reference/tunnel/) needs no flag: it is a job that only ever runs in the background.
 
 ## How you hear back
 
@@ -63,13 +63,16 @@ On Windows the supervisor has a console nobody sees, so the tools it starts neve
 
 ## The registry
 
-Every job has a record: background jobs, jobs running in a terminal, and the gateway - which is simply the first job, not a mechanism of its own. The records are files under `jobs/` in the [data directory](/turnout/getting-started/), one per job:
+Every job has a record: background jobs, jobs running in a terminal, the gateway and the tunnels - which are simply jobs, not mechanisms of their own. The records are files under `jobs/` in the [data directory](/turnout/getting-started/), one per job:
 
 ```text
 jobs/gateway.json
 jobs/web.dev.json
 jobs/web.build.json
+jobs/tunnel@db.json
 ```
+
+A tunnel's slot is `tunnel@NAME`, a key no app's command can have - an app's always holds a dot and never an `@` - so a tunnel and an app's job never share a record.
 
 One file each rather than one shared file, because they are written by different processes at once - a supervisor noting its server is up, a build in another terminal noting it finished - and a shared file would let one of them silently overwrite the other's news.
 
@@ -89,7 +92,7 @@ So a record's process is the one with that pid **and** that start time. When the
 
 ## Logs
 
-Each job's output goes to `logs/APP.COMMAND.log` (the gateway's to `logs/gateway.log`) under the data directory, or wherever `TURNOUT_LOG_DIR` points. The record remembers which file it wrote, so `turnout logs` finds it even after the variable changed.
+Each job's output goes to `logs/APP.COMMAND.log` (the gateway's to `logs/gateway.log`, a tunnel's to `logs/tunnel@NAME.log`) under the data directory, or wherever `TURNOUT_LOG_DIR` points. The record remembers which file it wrote, so `turnout logs` finds it even after the variable changed.
 
 A supervisor has no console anybody reads, so its own troubles go into the job's log too - a command that could not be started at all, a notification that could not be shown - as lines starting with `turnout:`.
 

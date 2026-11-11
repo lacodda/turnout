@@ -1,6 +1,6 @@
 ---
 title: "status"
-description: Show what turnout knows - where every app points, the gateway and what it noticed, running jobs, the catalogs.
+description: Show what turnout knows - where every app points, the gateway and what it noticed, running jobs and tunnels, the catalogs.
 sidebar:
   order: 2
 ---
@@ -36,6 +36,10 @@ Jobs  2 running - `turnout ps` shows the rest
   web dev      ready        14m  http://web.localhost
   admin build  running      31s
 
+Tunnels  1 open, 1 down - `turnout tunnel list` shows them whole
+  db     open  localhost:5432 -> prod:5432
+  cache  down  localhost:6379 -> dev:6379  - cannot reach dev.example.com:22: connection refused
+
 Catalog
   servers      dev, prod
   credentials  deploy
@@ -51,6 +55,7 @@ Recent
 - **Groups** - each [group](/turnout/reference/group/) and where its members point.
 - **Gateway** - whether it runs, its door, and the [signals](/turnout/concepts/gateway/#when-a-stand-misbehaves) it has up: a stand that answers 502 or nothing, a session the stand refused. A signal stays until the gateway sees the opposite, and goes by itself.
 - **Jobs** - the [jobs](/turnout/reference/ps/) of your apps that are running right now, in the background or in other terminals.
+- **Tunnels** - the [tunnels](/turnout/reference/tunnel/) that are open, and the ones whose connection is down, with the reason.
 - **Catalog** - the servers, credentials, paths and targets by name.
 - **Recent** - the last five entries of the [journal](/turnout/concepts/journal/), newest first.
 
@@ -70,6 +75,7 @@ prod · gw ok · 2 dev
 - **the stand** - in an app's directory, the server that app points at (`web unbound` when it points nowhere); elsewhere, every server an app is bound to. A stand the gateway has a signal about says so: `prod 502`, `prod down` when it does not answer, `prod login` when the session lapsed.
 - **the gateway** - `gw ok`, `gw down` when its process lives but does not answer, `gw off` when it is not running and an app is bound.
 - **the jobs** - running jobs counted by command: `2 dev`, `1 build`.
+- **the tunnels** - `1 tunnel`, `2 tunnels`, and `(1 down)` when a connection is lost - the client that uses it is about to fail.
 
 Nothing to say prints nothing - not even an empty line - so the segment disappears. The line is quick: it reads local files only, never the network, and never checks for updates. Wiring it into starship, tmux and PowerShell: [the prompt line guide](/turnout/guides/prompt-line/).
 
@@ -82,4 +88,4 @@ turnout status --json | jq -r '.apps[] | "\(.name) -> \(.server)"'
 turnout status --json | jq '.gateway.signals'
 ```
 
-The top level has `version`, `data_dir`, `set_up`, `apps` (as [`app show --json`](/turnout/reference/app/#list--show) prints each one), `groups`, `gateway` (`state`, `pid`, `started`, `front_door`, `signals`), `jobs` (as [`ps --json`](/turnout/reference/ps/#as-json)), `catalog` and `recent`. The rules every command's JSON follows are on [JSON output](/turnout/concepts/json-output/).
+The top level has `version`, `data_dir`, `set_up`, `apps` (as [`app show --json`](/turnout/reference/app/#list--show) prints each one), `groups`, `gateway` (`state`, `pid`, `started`, `front_door`, `signals`), `jobs` (as [`ps --json`](/turnout/reference/ps/#as-json)), `tunnels` (the open ones, as [`tunnel list --json`](/turnout/reference/tunnel/#list)), `catalog` and `recent`. The rules every command's JSON follows are on [JSON output](/turnout/concepts/json-output/).

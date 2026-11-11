@@ -57,8 +57,11 @@ _turnout_dynamic() {
             [[ ${COMP_CWORD} -eq 2 ]] && kind="openable"
             ;;
         logs|stop)
-            # `logs|stop [APP] [COMMAND]`: an app (or `gateway`), then one of its commands.
-            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="apps"; elif [[ ${COMP_CWORD} -eq 3 ]]; then kind="commands"; fi
+            # `logs|stop [APP] [COMMAND]`: an app (or `gateway`), then one of its commands;
+            # `logs|stop tunnel NAME`: a tunnel.
+            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="apps"; extra="gateway tunnel"
+            elif [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" == "tunnel" ]]; then kind="tunnels"
+            elif [[ ${COMP_CWORD} -eq 3 ]]; then kind="commands"; fi
             ;;
         deploy)
             # Named deploy targets - as many as the deploy goes to - or apps.
@@ -106,6 +109,11 @@ _turnout_dynamic() {
         cookie)
             # `cookie set|clear [APP]`; `list` takes no name.
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|clear)$ ]] && kind="apps"
+            ;;
+        tunnel)
+            # `tunnel SERVER PORTS` (NAME@SERVER too), `tunnel list`, `tunnel stop [NAME]...`.
+            if [[ ${COMP_CWORD} -eq 2 ]]; then kind="servers"; extra="list stop"
+            elif [[ ${COMP_CWORD} -ge 3 && "${COMP_WORDS[2]}" == "stop" ]]; then kind="tunnels"; fi
             ;;
     esac
 

@@ -1,5 +1,6 @@
 //! Jobs in the background, and the console over all of them: `--detach`,
-//! `ps`, `logs` and `stop`.
+//! `ps`, `logs` and `stop` - for the apps' commands, the gateway and the
+//! tunnels alike.
 //!
 //! A detached job is run by a *supervisor*: turnout started again, detached
 //! from the terminal, as `turnout job-run`. It claims the job's record, runs
@@ -372,13 +373,17 @@ fn ended_well(spec: &Supervised, elapsed: Duration, was_ready: bool, places: &no
 /// A job as `ps` and `status` report it.
 #[derive(Serialize)]
 pub struct JobView {
-    /// What `ps` calls it: `myapp dev`, `gateway`.
+    /// What `ps` calls it: `myapp dev`, `gateway`, `tunnel db`.
     pub job: String,
-    /// The app and the command; `null` for the gateway.
+    /// The app and the command; `null` for the gateway and a tunnel.
     pub app: Option<String>,
     pub command: Option<String>,
-    /// `ready` (a server that came up), `running`, `done`, `failed` or `gone`.
+    /// `ready` (a server that came up, a tunnel that carries), `running`,
+    /// `done`, `failed` or `gone`.
     pub state: &'static str,
+    /// What keeps a running job from its work right now - a tunnel whose
+    /// connection is down; `null` while all is well.
+    pub trouble: Option<String>,
     /// The exit code of a job that ended by itself; `null` while it runs, and
     /// for one that was killed, vanished or never ran.
     pub exit_code: Option<i32>,
@@ -416,13 +421,14 @@ pub fn views() -> Result<Vec<JobView>> {
             let (port, address) = if running { reach(entry, &apps, gateway.as_ref()) } else { (None, None) };
             let (app, command) = match &entry.work {
                 Work::Command { app, command } => (Some(app.clone()), Some(command.clone())),
-                Work::Gateway { .. } => (None, None),
+                Work::Gateway { .. } | Work::Tunnel(_) => (None, None),
             };
             JobView {
                 job: entry.title(),
                 app,
                 command,
                 state: state_word(entry, status),
+                trouble: entry.trouble.as_ref().filter(|_| running).map(|trouble| trouble.reason.clone()),
                 exit_code: match status {
                     Status::Exited(exit) => exit.code(),
                     _ => None,
@@ -479,6 +485,7 @@ fn table(jobs: &[JobView]) -> String {
         let mut state = match job.state {
             "failed" if job.never_ran => format!("failed ({})", Exit::NeverRan.describe()),
             "failed" => format!("failed ({})", describe_code(job.exit_code)),
+            _ if job.trouble.is_some() => "down".to_string(),
             word => word.to_string(),
         };
         if job.background && job.is_running() {
@@ -516,7 +523,7 @@ fn table(jobs: &[JobView]) -> String {
 /// What the STATE column says.
 fn state_word(entry: &Entry, status: Status) -> &'static str {
     match status {
-        Status::Running if entry.ready.is_some() => "ready",
+        Status::Running if entry.ready.is_some() && entry.trouble.is_none() => "ready",
         Status::Running => "running",
         Status::Exited(Exit::Code(0)) => "done",
         Status::Exited(_) => "failed",
@@ -537,6 +544,7 @@ fn describe_code(code: Option<i32>) -> String {
 fn reach(entry: &Entry, apps: &[crate::model::App], gateway: Option<&crate::model::Gateway>) -> (Option<u16>, Option<String>) {
     match &entry.work {
         Work::Gateway { ports, front_port, .. } => (front_port.or_else(|| ports.keys().next().copied()), front_port.map(crate::front::door)),
+        Work::Tunnel(route) => (Some(route.local_port), Some(route.local())),
         Work::Command { app, command } => {
             let seen = entry.ready.as_ref().and_then(|ready| ready.url.clone());
             if command == "dev"
@@ -554,11 +562,24 @@ fn reach(entry: &Entry, apps: &[crate::model::App], gateway: Option<&crate::mode
 ///
 /// `gateway` alone is the gateway, even when an app has that name too - its
 /// jobs are reached by naming the command as well: `turnout logs gateway dev`.
-/// No name is the app of the current directory.
+/// `tunnel NAME` is the tunnel of that name when there is a record of one,
+/// and `tunnel` alone every tunnel - an app called `tunnel` keeps its jobs
+/// under the commands no tunnel is named after. No name is the app of the
+/// current directory.
 fn select(name: Option<String>, command: Option<String>) -> Result<(String, Vec<Entry>)> {
     if name.as_deref() == Some(registry::GATEWAY) && command.is_none() {
         let entries = registry::load(registry::GATEWAY)?.into_iter().collect();
         return Ok((registry::GATEWAY.to_string(), entries));
+    }
+    if name.as_deref() == Some(registry::TUNNEL) {
+        match &command {
+            None => return Ok((TUNNELS.to_string(), tunnels()?)),
+            Some(tunnel) => {
+                if let Some(entry) = registry::load(&registry::tunnel_key(tunnel))? {
+                    return Ok((entry.title(), vec![entry]));
+                }
+            }
+        }
     }
     let app = match name {
         Some(name) => name,
@@ -692,9 +713,24 @@ pub(crate) fn tail(path: &Path, count: usize) -> Result<Vec<String>> {
     Ok(lines.into())
 }
 
+/// What a selection of every tunnel is called.
+pub const TUNNELS: &str = "tunnels";
+
+/// Every tunnel the registry holds a record of, in name order.
+pub fn tunnels() -> Result<Vec<Entry>> {
+    Ok(registry::list()?.into_iter().filter(|entry| entry.tunnel().is_some()).collect())
+}
+
 /// `turnout stop`, and `turnout gateway stop`.
 pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
     let (what, entries) = select(name, command)?;
+    stop_entries(&what, entries)
+}
+
+/// Stop the running ones of `entries` and clear the records whose process is
+/// gone; `what` names them all, for the line that says nothing ran.
+/// `turnout stop` and `turnout tunnel stop` both end here.
+pub fn stop_entries(what: &str, entries: Vec<Entry>) -> Result<()> {
     let is_gateway = what == registry::GATEWAY;
     let mut acted = false;
     for entry in entries {
@@ -703,16 +739,19 @@ pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
                 registry::mark_stopping(&entry.key(), entry.pid, entry.birth)?;
                 end_job(&entry)?;
                 registry::remove_if(&entry.key(), entry.pid, entry.birth)?;
-                if is_gateway {
-                    crate::journal::record("gateway.stop", None, None, None);
-                    println!("Gateway stopped (pid {}).", entry.pid);
-                } else {
-                    let command = match &entry.work {
-                        Work::Command { command, .. } => Some(command.as_str()),
-                        Work::Gateway { .. } => None,
-                    };
-                    crate::journal::record("job.stop", entry.app(), None, command);
-                    println!("Stopped {} (pid {}).", entry.title(), entry.pid);
+                match &entry.work {
+                    Work::Gateway { .. } => {
+                        crate::journal::record("gateway.stop", None, None, None);
+                        println!("Gateway stopped (pid {}).", entry.pid);
+                    }
+                    Work::Tunnel(route) => {
+                        crate::journal::record("tunnel.stop", None, Some(&route.server), Some(&route.name));
+                        println!("Closed {} - {} (pid {}).", entry.title(), route.describe(), entry.pid);
+                    }
+                    Work::Command { command, .. } => {
+                        crate::journal::record("job.stop", entry.app(), None, Some(command));
+                        println!("Stopped {} (pid {}).", entry.title(), entry.pid);
+                    }
                 }
                 acted = true;
             }
@@ -735,6 +774,8 @@ pub fn stop(name: Option<String>, command: Option<String>) -> Result<()> {
     if !acted {
         if is_gateway {
             println!("The gateway is not running.");
+        } else if what == TUNNELS {
+            println!("No tunnel is open.");
         } else {
             println!("Nothing of {what} is running.");
         }

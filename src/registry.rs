@@ -8,9 +8,10 @@
 //! drops somebody else's record. With a file each, every record has exactly
 //! one writer at a time and a write is a rename.
 //!
-//! A key names a job slot, not a run: `myapp.dev`, `myapp.build`, `gateway`.
-//! The next run of the same command takes over the slot - its record and its
-//! log - which bounds both by the number of commands rather than by time.
+//! A key names a job slot, not a run: `myapp.dev`, `myapp.build`, `gateway`,
+//! `tunnel@db`. The next run of the same command takes over the slot - its
+//! record and its log - which bounds both by the number of commands rather
+//! than by time.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,19 @@ pub struct Entry {
     /// knows the end it is about to see was asked for.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stopping: bool,
+    /// What keeps a running job from doing its work right now - a tunnel
+    /// whose SSH connection is down. Written by the job as it changes, gone
+    /// once the job works again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trouble: Option<Trouble>,
+}
+
+/// Why a running job does not do its work, and since when.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct Trouble {
+    /// Seconds since the epoch.
+    pub since: u64,
+    pub reason: String,
 }
 
 /// What a job runs.
@@ -87,6 +101,9 @@ pub enum Work {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         control: Option<Control>,
     },
+    /// A tunnel: a port here, carried over SSH to an address the server
+    /// reaches (see [`crate::tunnel`]).
+    Tunnel(crate::tunnel::Route),
 }
 
 /// The gateway's control channel: a loopback port, and the token a request
@@ -183,6 +200,7 @@ impl Entry {
             ended: None,
             signals: Vec::new(),
             stopping: false,
+            trouble: None,
         }
     }
 
@@ -190,6 +208,7 @@ impl Entry {
         match &self.work {
             Work::Command { app, command } => command_key(app, command),
             Work::Gateway { .. } => GATEWAY.to_string(),
+            Work::Tunnel(route) => tunnel_key(&route.name),
         }
     }
 
@@ -208,21 +227,43 @@ impl Entry {
         self.status() == Status::Running
     }
 
-    /// The app a job belongs to; `None` for the gateway.
+    /// The app a job belongs to; `None` for the gateway and a tunnel.
     pub fn app(&self) -> Option<&str> {
         match &self.work {
             Work::Command { app, .. } => Some(app),
-            Work::Gateway { .. } => None,
+            Work::Gateway { .. } | Work::Tunnel(_) => None,
         }
     }
 
-    /// What `ps` and the messages call the job: `myapp dev`, `gateway`.
+    /// The tunnel a record is, when it is one.
+    pub fn tunnel(&self) -> Option<&crate::tunnel::Route> {
+        match &self.work {
+            Work::Tunnel(route) => Some(route),
+            Work::Command { .. } | Work::Gateway { .. } => None,
+        }
+    }
+
+    /// What `ps` and the messages call the job: `myapp dev`, `gateway`,
+    /// `tunnel db` - the words `logs` and `stop` take.
     pub fn title(&self) -> String {
         match &self.work {
             Work::Command { app, command } => format!("{app} {command}"),
             Work::Gateway { .. } => GATEWAY.to_string(),
+            Work::Tunnel(route) => format!("{TUNNEL} {}", route.name),
         }
     }
+}
+
+/// The word `ps`, `logs` and `stop` put in front of a tunnel's name.
+pub const TUNNEL: &str = "tunnel";
+
+/// The key of a tunnel's record.
+///
+/// No app's key can be one: an app's key always has its dot, and `@` is
+/// escaped in it. Tunnel names are `[a-z0-9-]`, like the names of the
+/// catalogs, so nothing here needs escaping.
+pub fn tunnel_key(name: &str) -> String {
+    format!("{TUNNEL}@{name}")
 }
 
 /// The key of an app's command.
@@ -404,6 +445,24 @@ pub(crate) fn lock_in(dir: &Path, key: &str) -> Result<Slot> {
     }
 }
 
+/// Write `entry` as the record of its slot, unless the slot's job is running.
+///
+/// The look and the write under the slot's lock, as [`crate::job::Job`]
+/// claims a command's: two tunnels opened under one name at once must not
+/// both believe they hold it.
+pub fn claim(entry: &Entry) -> Result<()> {
+    claim_in(&jobs_dir()?, entry)
+}
+
+pub(crate) fn claim_in(dir: &Path, entry: &Entry) -> Result<()> {
+    let key = entry.key();
+    let _slot = lock_in(dir, &key)?;
+    if let Some(running) = load_in(dir, &key)?.filter(Entry::is_running) {
+        anyhow::bail!("{} is already running (pid {})", running.title(), running.pid);
+    }
+    save_in(dir, entry)
+}
+
 /// Remove the record under `key`, if any. Never by the key alone from outside
 /// this module: [`remove_if`] and [`remove_own`] say whose record it is.
 fn remove_in(dir: &Path, key: &str) -> Result<()> {
@@ -517,7 +576,7 @@ pub fn as_gateway(entry: Entry) -> Option<crate::model::Gateway> {
             control,
             signals: entry.signals,
         }),
-        Work::Command { .. } => None,
+        Work::Command { .. } | Work::Tunnel(_) => None,
     }
 }
 
@@ -552,6 +611,42 @@ mod tests {
         assert_eq!(escape("console"), "console");
         // The gateway's key is not one any app can produce: app keys carry a dot.
         assert!(!command_key("gateway", "x").eq(GATEWAY));
+        // Nor is a tunnel's: an app's key never holds a bare `@`.
+        assert_eq!(tunnel_key("db"), "tunnel@db");
+        assert_ne!(command_key("tunnel", "db"), tunnel_key("db"));
+        assert!(!command_key("tunnel@db", "x").contains('@'));
+    }
+
+    /// A slot is claimed only while nobody runs in it: a second tunnel under
+    /// a running one's name is refused, and the record of one that is gone
+    /// is taken over.
+    #[test]
+    fn a_slot_is_claimed_only_while_nobody_runs_in_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let route = crate::tunnel::Route {
+            name: "db".into(),
+            server: "staging".into(),
+            credential: "deploy".into(),
+            local_port: 5432,
+            host: "localhost".into(),
+            port: 5432,
+        };
+        let first = Entry::own(Work::Tunnel(route.clone()), true, None);
+        claim_in(dir.path(), &first).unwrap();
+        let mut other = route.clone();
+        other.local_port = 15432;
+        let error = claim_in(dir.path(), &Entry::own(Work::Tunnel(other.clone()), true, None))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("tunnel db is already running"), "{error}");
+        assert_eq!(load_in(dir.path(), "tunnel@db").unwrap().unwrap().tunnel(), Some(&route));
+
+        // The first one's process is gone: its slot is free again.
+        let mut gone = first.clone();
+        gone.birth = gone.birth.wrapping_add(1);
+        save_in(dir.path(), &gone).unwrap();
+        claim_in(dir.path(), &Entry::own(Work::Tunnel(other.clone()), true, None)).unwrap();
+        assert_eq!(load_in(dir.path(), "tunnel@db").unwrap().unwrap().tunnel(), Some(&other));
     }
 
     /// Every kind of record reads back as what was written - the gateway's
@@ -570,7 +665,15 @@ mod tests {
             app: "myapp".into(),
             command: "test:e2e".into(),
         };
-        for work in [gateway, command] {
+        let tunnel = Work::Tunnel(crate::tunnel::Route {
+            name: "db".into(),
+            server: "staging".into(),
+            credential: "deploy".into(),
+            local_port: 15432,
+            host: "db.internal".into(),
+            port: 5432,
+        });
+        for work in [gateway, command, tunnel] {
             let mut entry = Entry::own(work.clone(), true, Some(PathBuf::from("x.log")));
             entry.ready = Some(Ready {
                 at: 5,
@@ -595,7 +698,24 @@ mod tests {
             assert_eq!(back.ready.unwrap().url.as_deref(), Some("http://a.localhost"));
             assert_eq!(back.ended.unwrap().code, None);
             assert_eq!(back.signals, entry.signals);
+            assert_eq!(back.trouble, None);
         }
+        // A trouble reads back too, and a record without one never writes it.
+        let mut entry = Entry::own(
+            Work::Command {
+                app: "myapp".into(),
+                command: "dev".into(),
+            },
+            true,
+            None,
+        );
+        assert!(!serde_json::to_string(&entry).unwrap().contains("trouble"));
+        entry.trouble = Some(Trouble {
+            since: 4,
+            reason: "staging.example.com:22 did not answer".into(),
+        });
+        let back: Entry = serde_json::from_str(&serde_json::to_string(&entry).unwrap()).unwrap();
+        assert_eq!(back.trouble, entry.trouble);
     }
 
     /// A record goes only while it is the one that was judged. `stop` waits

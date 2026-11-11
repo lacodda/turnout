@@ -27,4 +27,5 @@ pub mod ssh;
 pub mod status;
 pub mod target;
 pub mod transfer;
+pub mod tunnel;
 pub mod use_cmd;

@@ -1,6 +1,6 @@
 ---
 title: "logs"
-description: Print a job's output - a background dev server, the last build, the gateway.
+description: Print a job's output - a background dev server, the last build, the gateway, a tunnel.
 sidebar:
   order: 8.2
 ---
@@ -8,6 +8,7 @@ sidebar:
 ```bash
 turnout logs [APP] [COMMAND] [-f | --failed] [-n N]
 turnout logs gateway [-f]
+turnout logs tunnel NAME [-f]
 ```
 
 Prints the output a [job](/turnout/concepts/background-jobs/) wrote to its log file - both streams, in the order they came. Every job keeps one, whether it ran in the background, in a terminal under the [quiet console](/turnout/concepts/quiet-console/) or with `-v`.
@@ -26,6 +27,8 @@ Prints the output a [job](/turnout/concepts/background-jobs/) wrote to its log f
 - **`APP`** alone - the app's running job, or, when nothing of it runs, the one that ran last.
 - **Nothing** - the app of the current directory, the same way [`turnout dev`](/turnout/reference/run/) finds it.
 - **`gateway`** - the gateway's own output: the ports it listens on, the door, a WebSocket to a stand that failed. An app that happens to be called `gateway` is reached by naming its command as well: `turnout logs gateway dev`.
+
+- **`tunnel NAME`** - what a [tunnel](/turnout/reference/tunnel/) has to say, each line stamped with the time in UTC: where it listens, every time its SSH connection went down and came back, and a client it could not carry, with the reason.
 
 A gateway started with `turnout gateway run` writes to the terminal it runs in and keeps no log; `logs` says so.
 

@@ -37,3 +37,4 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0031](0031-dependabot-is-off.md) | Dependabot is off on purpose | accepted |
 | [0032](0032-every-release-leaves-its-export-behind.md) | Every release leaves its export behind | accepted |
 | [0033](0033-host-keys-are-checked-against-known-hosts.md) | Host keys are checked against OpenSSH's known_hosts | accepted |
+| [0034](0034-a-tunnel-is-a-job-on-turnouts-own-ssh.md) | A tunnel is a job on turnout's own SSH | accepted |

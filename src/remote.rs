@@ -70,31 +70,10 @@ impl Host {
 /// A plain server logs in with its own credential; `credential` overrides
 /// it for this run, and is the only way in when the server names none.
 pub fn resolve_host(name: Option<String>, credential: Option<String>) -> Result<Host> {
-    if let Some(name) = &name {
-        if store::load_targets()?.iter().any(|t| &t.name == name) {
-            let resolved = resolve(
-                Some(name.clone()),
-                Overrides {
-                    credential,
-                    ..Default::default()
-                },
-            )?;
-            return Ok(Host {
-                server: resolved.server,
-                credential: resolved.credential,
-                dir: Some(resolved.path.dir),
-            });
-        }
-        if let Some(server) = store::load_servers()?.into_iter().find(|s| &s.name == name) {
-            let credential_name = credential.or_else(|| server.credential.clone()).ok_or_else(|| {
-                anyhow::anyhow!("server '{name}' has no credential - pass --credential NAME, or set one with `turnout server edit {name} --credential NAME`")
-            })?;
-            let credential = store::load_credentials()?
-                .into_iter()
-                .find(|c| c.name == credential_name)
-                .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
-            return Ok(Host { server, credential, dir: None });
-        }
+    if let Some(name) = &name
+        && let Some(host) = resolve_machine(name, credential.clone())?
+    {
+        return Ok(host);
     }
     let resolved = resolve(
         name,
@@ -108,6 +87,41 @@ pub fn resolve_host(name: Option<String>, credential: Option<String>) -> Result<
         credential: resolved.credential,
         dir: Some(resolved.path.dir),
     })
+}
+
+/// The machine a target or a server names, and the account to reach it as;
+/// `None` when `name` is neither.
+///
+/// What a tunnel goes through, and the first two of the three things `ssh`
+/// and `exec` take. An app is not a machine: reaching one goes through its
+/// binding and, for `ssh`, its deploy directory - which a tunnel has no use
+/// for and would only be asked about.
+pub fn resolve_machine(name: &str, credential: Option<String>) -> Result<Option<Host>> {
+    if store::load_targets()?.iter().any(|t| t.name == name) {
+        let resolved = resolve(
+            Some(name.to_string()),
+            Overrides {
+                credential,
+                ..Default::default()
+            },
+        )?;
+        return Ok(Some(Host {
+            server: resolved.server,
+            credential: resolved.credential,
+            dir: Some(resolved.path.dir),
+        }));
+    }
+    let Some(server) = store::load_servers()?.into_iter().find(|s| s.name == name) else {
+        return Ok(None);
+    };
+    let credential_name = credential.or_else(|| server.credential.clone()).ok_or_else(|| {
+        anyhow::anyhow!("server '{name}' has no credential - pass --credential NAME, or set one with `turnout server edit {name} --credential NAME`")
+    })?;
+    let credential = store::load_credentials()?
+        .into_iter()
+        .find(|c| c.name == credential_name)
+        .ok_or_else(|| anyhow::anyhow!("no credential named '{credential_name}' - see `turnout credential list`"))?;
+    Ok(Some(Host { server, credential, dir: None }))
 }
 
 /// What a caller may override for a single command.

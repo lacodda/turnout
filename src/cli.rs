@@ -258,6 +258,21 @@ pub enum Command {
         #[arg(last = true, required = true, num_args = 1..)]
         command: Vec<String>,
     },
+    /// Reach a port the server reaches from a port here, over SSH, in the background: `tunnel db@staging 5432`
+    #[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
+    Tunnel {
+        #[command(subcommand)]
+        command: Option<TunnelCommand>,
+        /// NAME@SERVER, or SERVER alone to go by SERVER-PORT; SERVER may also be a target
+        #[arg(required = true, value_name = "NAME@SERVER")]
+        route: Option<String>,
+        /// PORT, LOCAL:PORT or LOCAL:HOST:PORT, as `ssh -L` takes them; HOST is the server itself unless named
+        #[arg(required = true, value_name = "PORTS")]
+        ports: Option<String>,
+        /// Credential to sign in with (defaults to the target's or the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+    },
     /// Set up deployment of an app to a server in one wizard
     #[command(name = "deploy-setup", alias = "setup-deploy")]
     DeploySetup {
@@ -412,6 +427,42 @@ pub enum Command {
 }
 
 #[derive(Subcommand)]
+pub enum TunnelCommand {
+    /// List the tunnels: where each listens, what it reaches, whether its connection is up
+    List {
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Close tunnels - the ones named, or all of them
+    Stop {
+        /// Tunnel names; picked interactively when omitted
+        names: Vec<String>,
+        /// Close every tunnel
+        #[arg(short, long, conflicts_with = "names")]
+        all: bool,
+    },
+    /// Run a tunnel in the foreground (what opening one spawns)
+    #[command(hide = true)]
+    Run {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        server: String,
+        #[arg(long)]
+        credential: String,
+        #[arg(long)]
+        local_port: u16,
+        #[arg(long)]
+        host: String,
+        #[arg(long)]
+        port: u16,
+        /// The log file opening a tunnel sends the output to; marks the run as detached
+        #[arg(long)]
+        log: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum BackupCommand {
     /// Remove all but the newest backups of a target's deploy directory
     Prune {
@@ -450,6 +501,8 @@ pub enum CompleteKind {
     Openable,
     /// Command names defined across all apps - what `run` accepts
     Commands,
+    /// Tunnels with a record - what `tunnel stop` accepts
+    Tunnels,
 }
 
 #[derive(Subcommand)]

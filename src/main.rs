@@ -37,6 +37,7 @@ mod ssh;
 mod store;
 mod style;
 mod term;
+mod tunnel;
 mod update;
 mod utils;
 
@@ -66,6 +67,10 @@ fn main() {
             | cli::Command::Complete { .. }
             | cli::Command::SelfUpdate { .. }
             | cli::Command::JobRun { .. }
+            | cli::Command::Tunnel {
+                command: Some(cli::TunnelCommand::Run { .. }),
+                ..
+            }
             | cli::Command::Status { short: true, .. }
     );
     let result = match cli.command {
@@ -130,6 +135,12 @@ fn main() {
             link,
         }),
         cli::Command::Ssh { name, credential } => commands::ssh::run(name, credential),
+        cli::Command::Tunnel {
+            command,
+            route,
+            ports,
+            credential,
+        } => commands::tunnel::run(command, route, ports, credential),
         cli::Command::Exec {
             name,
             credential,

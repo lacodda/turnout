@@ -304,6 +304,112 @@ impl Session {
     }
 }
 
+/// How often a tunnel's connection asks the server whether it is still there
+/// when nothing else crosses it; [`KEEPALIVE_MISSES`] unanswered asks in a
+/// row and the connection is taken for lost.
+///
+/// A connection a laptop's sleep or a rebooted router cut leaves no word
+/// behind: without asking, a tunnel would hand its next client a connection
+/// that is dead and only find out when that client gave up.
+const KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(15);
+const KEEPALIVE_MISSES: usize = 3;
+
+/// An SSH connection that carries TCP: what a tunnel forwards its local
+/// connections over (see [`crate::tunnel`]).
+///
+/// Async, unlike [`Session`]: a tunnel accepts connections and copies their
+/// bytes on a runtime of its own, and the connection has to live on the same
+/// one. The way in is the credential's, exactly as for a [`Session`].
+pub struct Forwarder {
+    handle: Handle<HostKeyCheck>,
+}
+
+/// Why a forwarded connection could not be opened.
+#[derive(Debug)]
+pub enum OpenFailure {
+    /// The server tried and could not connect to the address: nothing
+    /// listens there, or the server cannot resolve the name.
+    Unreachable,
+    /// sshd forwards nothing for this account (`AllowTcpForwarding`).
+    Prohibited,
+    /// Some other refusal of the server's, in its words.
+    Refused(String),
+    /// The SSH connection itself is gone.
+    Lost(String),
+}
+
+impl Forwarder {
+    /// Connect to `server` as `credential`, for forwarding.
+    ///
+    /// The credential is resolved on every call - its key file read, its
+    /// password taken from the keyring - so a tunnel that reconnects after a
+    /// `pass set` signs in with the new password.
+    pub async fn connect(server: &Server, credential: &Credential) -> Result<Self> {
+        // Off the runtime: a keyring client blocks, and on Linux it may run
+        // a runtime of its own, which cannot be started from inside this one.
+        let owned = credential.clone();
+        let material = tokio::task::spawn_blocking(move || auth_material(&owned))
+            .await
+            .context("cannot read the credential")??;
+        Self::connect_checked(
+            known_hosts::file()?,
+            Some(&server.name),
+            &server.ssh_host(),
+            server.port,
+            &credential.user,
+            material,
+        )
+        .await
+    }
+
+    async fn connect_checked(file: PathBuf, server: Option<&str>, host: &str, port: u16, user: &str, material: AuthMaterial) -> Result<Self> {
+        let mut config = client_config(&file, host, port);
+        config.keepalive_interval = Some(KEEPALIVE);
+        config.keepalive_max = KEEPALIVE_MISSES;
+        // A database's small messages go out as they are written, not when
+        // Nagle's algorithm thinks there are enough of them.
+        config.nodelay = true;
+        let check = HostKeyCheck {
+            file,
+            host: host.to_string(),
+            port,
+            server: server.map(str::to_string),
+        };
+        Ok(Self {
+            handle: authenticate_with(check, user, material, config).await?,
+        })
+    }
+
+    /// Whether the connection has ended - closed by the server, or given up
+    /// on after the keepalives went unanswered.
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
+    }
+
+    /// Ask the server to connect to `host:port` and carry that connection;
+    /// `origin` is the local client it is for, which sshd logs.
+    pub async fn open(&self, host: &str, port: u16, origin: std::net::SocketAddr) -> Result<russh::ChannelStream<Msg>, OpenFailure> {
+        use russh::ChannelOpenFailure as Failure;
+        match self
+            .handle
+            .channel_open_direct_tcpip(host, u32::from(port), origin.ip().to_string(), u32::from(origin.port()))
+            .await
+        {
+            Ok(channel) => Ok(channel.into_stream()),
+            Err(russh::Error::ChannelOpenFailure(Failure::ConnectFailed)) => Err(OpenFailure::Unreachable),
+            Err(russh::Error::ChannelOpenFailure(Failure::AdministrativelyProhibited)) => Err(OpenFailure::Prohibited),
+            Err(russh::Error::ChannelOpenFailure(Failure::Other { reason, .. })) if !reason.trim().is_empty() => Err(OpenFailure::Refused(reason)),
+            Err(russh::Error::ChannelOpenFailure(other)) => Err(OpenFailure::Refused(format!("{other:?}"))),
+            Err(err) => Err(OpenFailure::Lost(err.to_string())),
+        }
+    }
+
+    /// End the connection, politely.
+    pub async fn close(&self) {
+        let _ = self.handle.disconnect(russh::Disconnect::ByApplication, "", "").await;
+    }
+}
+
 /// Create one remote directory, tolerating only "already exists".
 async fn mkdir(sftp: &SftpSession, remote: &str) -> Result<()> {
     if let Err(err) = sftp.create_dir(remote).await {
@@ -401,8 +507,15 @@ async fn rsa_hash(handle: &Handle<HostKeyCheck>, algorithm: Algorithm, best: &mu
 
 /// Connect and authenticate, returning the live handle.
 async fn authenticate(check: HostKeyCheck, user: &str, material: AuthMaterial) -> Result<Handle<HostKeyCheck>> {
+    let config = client_config(&check.file, &check.host, check.port);
+    authenticate_with(check, user, material, config).await
+}
+
+/// [`authenticate`] with the client configuration given - a tunnel's asks
+/// the server whether it is still there.
+async fn authenticate_with(check: HostKeyCheck, user: &str, material: AuthMaterial, config: client::Config) -> Result<Handle<HostKeyCheck>> {
     let (host, port) = (check.host.clone(), check.port);
-    let config = Arc::new(client_config(&check.file, &host, port));
+    let config = Arc::new(config);
     let mut handle = match client::connect(config, (host.as_str(), port), check).await {
         Ok(handle) => handle,
         // A refused host key is the whole message: "cannot reach" in front
@@ -626,7 +739,7 @@ pub(crate) mod tests {
     use std::collections::HashMap;
     use std::io::{Seek, SeekFrom, Write};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::{Arc, mpsc};
 
     use russh::keys::ssh_key::private::{Ed25519Keypair, KeypairData};
@@ -678,6 +791,9 @@ pub(crate) mod tests {
         /// How many bytes of a file SFTP takes before it refuses to write;
         /// unlimited until a test says otherwise.
         write_limit: Arc<AtomicU64>,
+        /// Whether the stand forwards TCP (`direct-tcpip`), as sshd does
+        /// unless `AllowTcpForwarding no` says otherwise.
+        forwarding: Arc<AtomicBool>,
     }
 
     impl Stand {
@@ -726,6 +842,8 @@ pub(crate) mod tests {
             let served_opens = subsystem_opens.clone();
             let write_limit = Arc::new(AtomicU64::new(u64::MAX));
             let served_limit = write_limit.clone();
+            let forwarding = Arc::new(AtomicBool::new(true));
+            let served_forwarding = forwarding.clone();
             let (report, learn) = mpsc::channel();
             // The server outlives every session the test opens; the thread is
             // reclaimed when the test process exits.
@@ -759,6 +877,7 @@ pub(crate) mod tests {
                         root: served_root,
                         subsystem_opens: served_opens,
                         write_limit: served_limit,
+                        forwarding: served_forwarding,
                         passwords_accepted,
                         authorized,
                         real_shell,
@@ -772,7 +891,19 @@ pub(crate) mod tests {
                 root,
                 subsystem_opens,
                 write_limit,
+                forwarding,
             }
+        }
+
+        /// From now on, refuse to forward TCP - sshd with
+        /// `AllowTcpForwarding no`.
+        pub(crate) fn refuse_forwarding(&self) {
+            self.forwarding.store(false, Ordering::SeqCst);
+        }
+
+        /// The stand's port on the loopback.
+        pub(crate) fn port(&self) -> u16 {
+            self.port
         }
 
         /// From now on, refuse an SFTP write that would take a file past
@@ -797,6 +928,7 @@ pub(crate) mod tests {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
         write_limit: Arc<AtomicU64>,
+        forwarding: Arc<AtomicBool>,
         passwords_accepted: bool,
         /// When set, the only public key this stand accepts.
         authorized: Option<russh::keys::PublicKey>,
@@ -811,6 +943,7 @@ pub(crate) mod tests {
                 root: self.root.clone(),
                 subsystem_opens: self.subsystem_opens.clone(),
                 write_limit: self.write_limit.clone(),
+                forwarding: self.forwarding.clone(),
                 channels: HashMap::new(),
                 passwords_accepted: self.passwords_accepted,
                 authorized: self.authorized.clone(),
@@ -823,6 +956,7 @@ pub(crate) mod tests {
         root: PathBuf,
         subsystem_opens: Arc<AtomicUsize>,
         write_limit: Arc<AtomicU64>,
+        forwarding: Arc<AtomicBool>,
         channels: HashMap<ChannelId, ServerChannel<ServerMsg>>,
         passwords_accepted: bool,
         authorized: Option<russh::keys::PublicKey>,
@@ -930,6 +1064,39 @@ pub(crate) mod tests {
             }
             session.eof(channel)?;
             session.close(channel)?;
+            Ok(())
+        }
+
+        /// Forwarding as sshd does it: connect to the address asked for, and
+        /// carry that connection over the channel - or say why not.
+        async fn channel_open_direct_tcpip(
+            &mut self,
+            channel: ServerChannel<ServerMsg>,
+            host_to_connect: &str,
+            port_to_connect: u32,
+            _originator_address: &str,
+            _originator_port: u32,
+            reply: ChannelOpenHandle,
+            _session: &mut ServerSession,
+        ) -> Result<(), Self::Error> {
+            if !self.forwarding.load(Ordering::SeqCst) {
+                reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+                return Ok(());
+            }
+            let Ok(port) = u16::try_from(port_to_connect) else {
+                reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                return Ok(());
+            };
+            match tokio::net::TcpStream::connect((host_to_connect, port)).await {
+                Ok(mut tcp) => {
+                    reply.accept().await;
+                    tokio::spawn(async move {
+                        let mut stream = channel.into_stream();
+                        let _ = tokio::io::copy_bidirectional(&mut tcp, &mut stream).await;
+                    });
+                }
+                Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
+            }
             Ok(())
         }
 
@@ -1550,5 +1717,87 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(stand.root.path().join("b.txt")).expect("b.txt arrived"), b"beta");
         // The v0.10.1 fix: one SFTP subsystem per session, however many files.
         assert_eq!(stand.subsystem_opens.load(Ordering::SeqCst), 1, "the SFTP subsystem is opened once and shared");
+    }
+
+    /// A loopback server that sends back whatever it is sent - what the
+    /// forwarding tests reach through the stand.
+    fn echo_server(runtime: &Runtime) -> u16 {
+        runtime.block_on(async {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.expect("bind the echo server");
+            let port = listener.local_addr().expect("its address").port();
+            tokio::spawn(async move {
+                while let Ok((mut socket, _)) = listener.accept().await {
+                    tokio::spawn(async move {
+                        let (mut read, mut write) = socket.split();
+                        let _ = tokio::io::copy(&mut read, &mut write).await;
+                    });
+                }
+            });
+            port
+        })
+    }
+
+    fn forwarder(runtime: &Runtime, stand: &Stand) -> Forwarder {
+        runtime
+            .block_on(Forwarder::connect_checked(
+                known_hosts::file().unwrap(),
+                None,
+                "127.0.0.1",
+                stand.port(),
+                USER,
+                AuthMaterial::Password(PASSWORD.into()),
+            ))
+            .expect("password sign-in on loopback")
+    }
+
+    fn origin() -> std::net::SocketAddr {
+        std::net::SocketAddr::from(([127, 0, 0, 1], 50000))
+    }
+
+    /// A forwarded connection carries bytes both ways, and the end of one
+    /// side reaches the other: the echo server sees the end of what was sent
+    /// and closes, and the read here ends with it.
+    #[test]
+    fn a_forwarded_connection_carries_bytes_both_ways() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let stand = Stand::spawn();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let echo = echo_server(&runtime);
+        let forwarder = forwarder(&runtime, &stand);
+        let back = runtime.block_on(async {
+            let mut stream = forwarder.open("127.0.0.1", echo, origin()).await.expect("the stand reaches the echo server");
+            stream.write_all(b"ping through the stand").await.unwrap();
+            stream.shutdown().await.unwrap();
+            let mut back = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(10), stream.read_to_end(&mut back))
+                .await
+                .expect("the end of the echo reaches this side")
+                .unwrap();
+            back
+        });
+        assert_eq!(back, b"ping through the stand");
+        assert!(!forwarder.is_closed());
+        runtime.block_on(forwarder.close());
+    }
+
+    /// The server's two refusals are told apart: nothing listening at the
+    /// address, and an sshd that forwards nothing at all.
+    #[test]
+    fn a_refused_forward_says_why() {
+        let stand = Stand::spawn();
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // A port nothing listens on: bound and let go.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let forwarder = forwarder(&runtime, &stand);
+        let refused = |why: &str| match runtime.block_on(forwarder.open("127.0.0.1", closed, origin())) {
+            Ok(_) => panic!("{why}, and the forward was opened"),
+            Err(failure) => failure,
+        };
+        let failure = refused("nothing listens there");
+        assert!(matches!(failure, OpenFailure::Unreachable), "{failure:?}");
+
+        stand.refuse_forwarding();
+        let failure = refused("forwarding is off");
+        assert!(matches!(failure, OpenFailure::Prohibited), "{failure:?}");
     }
 }

@@ -31,6 +31,7 @@ pub fn run(what: CompleteKind) -> Result<()> {
             names
         }
         CompleteKind::Commands => commands(),
+        CompleteKind::Tunnels => tunnels(),
     };
     for name in names {
         println!("{name}");
@@ -69,6 +70,13 @@ fn targets() -> Vec<String> {
 fn groups() -> Vec<String> {
     store::load_groups()
         .map(|groups| groups.into_iter().map(|g| g.name).collect())
+        .unwrap_or_default()
+}
+
+/// The tunnels the registry holds a record of, open or not.
+fn tunnels() -> Vec<String> {
+    crate::registry::list()
+        .map(|entries| entries.iter().filter_map(|entry| entry.tunnel().map(|route| route.name.clone())).collect())
         .unwrap_or_default()
 }
 
