@@ -82,7 +82,15 @@ try {
     if ($appHelp -match "--env-file") { $web += "--env-file", ".env.local" }
     if ($appHelp -match "--dev-port") { $web += "--dev-port", "5150" }
     Invoke-Turnout "" $web
-    Invoke-Turnout "" @("app", "add", "api", "--path", (Join-Path $sandbox "api"), "--command", "build=cargo build --release")
+    # `api` takes the first gateway port turnout hands out, 7100 - unless this
+    # machine refuses it: Hyper-V and WSL reserve ranges of ports on Windows
+    # (`netsh int ipv4 show excludedportrange protocol=tcp`), and one can cover
+    # all of 7100-7199. Then the port is named, and the file is the one an
+    # unobstructed machine writes.
+    $api = @("app", "add", "api", "--path", (Join-Path $sandbox "api"), "--command", "build=cargo build --release")
+    $first = $null
+    try { $first = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 7100); $first.Start() } catch { $api += "--port", "7100" } finally { if ($first) { $first.Stop() } }
+    Invoke-Turnout "" $api
 
     Invoke-Turnout "" @("group", "add", "everything", "--app", "web", "--app", "api")
 
