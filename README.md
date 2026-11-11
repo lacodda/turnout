@@ -76,6 +76,7 @@ Recent
 - **Servers, logins and paths, apart** - joined into named targets, so `turnout deploy web-prod` works from any directory. [Entities](https://lacodda.github.io/turnout/concepts/entities/)
 - **A deploy that checks itself.** `--diff` before, a health check after and a rollback when it fails, a history of every deploy; Linux and Windows servers alike. [deploy](https://lacodda.github.io/turnout/reference/deploy/)
 - **Access set up, not just used.** Secrets in the OS keyring, `key setup` that proves a key before switching to it, the SSH agent, and every server's host key checked. [SSH access](https://lacodda.github.io/turnout/guides/ssh-access/)
+- **Tunnels to what a stand keeps private.** `turnout tunnel db@staging 5432` puts the stand's database at `localhost:5432`, in the background, back by itself after a dropped connection. [tunnel](https://lacodda.github.io/turnout/reference/tunnel/)
 - **A quiet console and jobs in the background.** A loader instead of scrollback, the output on the spot when something fails, `--detach` with a desktop notification at the end. [Quiet console](https://lacodda.github.io/turnout/concepts/quiet-console/)
 - **A doctor.** `turnout doctor` says why it does not work, and `doctor --server prod` where a deploy would stop - each with its fix. [doctor](https://lacodda.github.io/turnout/reference/doctor/)
 - **One window onto it all.** `status`, `status --short` for a prompt line, `--json` on every command that reports, an action journal of every change.

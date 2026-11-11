@@ -93,6 +93,9 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 	<Card title="Key access, set up for you" icon="approve-check">
 		`turnout key setup prod` generates a key, authorizes it on the server, proves it signs in and only then switches the credential over - so a misconfigured server never costs you the password that still works. Windows administrators keep their keys in a different file, and turnout writes to that one. And every connection checks the server's host key against `~/.ssh/known_hosts` before anything is sent - the same file `ssh` trusts.
 	</Card>
+	<Card title="Tunnels to what a stand keeps private" icon="external">
+		`turnout tunnel db@staging 5432` and the stand's database answers at `localhost:5432` - for psql, a GUI or the app's own connection string - without a terminal kept open on `ssh -L`. It runs in the background, signs in the way the credential says, and comes back by itself when a sleep or a reboot drops its connection; `tunnel list`, `ps` and `status` show it, and say why when it is down.
+	</Card>
 	<Card title="The SSH agent signs for you" icon="seti:shell">
 		A credential can authenticate with a key your agent already holds, so a passphrase is typed once per session rather than once per command. `SSH_AUTH_SOCK` on Linux and macOS; Pageant or the OpenSSH agent service on Windows - whichever is running.
 	</Card>
@@ -103,7 +106,7 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
 	</Card>
 	<Card title="Jobs in the background" icon="list-format">
-		`turnout dev --detach` gives the terminal back and the server keeps running. `turnout ps` shows everything turnout runs - dev servers, builds, deploys, the gateway - with ports, addresses and uptime; `logs -f` follows any of them, and `stop` takes a job down with every process it started. When a job is done, a desktop notification says so and opens the page, the stand or the log; `TURNOUT_DETACH` makes the background the default.
+		`turnout dev --detach` gives the terminal back and the server keeps running. `turnout ps` shows everything turnout runs - dev servers, builds, deploys, the gateway, tunnels - with ports, addresses and uptime; `logs -f` follows any of them, and `stop` takes a job down with every process it started. When a job is done, a desktop notification says so and opens the page, the stand or the log; `TURNOUT_DETACH` makes the background the default.
 	</Card>
 	<Card title="A quiet console" icon="seti:powershell">
 		A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it is up and speaks again only when something breaks. A failure prints its output on the spot, every job's output is kept in a log file, and `-v` still gives you everything.
