@@ -7,6 +7,18 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [1.1.0] - 2026-11-11
+
+### Documentation
+- Show a real deploy, doctor and status, recorded from v1.0.1
+- Fit what-is-turnout on one screen
+- Show tunnels on the README, the docs home and the one-screen page
+- Show the open and refused examples without a prompt line lyrn misreads
+
+### Features
+- Reach a port the server reaches from a port here
+- Name tunnels that are down, clear the ones that stopped
+
 ## [1.0.1] - 2026-11-08
 
 ### Bug Fixes

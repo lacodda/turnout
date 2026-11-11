@@ -102,7 +102,7 @@ And when you come back with `turnout use myshop main`, you are **still logged in
 
 ```text
 $ turnout status
-turnout 1.0.1  C:\Users\me\AppData\Local\lacodda\turnout
+turnout 1.1.0  C:\Users\me\AppData\Local\lacodda\turnout
 
 Apps
   myshop  -> second  http://myshop.localhost  spare :7100 (VITE_API_URL)

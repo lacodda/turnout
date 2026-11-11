@@ -22,7 +22,7 @@ turnout doctor --server [NAME] [--json]
 ```text
 ┌  Local environment
 │
-◇  turnout 1.0.1 · data C:\Users\me\AppData\Local\lacodda\turnout
+◇  turnout 1.1.0 · data C:\Users\me\AppData\Local\lacodda\turnout
 ◇  node v22.11.0 · pnpm 10.34.5
 ◇  keyring answers (Windows Credential Manager)
 │
@@ -154,7 +154,7 @@ Nothing on the server changes. The one write is a probe file, created and delete
 
 ```json
 {
-  "version": "1.0.1",
+  "version": "1.1.0",
   "server": null,
   "checks": [
     {
