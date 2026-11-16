@@ -259,7 +259,7 @@ fn erase(app: &str, server: &str, variable: &Variable) -> Result<()> {
 pub fn forget(is_gone: impl Fn(&EnvSet) -> bool) -> Result<usize> {
     let mut sets = store::load_env()?;
     let mut count = 0;
-    for set in sets.iter().filter(|set| is_gone(*set)) {
+    for set in sets.iter().filter(|set| is_gone(set)) {
         for variable in &set.variables {
             if let Err(err) = erase(&set.app, &set.server, variable) {
                 eprintln!("warning: {} of '{}' on '{}' stays in the keyring: {err:#}", variable.name, set.app, set.server);
@@ -267,7 +267,7 @@ pub fn forget(is_gone: impl Fn(&EnvSet) -> bool) -> Result<usize> {
             count += 1;
         }
     }
-    if sets.iter().any(|set| is_gone(set)) {
+    if sets.iter().any(&is_gone) {
         sets.retain(|set| !is_gone(set));
         store::save_env(&sets)?;
     }
