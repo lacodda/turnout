@@ -37,9 +37,11 @@ hero:
 ---
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
+{/* historical versions */}
 import deployCast from '../../../screens/v1.0.1/deploy.gif';
 import doctorServer from '../../../screens/v1.0.1/doctor-server.png';
 import status from '../../../screens/v1.0.1/status.png';
+{/* /historical versions */}
 
 ## A day in the life
 
@@ -91,7 +93,7 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 		An app, a server, a credential and a path join into one named target - `myapp-prod` - that `deploy`, `backup` and `restore` all address directly, from any directory, without a project folder or a binding in the way.
 	</Card>
 	<Card title="Key access, set up for you" icon="approve-check">
-		`turnout key setup prod` generates a key, authorizes it on the server, proves it signs in and only then switches the credential over - so a misconfigured server never costs you the password that still works. Windows administrators keep their keys in a different file, and turnout writes to that one. And every connection checks the server's host key against `~/.ssh/known_hosts` before anything is sent - the same file `ssh` trusts.
+		`turnout key setup prod` generates a key, authorizes it on the server, proves it signs in and only then switches the credential over - so a misconfigured server never costs you the password that still works. Windows administrators keep their keys in a different file, and turnout writes to that one. `turnout key rotate` replaces a key on every server it signs in to, the old one taken off last. And every connection checks the server's host key against `~/.ssh/known_hosts` before anything is sent - the same file `ssh` trusts.
 	</Card>
 	<Card title="Tunnels to what a stand keeps private" icon="external">
 		`turnout tunnel db@staging 5432` and the stand's database answers at `localhost:5432` - for psql, a GUI or the app's own connection string - without a terminal kept open on `ssh -L`. It runs in the background, signs in the way the credential says, and comes back by itself when a sleep or a reboot drops its connection; `tunnel list`, `ps` and `status` show it, and say why when it is down.
@@ -101,6 +103,9 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 	</Card>
 	<Card title="Secrets in the OS keyring" icon="seti:lock">
 		Windows Credential Manager, macOS Keychain or Linux Secret Service. A secret belongs to a credential, so one `pass set` covers every stand it reaches. Copy a password to the clipboard with one command; nothing lives in plain files.
+	</Card>
+	<Card title="An app's variables, off the disk" icon="seti:lock">
+		`turnout env` keeps what an app runs with on each stand - a database password, an API token - in the keyring instead of a `.env` file; `env import` moves an existing one over in one command. `turnout dev` hands the app the set of the stand it points at, a deploy builds with the set of the stand it goes to and writes the stand's own env file from it, and `--with sefy:NAME` adds what a password manager keeps, for the one run.
 	</Card>
 	<Card title="Commands from anywhere" icon="setting">
 		dev, build, test and lint run in the right project folder for you - no cd required. Commands come from your actual package.json scripts.
@@ -115,7 +120,7 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Every deploy is recorded with its version and commit - `history` lists them, `rollback` sends an earlier build back. Artifacts travel as one archive, to Linux and Windows servers alike.
 	</Card>
 	<Card title="Portable settings" icon="seti:config">
-		`export` writes your apps, servers, credentials, paths, targets and groups to one file; `import` merges it on another machine. Secrets come along only when you ask, sealed with a passphrase. A file from any release since 0.11 still imports - every build proves it against the file each of those releases wrote.
+		`export` writes your apps, servers, credentials, paths, targets and groups to one file; `import` merges it on another machine. Secrets - the apps' variables among them - come along only when you ask, sealed with a passphrase. A file from any release since 0.11 still imports - every build proves it against the file each of those releases wrote.
 	</Card>
 	<Card title="Stays current" icon="download">
 		A once-a-day check mentions a new release without ever delaying a command; `turnout self-update` installs it, and leaves an install by Homebrew, Scoop or npm to its package manager.

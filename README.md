@@ -17,7 +17,9 @@ turnout keeps all of it in one place and works from any directory. What it is, o
 
 ## A day in the life
 
+<!-- historical versions -->
 <p align="center"><img src="https://github.com/lacodda/turnout/raw/main/docs/screens/v1.0.1/deploy.gif" alt="turnout deploy: connect, back up, pack, upload, unpack, restart and a health check, each step a line of the checklist" width="760"></p>
+<!-- /historical versions -->
 
 Point an app at a stand - the app keeps talking to `localhost`, and the [gateway](https://lacodda.github.io/turnout/concepts/gateway/) routes it there, with a cookie jar per app **and** stand so the switch does not log you out:
 
@@ -75,7 +77,8 @@ Recent
 - **A dev gateway.** One address per app (`http://web.localhost`), ports assigned for you, redirects and WebSockets proxied, a session per app and stand. [Gateway](https://lacodda.github.io/turnout/concepts/gateway/)
 - **Servers, logins and paths, apart** - joined into named targets, so `turnout deploy web-prod` works from any directory. [Entities](https://lacodda.github.io/turnout/concepts/entities/)
 - **A deploy that checks itself.** `--diff` before, a health check after and a rollback when it fails, a history of every deploy; Linux and Windows servers alike. [deploy](https://lacodda.github.io/turnout/reference/deploy/)
-- **Access set up, not just used.** Secrets in the OS keyring, `key setup` that proves a key before switching to it, the SSH agent, and every server's host key checked. [SSH access](https://lacodda.github.io/turnout/guides/ssh-access/)
+- **Access set up, not just used.** Secrets in the OS keyring, `key setup` that proves a key before switching to it, `key rotate` that replaces one on every server, the SSH agent, and every server's host key checked. [SSH access](https://lacodda.github.io/turnout/guides/ssh-access/)
+- **An app's variables, off the disk.** `turnout env` keeps them per app and stand in the keyring: `dev` hands them over, a deploy writes the stand's env file from them, `--with sefy:NAME` brings the rest from a password manager. [env](https://lacodda.github.io/turnout/reference/env/)
 - **Tunnels to what a stand keeps private.** `turnout tunnel db@staging 5432` puts the stand's database at `localhost:5432`, in the background, back by itself after a dropped connection. [tunnel](https://lacodda.github.io/turnout/reference/tunnel/)
 - **A quiet console and jobs in the background.** A loader instead of scrollback, the output on the spot when something fails, `--detach` with a desktop notification at the end. [Quiet console](https://lacodda.github.io/turnout/concepts/quiet-console/)
 - **A doctor.** `turnout doctor` says why it does not work, and `doctor --server prod` where a deploy would stop - each with its fix. [doctor](https://lacodda.github.io/turnout/reference/doctor/)
