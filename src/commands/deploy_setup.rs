@@ -154,6 +154,7 @@ pub fn run(app_name: Option<String>, server_name: Option<String>) -> Result<()> 
                 url: None,
                 health: None,
                 keep_backups: None,
+                env_file: None,
             });
             targets.sort_by(|a, b| a.name.cmp(&b.name));
             name

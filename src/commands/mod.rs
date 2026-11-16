@@ -9,6 +9,7 @@ pub mod deploy;
 pub mod deploy_setup;
 pub mod doctor;
 pub mod doctor_server;
+pub mod env;
 pub mod exec;
 pub mod gateway;
 pub mod group;

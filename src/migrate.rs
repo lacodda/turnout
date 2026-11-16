@@ -30,6 +30,12 @@ use anyhow::{Context, Result, bail};
 
 /// The schema this build reads and writes.
 ///
+/// 8 since v1.2.0: an app can have variables on a stand - their names in
+/// `env.json`, their values in the keyring - and a target can name the file a
+/// deploy writes them into. Nothing is rewritten, but an older turnout
+/// editing such a target would drop the file's name, and the next deploy
+/// would leave the stand without the variables it starts with.
+///
 /// 7 since v0.25.0: a target can say how many backups its stand keeps, and
 /// every backup turnout leaves prunes down to that. Nothing is rewritten, but
 /// an older turnout editing such a target would drop the number, and the next
@@ -53,7 +59,7 @@ use anyhow::{Context, Result, bail};
 /// 3 since v0.11.0: the deploy target is a named entity in `targets.json`, and
 /// the server's own `deploy` map - which held the app-to-path relationship - is
 /// gone (ADR 0013).
-pub const CURRENT_VERSION: u32 = 7;
+pub const CURRENT_VERSION: u32 = 8;
 
 /// The oldest schema a migration reads. Schema 1 is refused instead
 /// ([`refuse_schema_1`]), and `setup` is the way out of it.
@@ -112,6 +118,12 @@ const STEPS: &[Step] = &[
     Step {
         from: 6,
         describes: "targets can say how many backups their stand keeps - an older turnout will refuse these settings rather than drop the number",
+        apply: nothing_to_rewrite,
+        rewrites: false,
+    },
+    Step {
+        from: 7,
+        describes: "apps can have variables on a stand, and a target can name the file a deploy writes them into - an older turnout will refuse these settings rather than drop it",
         apply: nothing_to_rewrite,
         rewrites: false,
     },
@@ -217,6 +229,7 @@ fn targets_from_server_deploy(dir: &Path) -> Result<()> {
                 url: None,
                 health: None,
                 keep_backups: None,
+                env_file: None,
             });
         }
     }

@@ -38,3 +38,5 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0032](0032-every-release-leaves-its-export-behind.md) | Every release leaves its export behind | accepted |
 | [0033](0033-host-keys-are-checked-against-known-hosts.md) | Host keys are checked against OpenSSH's known_hosts | accepted |
 | [0034](0034-a-tunnel-is-a-job-on-turnouts-own-ssh.md) | A tunnel is a job on turnout's own SSH | accepted |
+| [0035](0035-an-apps-variables-are-kept-per-stand.md) | An app's variables are kept per stand, and reach it by one road | accepted |
+| [0036](0036-a-key-is-rotated-everywhere-old-one-last.md) | A key is rotated on every server at once, the old one removed last | accepted |

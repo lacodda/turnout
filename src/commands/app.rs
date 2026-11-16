@@ -417,6 +417,11 @@ fn remove(name: &str, assume_yes: bool) -> Result<()> {
         state.forget_name(group);
     }
     store::save_state(&state)?;
+    // Its variables are its own: nothing else reads them.
+    let forgotten = crate::envset::forget(|set| set.app == name)?;
+    if forgotten > 0 {
+        println!("Removed its {forgotten} stored variable(s) from the keyring.");
+    }
     crate::journal::record("app.remove", Some(name), None, None);
     // The freed gateway port goes to the next app added, and the block left
     // behind would point this project at that app's gateway.

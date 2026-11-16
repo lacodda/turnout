@@ -565,6 +565,11 @@ fn remove(name: &str, assume_yes: bool, force: bool) -> Result<()> {
     if !unbound.is_empty() {
         println!("Unbound: {} - point them elsewhere with `turnout use APP SERVER`.", unbound.join(", "));
     }
+    // The variables apps had on it describe a stand that is gone.
+    let forgotten = crate::envset::forget(|set| set.server == name)?;
+    if forgotten > 0 {
+        println!("Removed the {forgotten} variable(s) apps had stored for it from the keyring.");
+    }
     crate::journal::record("server.remove", None, Some(name), None);
     println!("Server '{name}' removed.");
     Ok(())

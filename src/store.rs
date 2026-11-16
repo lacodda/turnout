@@ -15,6 +15,7 @@ const CREDENTIALS_FILE: &str = "credentials.json";
 const PATHS_FILE: &str = "paths.json";
 const TARGETS_FILE: &str = "targets.json";
 const GROUPS_FILE: &str = "groups.json";
+const ENV_FILE: &str = "env.json";
 const STATE_FILE: &str = "state.json";
 use crate::migrate::CURRENT_VERSION as SCHEMA_VERSION;
 
@@ -199,6 +200,16 @@ pub fn load_groups() -> Result<Vec<Group>> {
 
 pub fn save_groups(groups: &[Group]) -> Result<()> {
     save_catalog(GROUPS_FILE, groups)
+}
+
+/// The names of the variables each app has on each stand; the values are in
+/// the OS keyring ([`crate::envset`]).
+pub fn load_env() -> Result<Vec<crate::envset::EnvSet>> {
+    load_catalog(ENV_FILE)
+}
+
+pub fn save_env(sets: &[crate::envset::EnvSet]) -> Result<()> {
+    save_catalog(ENV_FILE, sets)
 }
 
 pub fn load_state() -> Result<State> {

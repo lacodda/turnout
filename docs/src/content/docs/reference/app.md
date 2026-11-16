@@ -191,4 +191,4 @@ turnout app remove myapp [--yes]
 
 Removes the app from the catalog. In the project on disk, turnout takes out only its own block from the app's [dotenv file](#how-the-app-learns-the-gateway-address) - the freed gateway port goes to the next app added, and the line left behind would point this project at that app's gateway. Everything else in the project is never touched.
 
-The app leaves every group it was in, and a group it was the last member of goes with it; its targets go too. Neither is left behind as the last switch, so a following `turnout use -` says there is nothing to go back to rather than naming something that is gone.
+The app leaves every group it was in, and a group it was the last member of goes with it; its targets go too, and so do the variables stored for it with [`turnout env`](/turnout/reference/env/) - out of the keyring as well. Neither is left behind as the last switch, so a following `turnout use -` says there is nothing to go back to rather than naming something that is gone.

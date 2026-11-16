@@ -48,14 +48,20 @@ pub fn set(credential: &str, value: &str) -> Result<()> {
 }
 
 pub fn get(credential: &str) -> Result<String> {
-    let missing = || anyhow::anyhow!("no secret stored for credential '{credential}' - run `turnout pass set {credential}`");
+    find(credential)?.ok_or_else(|| anyhow::anyhow!("no secret stored for credential '{credential}' - run `turnout pass set {credential}`"))
+}
+
+/// What is stored under `account`, or `None` when nothing is - for a caller
+/// with its own word for "missing": a credential's secret is one thing kept
+/// here, an app's variables ([`crate::envset`]) are another.
+pub fn find(account: &str) -> Result<Option<String>> {
     match backend()? {
-        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, &account(credential))?.get_password() {
-            Ok(value) => Ok(value),
-            Err(keyring::Error::NoEntry) => Err(missing()),
+        Backend::Keyring => match keyring::Entry::new(KEYRING_SERVICE, account)?.get_password() {
+            Ok(value) => Ok(Some(value)),
+            Err(keyring::Error::NoEntry) => Ok(None),
             Err(err) => Err(err).context("cannot read the secret from the OS keyring"),
         },
-        Backend::InsecureFile => read_file_store()?.get(&account(credential)).cloned().ok_or_else(missing),
+        Backend::InsecureFile => Ok(read_file_store()?.get(account).cloned()),
     }
 }
 

@@ -31,12 +31,45 @@ pub(crate) fn ready_patience() -> Duration {
 }
 
 /// What the caller wants from the console.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Default)]
 pub struct Options {
     /// Streaming, the background, or this terminal whatever the preference.
     pub console: crate::cli::Console,
     /// Open the app's front door once the dev server is up.
     pub open: bool,
+    /// Variables to take from another store for this run (`--with`).
+    pub with: Vec<String>,
+}
+
+/// The variables a command of `app` runs with, besides the ones turnout sets
+/// itself: what `turnout env` holds for the stand the app points at, then
+/// what `--with` brings for this run, a later one winning a name.
+///
+/// Not for `build`, `test` or `lint`, for the reason the gateway's address is
+/// not: a variable in the process environment overrides every dotenv file,
+/// and a bundle built here must not bake in the stand this machine happens to
+/// point at. The build a deploy runs gets the variables of the stand it goes
+/// to instead.
+fn stand_variables(app: &App, command_name: &str, with: &[String]) -> Result<Vec<(String, String)>> {
+    if matches!(command_name, "build" | "test" | "lint") {
+        return Ok(Vec::new());
+    }
+    let mut variables = Vec::new();
+    if let Some(server) = store::load_state()?.bindings.get(&app.name) {
+        let stored = crate::envset::values(&app.name, server)?;
+        if !stored.is_empty() {
+            let plural = if stored.len() == 1 { "" } else { "s" };
+            eprintln!("[{}] {} variable{plural} of '{server}' (turnout env)", app.name, stored.len());
+        }
+        variables.extend(stored);
+    }
+    let brought = crate::with::fetch_all(with)?;
+    if !brought.is_empty() {
+        let plural = if brought.len() == 1 { "" } else { "s" };
+        eprintln!("[{}] {} variable{plural} from sefy (--with)", app.name, brought.len());
+    }
+    variables.extend(brought);
+    Ok(variables)
 }
 
 /// Run a named command of an app in its project directory.
@@ -82,7 +115,11 @@ pub fn run(command_name: &str, app_name: Option<String>, options: Options) -> Re
     // custom command - but not for `build`, `test` or `lint`. A variable in
     // the process environment overrides every dotenv file whatever the mode,
     // and a production bundle must not bake in localhost.
-    let mut env = Vec::new();
+    //
+    // The app's own variables go first: what turnout sets itself - the
+    // gateway's address, the dev port - is this machine's, and wins a name.
+    let variables = stand_variables(app, command_name, &options.with)?;
+    let mut env: Vec<(&str, String)> = variables.iter().map(|(name, value)| (name.as_str(), value.clone())).collect();
     if !matches!(command_name, "build" | "test" | "lint")
         && let Some(url) = app.gateway_url()
     {

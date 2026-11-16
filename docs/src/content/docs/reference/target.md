@@ -25,7 +25,7 @@ Before v0.11.0 this relationship lived inside the server as a map from app to pa
 ```bash
 turnout target add [NAME] [--app APP] [--server SERVER] [--credential NAME] [--path NAME]
                           [--url URL] [--health URL | --health-command CMD] [--health-wait SECS]
-                          [--keep-backups N]
+                          [--keep-backups N] [--env-file FILE]
 ```
 
 | Flag | Short | Description |
@@ -39,6 +39,7 @@ turnout target add [NAME] [--app APP] [--server SERVER] [--credential NAME] [--p
 | `--health-command` | | After a deploy, run this on the server, in the deploy directory, instead |
 | `--health-wait` | | How long the check keeps asking, in seconds (default 60) |
 | `--keep-backups` | | How many backups of its deploy directory the stand keeps (default 5) - see [Backups](#backups) |
+| `--env-file` | | Write the app's variables for this server into this file on every deploy - see [Env file](#env-file) |
 
 Anything missing is asked for on a terminal, with the server's own credential pre-selected. Every part must already exist: a target names entities, it does not create them. An app with an [allow-list](/turnout/reference/app/) is held to it - the server has to be on the list.
 
@@ -48,7 +49,7 @@ Anything missing is asked for on a terminal, with the server's own credential pr
 
 ```bash
 turnout target list          # name, app -> server, credential and path
-turnout target show myapp-prod   # full card: the directory files land in, the address, the health check, the backups kept
+turnout target show myapp-prod   # full card: the directory files land in, the address, the health check, the backups kept, the env file
 ```
 
 Both take `--json` and print the same fields as JSON - `list` an array of what `show` prints for one. See [JSON output](/turnout/concepts/json-output/).
@@ -75,6 +76,7 @@ turnout target edit myapp-prod                  # interactive wizard
 | `--health-command` | | A command check; empty clears the check |
 | `--health-wait` | | How long the check keeps asking; keeps the probe as it is |
 | `--keep-backups` | | How many backups the stand keeps |
+| `--env-file` | | The file a deploy writes the app's variables into; empty stops writing it |
 
 Each health flag changes its own part: a new probe keeps the wait, a wait keeps the probe. A wait with no check to belong to is refused rather than dropped.
 
@@ -121,6 +123,20 @@ turnout target edit myapp-staging --keep-backups 3
 Every backup turnout leaves on a stand - `backup`, `deploy --backup`, a checked deploy rolled back to its backup - prunes the older ones down to this number afterwards (5 when the target says nothing). It lives on the target and not on the path because the disk is the stand's: the same path deployed to a Pi and to a VPS wants a different count. `0` is refused - it would remove each backup the moment it is taken; [`turnout backup prune TARGET --keep 0`](/turnout/reference/backup/#backup-prune) removes them all once.
 
 `show` prints the number in force, and `--json` carries it as `keep_backups` with the default filled in.
+
+## Env file
+
+```bash
+turnout target edit myapp-prod --env-file .env
+turnout target edit myapp-prod --env-file /etc/myapp/env     # outside the deploy directory
+turnout target edit myapp-prod --env-file ""                 # stop writing it
+```
+
+With an env file, every deploy of the target writes the variables [`turnout env`](/turnout/reference/env/) holds for its app on its server into that file on the stand - the same set `turnout dev` hands the app here. The name is relative to the deploy directory, or absolute. See [what the deploy does with it](/turnout/reference/deploy/#the-apps-variables).
+
+No file is written unless a target asks for one. A deploy directory is often a web root, and a `.env` put there unasked would be served to whoever requests it: for a site, name a file outside the directory, or keep the variables out of the stand altogether and let the build bake in what the bundle needs.
+
+`show` prints the file, and `--json` carries it as `env_file` - `null` when none is written.
 
 ## rename
 

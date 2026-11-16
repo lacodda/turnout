@@ -8,6 +8,7 @@ mod control;
 mod detached;
 mod detect;
 mod envfile;
+mod envset;
 mod front;
 mod gateway;
 mod health;
@@ -40,6 +41,7 @@ mod term;
 mod tunnel;
 mod update;
 mod utils;
+mod with;
 
 use clap::Parser;
 
@@ -88,6 +90,7 @@ fn main() {
         cli::Command::Path { command } => commands::path::run(command),
         cli::Command::Target { command } => commands::target::run(command),
         cli::Command::Pass { command } => commands::pass::run(command),
+        cli::Command::Env { command } => commands::env::run(command),
         cli::Command::Key { command } => match command {
             cli::KeyCommand::Setup { server, credential, key } => commands::key::setup(server, credential, key),
             cli::KeyCommand::Check { server, credential } => commands::key::check(server, credential),
@@ -97,12 +100,18 @@ fn main() {
         cli::Command::Group { command } => commands::group::run(command),
         cli::Command::Gateway { command } => commands::gateway::run(command),
         cli::Command::Cookie { command } => commands::cookie::run(command),
-        cli::Command::Dev { app, console, open } => commands::exec::run("dev", app, commands::exec::Options { console, open }),
+        cli::Command::Dev { app, console, open, with } => commands::exec::run("dev", app, commands::exec::Options { console, open, with }),
         cli::Command::Open { name } => commands::open::run(name),
-        cli::Command::Build { app, console } => commands::exec::run("build", app, commands::exec::Options { console, open: false }),
-        cli::Command::Test { app, console } => commands::exec::run("test", app, commands::exec::Options { console, open: false }),
-        cli::Command::Lint { app, console } => commands::exec::run("lint", app, commands::exec::Options { console, open: false }),
-        cli::Command::Run { command, app, console, open } => commands::exec::run(&command, app, commands::exec::Options { console, open }),
+        cli::Command::Build { app, console } => commands::exec::run("build", app, commands::exec::Options { console, ..Default::default() }),
+        cli::Command::Test { app, console } => commands::exec::run("test", app, commands::exec::Options { console, ..Default::default() }),
+        cli::Command::Lint { app, console } => commands::exec::run("lint", app, commands::exec::Options { console, ..Default::default() }),
+        cli::Command::Run {
+            command,
+            app,
+            console,
+            open,
+            with,
+        } => commands::exec::run(&command, app, commands::exec::Options { console, open, with }),
         cli::Command::Ps { watch, format } => commands::jobs::ps(watch, format),
         cli::Command::Logs {
             name,

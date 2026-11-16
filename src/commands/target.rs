@@ -26,7 +26,8 @@ pub fn run(command: TargetCommand) -> Result<()> {
             url,
             health,
             keep_backups,
-        } => add(name, Parts { app, server, credential, path }, url, &health, keep_backups),
+            env_file,
+        } => add(name, Parts { app, server, credential, path }, url, &health, keep_backups, env_file),
         TargetCommand::List { format } => list(format),
         TargetCommand::Show { name, format } => show(&resolve(name, "Show target")?, format),
         TargetCommand::Edit {
@@ -37,9 +38,22 @@ pub fn run(command: TargetCommand) -> Result<()> {
             url,
             health,
             keep_backups,
+            env_file,
         } => {
             let name = resolve(name, "Edit target")?;
-            edit(&name, server, credential, path, url, &health, keep_backups)
+            edit(
+                &name,
+                Parts {
+                    app: None,
+                    server,
+                    credential,
+                    path,
+                },
+                url,
+                &health,
+                keep_backups,
+                env_file,
+            )
         }
         TargetCommand::Rename { name, to } => {
             let name = resolve(name, "Rename target")?;
@@ -126,13 +140,24 @@ fn keep_from(keep: u32, name: &str) -> Result<u32> {
     Ok(keep)
 }
 
-fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthArgs, keep_backups: Option<u32>) -> Result<()> {
+/// `--env-file`: a file name, or empty for "write none".
+fn env_file_from(file: String) -> Result<Option<String>> {
+    let file = file.trim().to_string();
+    if file.is_empty() {
+        return Ok(None);
+    }
+    crate::model::validate_stand_file(&file)?;
+    Ok(Some(crate::model::normalize_remote_path(&file)))
+}
+
+fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthArgs, keep_backups: Option<u32>, env_file: Option<String>) -> Result<()> {
     let Parts { app, server, credential, path } = parts;
     // Read before anything is asked: a bad flag must fail at once, not after
     // three pickers.
     let url = url.map(url_from).transpose()?.flatten();
     let health = health_from(None, health)?;
     let keep_backups = keep_backups.map(|keep| keep_from(keep, name.as_deref().unwrap_or("TARGET"))).transpose()?;
+    let env_file = env_file.map(env_file_from).transpose()?.flatten();
     let mut targets = store::load_targets()?;
     let apps = store::load_apps()?;
     let servers = store::load_servers()?;
@@ -208,6 +233,7 @@ fn add(name: Option<String>, parts: Parts, url: Option<String>, health: &HealthA
         url,
         health,
         keep_backups,
+        env_file,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -251,6 +277,7 @@ pub fn offer_to_save(app: &str, server: &str, credential: &str, path: &str) -> R
         url: None,
         health: None,
         keep_backups: None,
+        env_file: None,
     });
     targets.sort_by(|a, b| a.name.cmp(&b.name));
     store::save_targets(&targets)?;
@@ -280,6 +307,9 @@ pub struct TargetView {
     /// How many backups of its deploy directory the stand keeps - the
     /// default filled in.
     pub keep_backups: u32,
+    /// The file on the stand a deploy writes the app's variables into, as
+    /// the target names it; `null` when it writes none.
+    pub env_file: Option<String>,
     /// Whether that number is the default rather than the target's own.
     #[serde(skip)]
     keeps_default: bool,
@@ -334,6 +364,7 @@ pub fn views() -> Result<Vec<TargetView>> {
             health: target.health.map(HealthView::from),
             keep_backups: target.keep_backups.unwrap_or(crate::remote::DEFAULT_KEEP_BACKUPS),
             keeps_default: target.keep_backups.is_none(),
+            env_file: target.env_file,
         })
         .collect())
 }
@@ -387,27 +418,30 @@ fn show(name: &str, format: Format) -> Result<()> {
                 target.keep_backups,
                 if target.keeps_default { " (the default)" } else { "" }
             ),
+            match &target.env_file {
+                Some(file) => format!(
+                    "  Env file:   {file} - written on every deploy from `turnout env` for {} on {}",
+                    target.app, target.server
+                ),
+                None => format!("  Env file:   none written - turnout target edit {} --env-file .env", target.name),
+            },
         ]
         .join("\n")
     })
 }
 
-fn edit(
-    name: &str,
-    server: Option<String>,
-    credential: Option<String>,
-    path: Option<String>,
-    url: Option<String>,
-    health: &HealthArgs,
-    keep_backups: Option<u32>,
-) -> Result<()> {
+fn edit(name: &str, parts: Parts, url: Option<String>, health: &HealthArgs, keep_backups: Option<u32>, env_file: Option<String>) -> Result<()> {
+    // The app is not editable: a target that changes which app it deploys is
+    // a different route.
+    let Parts { server, credential, path, .. } = parts;
     let mut targets = store::load_targets()?;
     let index = targets.iter().position(|t| t.name == name).ok_or_else(|| unknown(name))?;
     // Read before anything is written: a bad flag must not leave half an edit.
     let url = url.map(url_from).transpose()?;
     let check = health.any().then(|| health_from(targets[index].health.clone(), health)).transpose()?;
     let keep_backups = keep_backups.map(|keep| keep_from(keep, name)).transpose()?;
-    if server.is_none() && credential.is_none() && path.is_none() && url.is_none() && check.is_none() && keep_backups.is_none() {
+    let env_file = env_file.map(env_file_from).transpose()?;
+    if server.is_none() && credential.is_none() && path.is_none() && url.is_none() && check.is_none() && keep_backups.is_none() && env_file.is_none() {
         pick::ensure_interactive("nothing to change: pass flags to edit non-interactively")?;
         let apps = store::load_apps()?;
         let app = apps
@@ -463,6 +497,9 @@ fn edit(
         }
         if let Some(keep) = keep_backups {
             target.keep_backups = Some(keep);
+        }
+        if let Some(env_file) = env_file {
+            target.env_file = env_file;
         }
     }
     store::save_targets(&targets)?;

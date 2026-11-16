@@ -309,6 +309,20 @@ impl Dialect {
         }
     }
 
+    /// Create `path` empty and readable by its owner alone, unless something
+    /// is already there - the step before secrets are written into a new
+    /// file. `None` on Windows: a file there takes its directory's ACL, and
+    /// has no mode to be born with.
+    pub fn born_private(&self, path: &str) -> Option<String> {
+        match self {
+            Dialect::Posix => {
+                let file = self.quote(path);
+                Some(format!("sh -c {}", self.quote(&format!("[ -e {file} ] || (umask 077 && : > {file})"))))
+            }
+            Dialect::Windows => None,
+        }
+    }
+
     /// Put the file at `from` in the place of the one at `to`, which exists,
     /// keeping what guards `to`.
     ///

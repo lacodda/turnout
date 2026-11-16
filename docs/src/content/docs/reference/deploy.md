@@ -37,7 +37,7 @@ Builds the app, uploads the artifacts to the target directory over SFTP, restart
 4. **Connect.** SSH to the server's host and port as the credential's user, with the credential's key file or the password stored in the keyring under its name.
 5. **Backup** *(with `--backup`, or when the target has a health check)*: the remote directory is archived first - see [`turnout backup`](/turnout/reference/backup/). A first deploy, whose directory is not there yet, has nothing to back up. A backup that stays prunes the older ones down to what the stand [keeps](/turnout/reference/backup/#how-many-are-kept).
 6. **Clear** *(only with `--clear`)*: the target directory is emptied. A file that will not go - held open by a running service, owned by another account - stays, and the deploy names it and goes on: stopping there would leave the stand serving half a directory. Linux and Windows servers behave the same here.
-7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels).
+7. **Upload.** The app's artifact directory (`--dist`) is copied to the path's directory - as one archive when that is faster, otherwise file by file. See [How the upload travels](#how-the-upload-travels). A target with an [env file](/turnout/reference/target/#env-file) then has it written from the app's variables - see [The app's variables](#the-apps-variables).
 8. **Restart.** If the path has a post-write command, it runs on the server **in the deploy directory** and its output is shown - a command does not need its own `cd` to reach the files it just received. It runs detached from the SSH connection, so a dropped connection does not kill it - see [A restart that outlives the connection](#a-restart-that-outlives-the-connection).
 9. **Check** *(when the target has a health check)*: the stand is asked until it works or the wait runs out; if it does not, the deploy is **rolled back** - see [Health check and rollback](#health-check-and-rollback).
 10. **Record.** The deploy is written down under a number, whatever its outcome - see [The record](#the-record).
@@ -115,6 +115,38 @@ turnout deploy myapp-prod --diff
 Builds as a deploy would (unless `--no-build`), then compares the build with what the server has - and stops. The answer comes from the files on the server themselves, not from a list turnout keeps: one written by the last deploy would be wrong the first time someone edited a file on the server by hand. Every file and its size come back in one pass, and only the files that could be the same - same path, same size - are hashed (SHA-256) on both sides, so a deploy directory full of uploads or a database volume does not slow the comparison down.
 
 With `--clear`, files on the server that the build lacks are counted as removed. A server with neither `sha256sum` nor `shasum` is compared by size, and the report says so. `--json` prints the same comparison for a script: one object per target with `added`, `updated`, `unchanged`, `extra`, `delta` (bytes) and `compared` (`content` or `size`).
+
+## The app's variables
+
+What [`turnout env`](/turnout/reference/env/) holds for the app on the server it is deployed to reaches the stand by two roads, both from the same set `turnout dev` uses here.
+
+**The build gets them.** The `build` command a deploy runs has the variables of the stand it goes to in its environment - a bundle that bakes in an API address or a public key is built for that stand. `turnout build` by itself gets none: it does not know where its bundle will end up.
+
+```bash
+turnout env set VITE_API_URL=https://api.example.com --app myapp --server prod
+turnout deploy myapp-prod
+# [myapp] 1 variable of 'prod' (turnout env)
+# [myapp] pnpm build
+```
+
+**The stand's env file is written from them**, when the [target names one](/turnout/reference/target/#env-file):
+
+```bash
+turnout target edit myapp-prod --env-file .env
+turnout deploy myapp-prod
+# ◇  Unpacked 42 files into /srv/myapp
+# ◇  Wrote 3 variables to /srv/myapp/.env
+# ◇  Restarted: docker compose up -d
+```
+
+- It is written after the build is in place - `--clear` takes the old one with the rest - and before the restart, which is what reads it.
+- The file says what the set says: a variable removed with `turnout env remove` is gone from the stand after the next deploy, and so is anything edited into the file by hand.
+- The values are read from the keyring before the server is touched. One the keyring no longer holds stops the deploy while the stand is as it was.
+- A new file is created readable by the deploying account alone (`0600`). One that is already there keeps its permissions - open it to the service's own account once, and deploys leave it so. A deploy with `--clear` empties the directory and so makes the file anew; where another account has to read it, name a file outside the deploy directory. On a Windows server the file takes its directory's ACL.
+- Values are written bare when plain and in single quotes otherwise, which Docker Compose, systemd's `EnvironmentFile`, dotenv libraries and a shell all take literally - a `$` in a password stays a `$`. Only a value with a single quote or a line break of its own is written in double quotes, the line break as `\n` - which dotenv libraries and Docker Compose read back as one, and a shell that sources the file does not.
+- A [rollback](/turnout/reference/rollback/) writes the variables as they are now: it puts back a build, not the secrets of the day it was made. A backup holds the file as it was, like every file of the directory.
+
+An app is built once per run. Deployed to two stands that each hold variables of their own, one bundle would carry one stand's values to the other, so such a run is refused before anything is built: deploy them one run at a time.
 
 ## Several targets
 
@@ -218,6 +250,8 @@ turnout credential add prod-deploy --user deploy
 turnout path add wwwroot --dir /var/www/myapp --restart "systemctl restart myapp"
 turnout target add --app myapp --server prod --credential prod-deploy --path wwwroot
 echo "$PASSWORD" | turnout pass set prod-deploy   # for a password credential
+echo "$DATABASE_URL" | turnout env set DATABASE_URL --app myapp --server prod   # what the app runs with there
+turnout target edit myapp-prod --env-file .env    # and the file the deploy writes it into
 ```
 
 Setting a *POSIX* remote directory from Git Bash needs care: it rewrites `/var/www/myapp` into a local path before turnout sees it, and turnout refuses that rather than deploying somewhere nobody chose. Run those lines from PowerShell, or prefix them with `MSYS_NO_PATHCONV=1`. A Windows directory (`C:\inetpub\myapp`) is unaffected. See [`turnout path`](/turnout/reference/path/) and [Windows servers](/turnout/concepts/windows-servers/).

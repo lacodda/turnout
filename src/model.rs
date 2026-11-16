@@ -268,6 +268,13 @@ pub struct Target {
     /// numbers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_backups: Option<u32>,
+    /// The file on the stand a deploy writes the app's variables for this
+    /// server into ([`crate::envset`]): relative to the deploy directory, or
+    /// absolute. `None` writes nothing (schema 8, v1.2.0). Asked for per
+    /// target, never assumed: a deploy directory is often a web root, and a
+    /// `.env` put there unasked would be served to whoever requests it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env_file: Option<String>,
 }
 
 impl Target {
@@ -347,6 +354,41 @@ pub fn validate_health_url(url: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("invalid health URL '{url}': give a path under the target's address (/health) or a full http(s):// URL")
+    }
+}
+
+/// A stand's env file is named as a file: under the deploy directory, or by
+/// an absolute path.
+///
+/// A relative name may not climb out with `..` - "relative to the deploy
+/// directory" has to mean inside it - and an absolute one is checked for the
+/// rewrite Git Bash makes of `/etc/myapp/env` before turnout sees it.
+pub fn validate_stand_file(file: &str) -> Result<()> {
+    if file.trim().is_empty() || file.contains(['\n', '\r']) {
+        bail!("an env file needs a name, e.g. .env");
+    }
+    if let Some(original) = looks_rewritten_by_git_bash(file) {
+        bail!(
+            "'{file}' looks like Git Bash rewrote '/{original}' into a local path before turnout saw it.\n\
+             Prefix the command with MSYS_NO_PATHCONV=1, double the leading slash (//{original}), or use PowerShell."
+        );
+    }
+    if file.ends_with(['/', '\\']) {
+        bail!("'{file}' names a directory - name the file the variables are written to, e.g. {file}.env");
+    }
+    if !is_absolute_remote(file) && file.split(['/', '\\']).any(|part| part == "..") {
+        bail!("'{file}' leaves the deploy directory - name a file inside it, or give an absolute path");
+    }
+    Ok(())
+}
+
+/// Where a target's env file is on the server: an absolute name as it is, a
+/// relative one under the deploy directory.
+pub fn stand_file(deploy_dir: &str, file: &str) -> String {
+    if is_absolute_remote(file) {
+        file.to_string()
+    } else {
+        crate::remote::join_remote(deploy_dir, file)
     }
 }
 
@@ -741,7 +783,28 @@ mod tests {
             url: None,
             health: None,
             keep_backups: None,
+            env_file: None,
         }
+    }
+
+    /// An env file is a file under the deploy directory or an absolute one.
+    #[test]
+    fn an_env_file_is_named_inside_the_deploy_directory_or_absolutely() {
+        for good in [".env", "config/.env.production", "/etc/myapp/env", "C:\\sites\\app\\.env", "shared\\.env"] {
+            assert!(validate_stand_file(good).is_ok(), "{good}");
+        }
+        for bad in ["", "  ", "../.env", "config/../../.env", "config/", "a\nb"] {
+            assert!(validate_stand_file(bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            validate_stand_file("C:/Program Files/Git/etc/myapp/env")
+                .unwrap_err()
+                .to_string()
+                .contains("Git Bash")
+        );
+        assert_eq!(stand_file("/var/www/app", ".env"), "/var/www/app/.env");
+        assert_eq!(stand_file("/var/www/app", "/etc/myapp/env"), "/etc/myapp/env");
+        assert_eq!(stand_file("C:\\sites\\app", ".env"), "C:\\sites\\app\\.env");
     }
 
     /// A check is written as the one probe it is, so a file can never hold a

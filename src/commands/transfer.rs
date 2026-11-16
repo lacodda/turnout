@@ -8,7 +8,7 @@ use dialoguer::Password;
 
 use crate::model::{App, Group, Target, validate_name, validate_remote_path, validate_url};
 use crate::portable::{self, Snapshot};
-use crate::{pick, secrets, store};
+use crate::{envset, pick, secrets, store};
 
 pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
     let apps = store::load_apps()?;
@@ -22,8 +22,17 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
     }
 
     let mut snapshot = Snapshot::new(apps, servers, credentials, remote_paths, groups, targets);
+    snapshot.env = envset::sets()?;
+    let variables: usize = snapshot.env.iter().map(|set| set.variables.len()).sum();
     if with_secrets {
-        let collected = collect_secrets(&snapshot.credentials)?;
+        let mut collected = collect_secrets(&snapshot.credentials)?;
+        // A variable's value is a secret like any other, and travels the
+        // same way: sealed, under a key no credential can be named.
+        for set in &snapshot.env {
+            for (name, value) in envset::values(&set.app, &set.server)? {
+                collected.insert(envset::sealed_key(&set.app, &set.server, &name), value);
+            }
+        }
         if collected.is_empty() {
             println!("No secrets are stored on this machine; exporting configuration only.");
         } else {
@@ -47,9 +56,13 @@ pub fn export(path: Option<PathBuf>, with_secrets: bool) -> Result<()> {
         snapshot.groups.len()
     );
     match &snapshot.secrets {
+        Some(_) if variables > 0 => println!("  Secrets and the values of {variables} variable(s) are included, encrypted with your passphrase."),
         Some(_) => println!("  Secrets are included, encrypted with your passphrase."),
         None if with_secrets => {}
         // Say it plainly: the file looks complete but will not restore access.
+        None if variables > 0 => {
+            println!("  Secrets are NOT included, and of {variables} variable(s) only the names - re-run with --with-secrets to take them along.")
+        }
         None => println!("  Secrets are NOT included - re-run with --with-secrets to take them along."),
     }
     crate::journal::record("export", None, None, Some(&format!("{} apps", snapshot.apps.len())));
@@ -84,6 +97,10 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
     // that, a group `web` here and an app `web` in the file both existed after
     // an import, and `use web prod` silently bound only the app.
     let mut report = Report::default();
+    // Names without values: nothing to store, only something to say.
+    if snapshot.secrets.is_none() {
+        report.variables_named = snapshot.env.iter().map(|set| set.variables.len()).sum();
+    }
     let mut groups = store::load_groups()?;
     // Servers before apps: an app's allow-list names servers, which may be
     // here already or arrive in the same file.
@@ -181,6 +198,20 @@ pub fn import(path: PathBuf, force: bool) -> Result<()> {
     // became the other machine's, and no copy of the old one was left anywhere.
     if let Some(opened) = opened {
         for (credential, value) in &opened {
+            // A variable goes with its app and its server, and - as a
+            // credential's secret does - never over one this machine has.
+            if let Some((app, server, name)) = envset::read_sealed_key(credential) {
+                let whose = format!("{name} of '{app}' on '{server}'");
+                if !apps.iter().any(|known| known.name == app) || !servers.iter().any(|known| known.name == server) {
+                    report.variables_left.push(whose);
+                } else if !force && envset::names(app, server)?.iter().any(|known| known == name) {
+                    report.variables_kept.push(whose);
+                } else {
+                    envset::put(app, server, &[(name.to_string(), value.clone())])?;
+                    report.variables += 1;
+                }
+                continue;
+            }
             if credentials_written.contains(credential) {
                 secrets::set(credential, value)?;
                 report.secrets += 1;
@@ -213,6 +244,14 @@ struct Report {
     secrets_left: Vec<String>,
     /// Ports an arriving app was given or gave up, one line per app.
     ports: Vec<String>,
+    /// Variables stored with their values.
+    variables: usize,
+    /// Variables this machine already had, kept as they were.
+    variables_kept: Vec<String>,
+    /// Variables whose app or server is not in the catalog.
+    variables_left: Vec<String>,
+    /// Variables the file only names: it was exported without secrets.
+    variables_named: usize,
 }
 
 impl Report {
@@ -250,6 +289,22 @@ impl Report {
         }
         if !self.secrets_left.is_empty() {
             println!("Left out the secret of {} - its credential was not imported.", quoted(&self.secrets_left));
+        }
+        if self.variables > 0 {
+            println!("Restored {} variable(s) of the apps (`turnout env list`) to the OS keyring.", self.variables);
+        }
+        if !self.variables_kept.is_empty() {
+            println!("Kept this machine's value of {}.", self.variables_kept.join(", "));
+            println!("  Re-run with --force to take the file's values.");
+        }
+        if !self.variables_left.is_empty() {
+            println!("Left out {} - its app or its server was not imported.", self.variables_left.join(", "));
+        }
+        if self.variables_named > 0 {
+            println!(
+                "The file names {} variable(s) of the apps without their values - it was exported without --with-secrets. Store them with `turnout env set`.",
+                self.variables_named
+            );
         }
     }
 }
@@ -659,6 +714,7 @@ mod tests {
             url: None,
             health: None,
             keep_backups: None,
+            env_file: None,
         };
         let credential = crate::model::Credential {
             name: "deploy".into(),

@@ -96,7 +96,7 @@ turnout server remove staging [--yes] [--force]
 | `--yes` | `-y` | Skip the confirmation prompt |
 | `--force` | `-f` | Remove it even when it is the only server an app may use - that app may then use any server |
 
-Apps that allowed this server are updated automatically - the name is removed from their allow-lists. The [targets](/turnout/reference/target/) that land on it are removed with it, and apps bound to it are unbound.
+Apps that allowed this server are updated automatically - the name is removed from their allow-lists. The [targets](/turnout/reference/target/) that land on it are removed with it, apps bound to it are unbound, and the variables apps had stored for it with [`turnout env`](/turnout/reference/env/) are removed - out of the keyring as well.
 
 An empty allow-list allows **every** server, so a server that is the only one an app may use is not removed by default: taking it off the list would quietly turn "only prod" into "anything".
 

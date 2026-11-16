@@ -116,7 +116,7 @@ fn setup_migrates_an_older_directory_instead_of_retiring_it() {
         "nothing was retired: {entries:?}"
     );
     let meta = std::fs::read_to_string(dir.path().join("meta.json")).unwrap();
-    assert!(meta.contains("\"schema_version\": 7"), "{meta}");
+    assert!(meta.contains("\"schema_version\": 8"), "{meta}");
     turnout(dir.path())
         .args(["server", "list"])
         .assert()
@@ -3729,7 +3729,7 @@ fn a_failing_migration_does_not_multiply_backups() {
     // Repaired by hand, the next command finishes the migration.
     std::fs::write(dir.path().join("apps.json"), "[]").unwrap();
     turnout(dir.path()).args(["server", "list"]).assert().success();
-    assert!(std::fs::read_to_string(dir.path().join("meta.json")).unwrap().contains("\"schema_version\": 7"));
+    assert!(std::fs::read_to_string(dir.path().join("meta.json")).unwrap().contains("\"schema_version\": 8"));
     assert_eq!(backups(), vec!["settings-backup-v2"]);
     assert!(
         !dir.path().join("settings-backup-v2").join("MIGRATION-UNFINISHED.txt").exists(),
@@ -5491,4 +5491,656 @@ fn a_target_says_how_many_backups_it_keeps() {
         .assert()
         .success()
         .stdout(predicate::str::contains("--keep"));
+}
+
+/// A shell line that prints the named variables in brackets: an unset one
+/// shows as its own name in cmd and as nothing in sh.
+fn show_variables(names: &[&str]) -> String {
+    let shown: Vec<String> = names
+        .iter()
+        .map(|name| if cfg!(windows) { format!("[%{name}%]") } else { format!("[${name}]") })
+        .collect();
+    format!("echo {}", shown.join(" "))
+}
+
+/// An app `web` with commands that print `names`, and the servers `staging`
+/// and `prod`; `web` points at `staging`.
+fn app_on_two_stands(dir: &std::path::Path, project: &std::path::Path, names: &[&str]) {
+    add_staging(dir);
+    turnout(dir)
+        .args(["server", "add", "prod", "--url", "https://prod.example.com"])
+        .assert()
+        .success();
+    let show = show_variables(names);
+    turnout(dir)
+        .args(["app", "add", "web", "--path"])
+        .arg(project)
+        .args(["--port", "7001"])
+        .args(["--command", &format!("dev={show}"), "--command", &format!("build={show}")])
+        .args(["--command", &format!("migrate={show}")])
+        .assert()
+        .success();
+    turnout(dir).args(["use", "web", "staging", "--no-check"]).assert().success();
+}
+
+/// What the file backend holds, as the keyring would: account -> value.
+fn stored_secrets(dir: &std::path::Path) -> serde_json::Value {
+    match std::fs::read_to_string(dir.join("insecure-secrets.json")) {
+        Ok(text) => serde_json::from_str(&text).unwrap(),
+        Err(_) => serde_json::json!({}),
+    }
+}
+
+/// `turnout env`: variables are kept per app and stand, listed by name only,
+/// and their values never reach a catalog.
+#[test]
+fn env_keeps_the_variables_of_an_app_per_stand() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["A"]);
+    // On the command line, and - for a secret - on standard input.
+    turnout(dir.path())
+        .args([
+            "env",
+            "set",
+            "DATABASE_URL=postgres://u:p@db/app",
+            "GREETING=two words",
+            "EMPTY=",
+            "--app",
+            "web",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stored DATABASE_URL, GREETING, EMPTY for 'web' on 'staging'"));
+    turnout(dir.path())
+        .args(["env", "set", "API_KEY", "--app", "web"])
+        .write_stdin("s3cret-key\n")
+        .assert()
+        .success();
+    // Another stand has a set of its own.
+    turnout(dir.path())
+        .args(["env", "set", "DATABASE_URL=postgres://prod", "--app", "web", "--server", "prod"])
+        .assert()
+        .success();
+    // A second value for a name replaces the first, and says so.
+    turnout(dir.path())
+        .args(["env", "set", "GREETING=hello", "--app", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Replaced GREETING"));
+
+    // The list names them and where the app points - and no value.
+    turnout(dir.path()).args(["env", "list", "--app", "web"]).assert().success().stdout(
+        predicate::str::contains("web on staging (4 variables) - where it points now")
+            .and(predicate::str::contains("web on prod (1 variable)"))
+            .and(predicate::str::contains("  API_KEY"))
+            .and(predicate::str::contains("s3cret").not())
+            .and(predicate::str::contains("postgres").not()),
+    );
+    let output = turnout(dir.path()).args(["env", "list", "--json"]).output().unwrap();
+    let sets: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        sets,
+        serde_json::json!([
+            {"app": "web", "server": "prod", "current": false, "variables": ["DATABASE_URL"]},
+            {"app": "web", "server": "staging", "current": true, "variables": ["API_KEY", "DATABASE_URL", "EMPTY", "GREETING"]},
+        ])
+    );
+    // The values are in the keyring, the names in the catalog - and only there.
+    let catalog = std::fs::read_to_string(dir.path().join("env.json")).unwrap();
+    assert!(!catalog.contains("s3cret") && !catalog.contains("postgres"), "{catalog}");
+    assert_eq!(stored_secrets(dir.path())["env/web/staging/API_KEY"], "s3cret-key");
+
+    // One set with its values, as the lines of a dotenv file.
+    turnout(dir.path())
+        .args(["env", "list", "--show", "--app", "web"])
+        .assert()
+        .success()
+        .stdout("API_KEY=s3cret-key\nDATABASE_URL=postgres://u:p@db/app\nEMPTY=\nGREETING=hello\n");
+
+    turnout(dir.path())
+        .args(["env", "remove", "EMPTY", "GREETING", "--app", "web", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed EMPTY, GREETING"));
+    turnout(dir.path())
+        .args(["env", "remove", "--all", "--app", "web", "--server", "prod", "--yes"])
+        .assert()
+        .success();
+    let left = stored_secrets(dir.path());
+    assert!(
+        left.get("env/web/staging/GREETING").is_none() && left.get("env/web/prod/DATABASE_URL").is_none(),
+        "{left}"
+    );
+    assert_eq!(left["env/web/staging/DATABASE_URL"], "postgres://u:p@db/app");
+    turnout(dir.path())
+        .args(["env", "list", "--app", "web", "--server", "prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No variables stored for 'web'"));
+}
+
+/// What `env` refuses, each with the way out.
+#[test]
+fn env_says_what_it_cannot_store() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["A"]);
+    let refused = |args: &[&str], needle: &str| {
+        turnout(dir.path()).args(args).assert().failure().stderr(predicate::str::contains(needle));
+    };
+    refused(&["env", "set", "MY-VAR=1", "--app", "web"], "invalid variable name 'MY-VAR'");
+    refused(&["env", "set", "1ST=1", "--app", "web"], "not starting with a digit");
+    // The gateway's address is this machine's: stored, a deploy would carry
+    // localhost to the stand.
+    refused(
+        &["env", "set", "TURNOUT_GATEWAY_URL=http://x", "--app", "web"],
+        "turnout hands 'web' the gateway's address",
+    );
+    refused(&["env", "set", "A=1", "--app", "web", "--server", "nowhere"], "no server named 'nowhere'");
+    refused(&["env", "set", "A=1", "--app", "nobody"], "no app named 'nobody'");
+    // Standard input carries one value.
+    refused(&["env", "set", "A", "B", "--app", "web"], "one value");
+    refused(&["env", "remove", "NOPE", "--app", "web", "--yes"], "has no variable NOPE on 'staging'");
+    refused(&["env", "list", "--show", "--app", "web"], "no variables stored for 'web' on 'staging'");
+    // Nobody to ask: removing wants a yes.
+    turnout(dir.path()).args(["env", "set", "A=1", "--app", "web"]).assert().success();
+    refused(&["env", "remove", "A", "--app", "web"], "--yes");
+    // An app that points nowhere has no stand to mean.
+    turnout(dir.path())
+        .args(["app", "add", "loose", "--path"])
+        .arg(&project)
+        .args(["--port", "7002"])
+        .assert()
+        .success();
+    refused(&["env", "set", "A=1", "--app", "loose"], "points at no stand");
+    // An allow-list is held to here as everywhere.
+    turnout(dir.path()).args(["app", "edit", "web", "--add-server", "staging"]).assert().success();
+    refused(&["env", "set", "A=1", "--app", "web", "--server", "prod"], "not allowed for 'web'");
+}
+
+/// `env import`: an existing `.env` moves into the keyring in one command,
+/// read the way its readers read it.
+#[test]
+fn env_import_takes_a_dotenv_file_whole() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["A"]);
+    std::fs::write(
+        project.join(".env"),
+        "# the staging stand\nDATABASE_URL=postgres://u:p@db/app\nexport API_KEY=\"k \\\"q\\\" $1\"\nGREETING='two words' \n\nTURNOUT_GATEWAY_URL=http://localhost:9\n",
+    )
+    .unwrap();
+    // The default is the app's own `.env`, from any directory.
+    turnout(dir.path()).args(["env", "import", "--app", "web"]).assert().success().stdout(
+        predicate::str::contains("Stored DATABASE_URL, API_KEY, GREETING for 'web' on 'staging'")
+            .and(predicate::str::contains("Left out TURNOUT_GATEWAY_URL"))
+            .and(predicate::str::contains("still holds them in plain text")),
+    );
+    turnout(dir.path())
+        .args(["env", "list", "--show", "--app", "web"])
+        .assert()
+        .success()
+        .stdout("API_KEY='k \"q\" $1'\nDATABASE_URL=postgres://u:p@db/app\nGREETING='two words'\n");
+    // A named file, for another stand; what is there already is replaced.
+    let other = dir.path().join("prod.env");
+    std::fs::write(&other, "DATABASE_URL=postgres://prod\n").unwrap();
+    turnout(dir.path())
+        .args(["env", "import"])
+        .arg(&other)
+        .args(["--app", "web", "--server", "prod"])
+        .assert()
+        .success();
+    std::fs::write(&other, "DATABASE_URL=postgres://prod-2\n").unwrap();
+    turnout(dir.path())
+        .args(["env", "import"])
+        .arg(&other)
+        .args(["--app", "web", "--server", "prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Replaced DATABASE_URL"));
+    assert_eq!(stored_secrets(dir.path())["env/web/prod/DATABASE_URL"], "postgres://prod-2");
+
+    // A file that is not one is named by its line, and not quoted back: the
+    // line may be half of a secret.
+    std::fs::write(&other, "A=1\nhunter2 is the password\n").unwrap();
+    turnout(dir.path())
+        .args(["env", "import"])
+        .arg(&other)
+        .args(["--app", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("line 2 is not NAME=value").and(predicate::str::contains("hunter2").not()));
+    assert!(
+        stored_secrets(dir.path()).get("env/web/staging/A").is_none(),
+        "nothing of a refused file is stored"
+    );
+    turnout(dir.path())
+        .args(["env", "import", "missing.env", "--app", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot read"));
+}
+
+/// The variables of the stand an app points at ride along with `dev` and
+/// `run` - and not with `build`, which does not know where its bundle goes.
+#[test]
+fn dev_and_run_get_the_variables_of_the_stand_the_app_points_at() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["DATABASE_URL", "GREETING", "TURNOUT_GATEWAY_URL"]);
+    turnout(dir.path())
+        .args(["env", "set", "DATABASE_URL=postgres://staging", "GREETING=two words", "--app", "web"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["env", "set", "DATABASE_URL=postgres://prod", "--app", "web", "--server", "prod"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["dev", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[postgres://staging] [two words] [http://localhost:7001]"))
+        .stderr(predicate::str::contains("2 variables of 'staging' (turnout env)"));
+    turnout(dir.path())
+        .args(["run", "migrate", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[postgres://staging] [two words]"));
+    // The switch is the whole change: the same command, the other stand's set.
+    turnout(dir.path()).args(["use", "web", "prod", "--no-check"]).assert().success();
+    turnout(dir.path())
+        .args(["dev", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[postgres://prod]").and(predicate::str::contains("two words").not()));
+    // A bundle must not bake in the stand this machine happens to point at.
+    turnout(dir.path())
+        .args(["build", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("postgres").not());
+    // A name whose value the keyring lost stops the run, and says which.
+    let secrets = dir.path().join("insecure-secrets.json");
+    let mut held = stored_secrets(dir.path());
+    held.as_object_mut().unwrap().remove("env/web/prod/DATABASE_URL");
+    std::fs::write(&secrets, held.to_string()).unwrap();
+    turnout(dir.path())
+        .args(["dev", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not hold DATABASE_URL").and(predicate::str::contains("turnout env set DATABASE_URL --app web --server prod")));
+}
+
+/// A stand-in for sefy: `get NAME --stdout [--field F]` prints a record, and
+/// fails for one it does not have.
+#[cfg(windows)]
+fn fake_sefy(dir: &std::path::Path) -> std::path::PathBuf {
+    let script = dir.join("fake-sefy.cmd");
+    std::fs::write(
+        &script,
+        "@echo off\r\n\
+         if not \"%1\"==\"get\" exit /b 2\r\n\
+         if \"%2\"==\"github\" if \"%4\"==\"--field\" (echo field-%5& exit /b 0)\r\n\
+         if \"%2\"==\"github\" (echo tok-123& exit /b 0)\r\n\
+         if \"%2\"==\"myapp-dev\" (echo DATABASE_URL=postgres://from-sefy& echo GREETING='from sefy'& exit /b 0)\r\n\
+         echo nothing matches 1>&2\r\n\
+         exit /b 1\r\n",
+    )
+    .unwrap();
+    script
+}
+
+#[cfg(not(windows))]
+fn fake_sefy(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake-sefy");
+    std::fs::write(
+        &script,
+        "#!/bin/sh\n\
+         [ \"$1\" = get ] || exit 2\n\
+         case \"$2\" in\n\
+         github) if [ \"$4\" = --field ]; then echo \"field-$5\"; else echo tok-123; fi ;;\n\
+         myapp-dev) printf \"DATABASE_URL=postgres://from-sefy\\nGREETING='from sefy'\\n\" ;;\n\
+         *) echo 'nothing matches' >&2; exit 1 ;;\n\
+         esac\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Waited out as `fake_ssh` waits: a test spawning in parallel can hold
+    // the descriptor the script was written through ("Text file busy").
+    let mut tries = 0;
+    loop {
+        match std::process::Command::new(&script).output() {
+            Ok(_) => break,
+            Err(err) if err.raw_os_error() == Some(26) && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(err) => panic!("cannot run the fake sefy: {err}"),
+        }
+    }
+    script
+}
+
+/// `--with sefy:NAME` brings a record's variables for the one run: over the
+/// stored ones, and into no store of turnout's.
+#[test]
+fn with_takes_variables_from_sefy_for_one_run() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["DATABASE_URL", "GREETING", "TOKEN", "USER_NAME"]);
+    let sefy = fake_sefy(dir.path());
+    turnout(dir.path())
+        .args(["env", "set", "DATABASE_URL=postgres://stored", "--app", "web"])
+        .assert()
+        .success();
+    let secrets_before = stored_secrets(dir.path());
+    // A record of lines, one value under a name, one field under another.
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", &sefy)
+        .args([
+            "dev",
+            "web",
+            "--with",
+            "sefy:myapp-dev",
+            "--with",
+            "TOKEN=sefy:github",
+            "-w",
+            "USER_NAME=sefy:github#login",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[postgres://from-sefy] [from sefy] [tok-123] [field-login]"))
+        .stderr(predicate::str::contains("4 variables from sefy (--with)"));
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", &sefy)
+        .args(["run", "migrate", "web", "--with", "TOKEN=sefy:github"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[postgres://stored]").and(predicate::str::contains("[tok-123]")));
+    assert_eq!(stored_secrets(dir.path()), secrets_before, "nothing sefy handed over is kept");
+
+    // A bare secret needs a name - and the refusal does not repeat it.
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", &sefy)
+        .args(["dev", "web", "--with", "sefy:github"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--with VAR=sefy:github").and(predicate::str::contains("tok-123").not()));
+    // sefy's own refusal is sefy's to word; turnout says which record.
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", &sefy)
+        .args(["dev", "web", "--with", "sefy:unknown"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("nothing matches").and(predicate::str::contains("sefy did not hand over sefy:unknown")));
+    // A typo is caught before anything is asked of the vault.
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", dir.path().join("not-run"))
+        .args(["dev", "web", "--with", "TOKEN=sefy:github", "--with", "vault:github"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--with takes `sefy:NAME`"));
+    turnout(dir.path())
+        .env("TURNOUT_SEFY", dir.path().join("not-installed"))
+        .args(["dev", "web", "--with", "TOKEN=sefy:github"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("needs sefy").and(predicate::str::contains("TURNOUT_SEFY")));
+}
+
+/// Variables are secrets: an export names them, and carries their values
+/// only sealed; an import never puts a value over one this machine has.
+#[test]
+fn variables_travel_with_an_export_only_sealed() {
+    let (source, project) = workspace();
+    app_on_two_stands(source.path(), &project, &["A"]);
+    turnout(source.path())
+        .args(["env", "set", "DATABASE_URL=postgres://u:hunter2@db/app", "GREETING=two words", "--app", "web"])
+        .assert()
+        .success();
+
+    // Plain: the names, so the other machine knows what to store.
+    let plain = source.path().join("plain.json");
+    turnout(source.path())
+        .args(["export", "--output"])
+        .arg(&plain)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("of 2 variable(s) only the names"));
+    let text = std::fs::read_to_string(&plain).unwrap();
+    assert!(
+        text.contains("DATABASE_URL") && !text.contains("hunter2") && !text.contains("two words"),
+        "{text}"
+    );
+    let bare = tempfile::tempdir().unwrap();
+    turnout(bare.path()).args(["setup", "--yes"]).assert().success();
+    turnout(bare.path())
+        .arg("import")
+        .arg(&plain)
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("names 2 variable(s) of the apps without their values"));
+    turnout(bare.path())
+        .args(["env", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No variables stored"));
+
+    // Sealed: the values arrive, in pieces a keyring holds.
+    let long = "x".repeat(2500);
+    turnout(source.path())
+        .args(["env", "set", &format!("LONG={long}"), "--app", "web"])
+        .assert()
+        .success();
+    let sealed = source.path().join("sealed.json");
+    turnout(source.path())
+        .args(["export", "--with-secrets", "--output"])
+        .arg(&sealed)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("the values of 3 variable(s) are included"));
+    let text = std::fs::read_to_string(&sealed).unwrap();
+    assert!(!text.contains("hunter2") && !text.contains(&long), "the values must be encrypted: {text}");
+
+    let target = tempfile::tempdir().unwrap();
+    turnout(target.path()).args(["setup", "--yes"]).assert().success();
+    turnout(target.path())
+        .arg("import")
+        .arg(&sealed)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Restored 3 variable(s) of the apps"));
+    turnout(target.path())
+        .args(["env", "list", "--show", "--app", "web", "--server", "staging"])
+        .assert()
+        .success()
+        .stdout(format!("DATABASE_URL=postgres://u:hunter2@db/app\nGREETING='two words'\nLONG={long}\n"));
+
+    // A value this machine has is kept unless the import is forced.
+    turnout(target.path())
+        .args(["env", "set", "GREETING=mine", "--app", "web", "--server", "staging"])
+        .assert()
+        .success();
+    turnout(target.path())
+        .arg("import")
+        .arg(&sealed)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Kept this machine's value of").and(predicate::str::contains("GREETING of 'web' on 'staging'")));
+    assert_eq!(stored_secrets(target.path())["env/web/staging/GREETING"], "mine");
+    turnout(target.path())
+        .args(["import", "--force"])
+        .arg(&sealed)
+        .write_stdin("lab passphrase")
+        .assert()
+        .success();
+    assert_eq!(stored_secrets(target.path())["env/web/staging/GREETING"], "two words");
+}
+
+/// An app's variables are its own, and a stand's describe that stand: both
+/// go when it goes, out of the keyring too.
+#[test]
+fn removing_an_app_or_a_server_takes_its_variables() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["A"]);
+    for server in ["staging", "prod"] {
+        turnout(dir.path())
+            .args(["env", "set", "A=1", "B=2", "--app", "web", "--server", server])
+            .assert()
+            .success();
+    }
+    turnout(dir.path())
+        .args(["server", "remove", "prod", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed the 2 variable(s) apps had stored for it"));
+    let left = stored_secrets(dir.path());
+    assert!(left.get("env/web/prod/A").is_none() && left.get("env/web/staging/A").is_some(), "{left}");
+    turnout(dir.path())
+        .args(["app", "remove", "web", "--yes"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed its 2 stored variable(s)"));
+    assert_eq!(stored_secrets(dir.path()), serde_json::json!({}));
+    assert_eq!(std::fs::read_to_string(dir.path().join("env.json")).unwrap().trim(), "[]");
+}
+
+/// A target says which file on the stand a deploy writes the variables into;
+/// none is written unless it says.
+#[test]
+fn a_target_names_the_env_file_a_deploy_writes() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["A"]);
+    add_credential(dir.path());
+    add_path(dir.path());
+    let add = |name: &str, server: &str| {
+        let mut command = turnout(dir.path());
+        command.args([
+            "target",
+            "add",
+            name,
+            "--app",
+            "web",
+            "--server",
+            server,
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ]);
+        command
+    };
+    add("web-staging", "staging").assert().success();
+    turnout(dir.path())
+        .args(["target", "show", "web-staging"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Env file:   none written - turnout target edit web-staging --env-file .env",
+        ));
+    add("web-prod", "prod").args(["--env-file", "config/.env.production"]).assert().success();
+    turnout(dir.path())
+        .args(["target", "show", "web-prod"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Env file:   config/.env.production - written on every deploy from `turnout env` for web on prod",
+        ));
+    let output = turnout(dir.path()).args(["target", "show", "web-prod", "--json"]).output().unwrap();
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(view["env_file"], "config/.env.production");
+    let output = turnout(dir.path()).args(["target", "show", "web-staging", "--json"]).output().unwrap();
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(view["env_file"].is_null(), "{view}");
+
+    turnout(dir.path())
+        .args(["target", "edit", "web-staging", "--env-file", ".env"])
+        .assert()
+        .success();
+    turnout(dir.path()).args(["target", "edit", "web-prod", "--env-file", ""]).assert().success();
+    let targets = std::fs::read_to_string(dir.path().join("targets.json")).unwrap();
+    assert!(
+        targets.contains("\"env_file\": \".env\"") && !targets.contains("config/.env.production"),
+        "{targets}"
+    );
+    for bad in ["../.env", "config/"] {
+        turnout(dir.path())
+            .args(["target", "edit", "web-staging", "--env-file", bad])
+            .assert()
+            .failure();
+    }
+}
+
+/// An app is built once per run, with the variables of the stand it goes to:
+/// two stands with variables of their own cannot share one bundle.
+#[test]
+fn one_build_does_not_carry_one_stands_variables_to_another() {
+    let (dir, project) = workspace();
+    app_on_two_stands(dir.path(), &project, &["API_URL"]);
+    std::fs::create_dir(project.join("dist")).unwrap();
+    std::fs::write(project.join("dist").join("index.html"), "built").unwrap();
+    turnout(dir.path()).args(["app", "edit", "web", "--dist", "dist"]).assert().success();
+    save_access(dir.path());
+    add_path(dir.path());
+    for server in ["staging", "prod"] {
+        turnout(dir.path())
+            .args(["target", "add", &format!("web-{server}"), "--app", "web", "--server", server])
+            .args(["--credential", "deploy", "--path", "wwwroot"])
+            .assert()
+            .success();
+    }
+    turnout(dir.path())
+        .args(["env", "set", "API_URL=https://api.staging.example.com", "--app", "web", "--server", "staging"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["deploy", "web-staging", "web-prod"])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains("api.staging").not())
+        .stderr(
+            predicate::str::contains("'web' is built once per run")
+                .and(predicate::str::contains("this run goes to prod, staging"))
+                .and(predicate::str::contains("staging holds variables of its own")),
+        );
+}
+
+/// `key rotate` replaces a key, so there has to be one - and somewhere it
+/// signs in.
+#[test]
+fn key_rotate_refuses_what_it_cannot_rotate() {
+    let (dir, _) = workspace();
+    add_staging(dir.path());
+    save_access(dir.path());
+    turnout(dir.path())
+        .args(["key", "rotate", "deploy", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no key to rotate").and(predicate::str::contains("turnout key setup SERVER --credential deploy")));
+    turnout(dir.path())
+        .args(["credential", "add", "agent", "--user", "deploy", "--auth", "agent"])
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["key", "rotate", "agent", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("the SSH agent holds"));
+    let missing = dir.path().join("id_gone");
+    turnout(dir.path())
+        .args(["credential", "add", "keyed", "--user", "deploy", "--key"])
+        .arg(&missing)
+        .assert()
+        .success();
+    turnout(dir.path())
+        .args(["key", "rotate", "keyed", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("does not exist"));
+    turnout(dir.path())
+        .args(["key", "rotate", "nobody", "--yes"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no credential named 'nobody'"));
 }

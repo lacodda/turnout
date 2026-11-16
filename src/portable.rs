@@ -23,6 +23,12 @@ use crate::model::{App, Credential, Group, Server, Target};
 
 /// Bumped when the shape below changes in a way an older turnout cannot read.
 ///
+/// 6 since v1.2.0: an app can have variables on a stand (`turnout env`), and
+/// a target can name the file a deploy writes them into. An older turnout
+/// would import the target without the file and deploy a stand that then
+/// starts without its variables - and would take the variables' sealed values
+/// for the secrets of credentials it cannot find.
+///
 /// 5 since v0.25.0: a target can say how many backups its stand keeps. An
 /// older turnout would import it without the number, and prune that stand's
 /// backups down to its default - schema 7's reason, again.
@@ -34,7 +40,7 @@ use crate::model::{App, Credential, Group, Server, Target};
 ///
 /// 3 since v0.11.0: the deploy target is a named entity of its own, and the
 /// server no longer carries the app-to-path map a v0.10 turnout would look for.
-const FORMAT_VERSION: u32 = 5;
+const FORMAT_VERSION: u32 = 6;
 
 /// Argon2id parameters. Deliberately above the crate defaults: this guards a
 /// file that can be copied and attacked offline for as long as an attacker
@@ -65,12 +71,18 @@ pub struct Snapshot {
     pub groups: Vec<Group>,
     #[serde(default)]
     pub targets: Vec<Target>,
+    /// The variables each app has on each stand, by name. Their values are
+    /// secrets: they travel sealed with the rest, or not at all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<crate::envset::EnvSet>,
     /// Sealed secrets, present only when exported with `--with-secrets`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secrets: Option<SealedSecrets>,
 }
 
-/// The encrypted secret bundle: credential name -> secret, sealed as one unit.
+/// The encrypted secret bundle, sealed as one unit: credential name ->
+/// secret, and for a variable its key ([`crate::envset::sealed_key`]) ->
+/// value.
 ///
 /// Sealing the map as a whole rather than value by value keeps the number of
 /// stored secrets out of a casual reader's view, and means one passphrase
@@ -113,6 +125,7 @@ impl Snapshot {
             paths,
             groups,
             targets,
+            env: Vec::new(),
             secrets: None,
         }
     }
@@ -193,6 +206,7 @@ impl Snapshot {
                     url: None,
                     health: None,
                     keep_backups: None,
+                    env_file: None,
                 });
             }
         }

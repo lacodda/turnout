@@ -99,7 +99,10 @@ pub fn run(names: Vec<String>, overrides: remote::Overrides, flags: Flags) -> Re
         no_archive: flags.no_archive,
     };
     for (index, target) in targets.iter().enumerate() {
-        let shipment = Shipment::of(artifact_for(&artifacts, target));
+        let shipment = Shipment {
+            env: stand_env(target)?,
+            ..Shipment::of(artifact_for(&artifacts, target))
+        };
         if let Err(err) = deploy_one(target, &shipment, &options, After { open: flags.open, offer: true }) {
             let rest: Vec<String> = targets[index + 1..].iter().map(label).collect();
             if !rest.is_empty() {
@@ -174,6 +177,8 @@ fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<V
         let source = history::source_of(&project);
         let build = app.commands.get("build").filter(|_| !no_build);
         if let Some(build) = build {
+            let variables = build_variables(app, targets)?;
+            let env: Vec<(&str, String)> = variables.iter().map(|(name, value)| (name.as_str(), value.clone())).collect();
             eprintln!("[{}] {build}", app.name);
             // Same quiet console as `turnout build`: a loader with the elapsed
             // time, the output only when it fails. A deploy already renders a
@@ -183,7 +188,7 @@ fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<V
             let outcome = job::run(
                 job::Program::Shell(build),
                 &project,
-                &[],
+                &env,
                 console,
                 &format!("Building {}", app.name),
                 &mut job,
@@ -237,9 +242,86 @@ fn warn_if_stale(app: &crate::model::App, project: &Path, local: &Path, plan: &P
     ));
 }
 
+/// The variables the build of `app` runs with: what `turnout env` holds for
+/// the stand the build goes to.
+///
+/// `turnout build` gets none - it does not know where its bundle will end up.
+/// A deploy does, and a bundle bakes in what it was built with, so the build
+/// takes the variables of that stand. An app is built once per run: going to
+/// two stands that each hold variables of their own, one bundle would carry
+/// one stand's values to the other, and the run is refused instead.
+fn build_variables(app: &crate::model::App, targets: &[Resolved]) -> Result<Vec<(String, String)>> {
+    let mut stands: Vec<&str> = targets
+        .iter()
+        .filter(|target| target.app.name == app.name)
+        .map(|target| target.server.name.as_str())
+        .collect();
+    stands.sort_unstable();
+    stands.dedup();
+    let mut holding = Vec::new();
+    for stand in &stands {
+        if !crate::envset::names(&app.name, stand)?.is_empty() {
+            holding.push(*stand);
+        }
+    }
+    if stands.len() > 1 && !holding.is_empty() {
+        bail!(
+            "'{0}' is built once per run, and its build takes the variables of the stand it goes to (`turnout env`):              this run goes to {1}, and {2} holds variables of its own - deploy them one run at a time",
+            app.name,
+            stands.join(", "),
+            holding.join(", ")
+        );
+    }
+    let Some(stand) = holding.first() else {
+        return Ok(Vec::new());
+    };
+    let variables = crate::envset::values(&app.name, stand)?;
+    let plural = if variables.len() == 1 { "" } else { "s" };
+    eprintln!("[{}] {} variable{plural} of '{stand}' (turnout env)", app.name, variables.len());
+    Ok(variables)
+}
+
+/// The app's variables as the file a stand reads them from.
+pub struct StandEnv {
+    /// Where the file is on the server.
+    pub file: String,
+    /// What it holds: a line saying whose it is, and the variables.
+    pub text: String,
+    /// How many variables that is.
+    pub count: usize,
+}
+
+/// The env file this deploy writes, when the target names one: the variables
+/// `turnout env` holds for the app on the server it lands on - the same ones
+/// `dev` and `run` hand over here.
+///
+/// Read before the server is touched, so a value the keyring does not hold
+/// stops the deploy while the stand is as it was. A set with nothing in it
+/// still writes the file: the stand reads what the set says, and a variable
+/// removed here must not live on there.
+pub fn stand_env(target: &Resolved) -> Result<Option<StandEnv>> {
+    let Some(file) = &target.env_file else {
+        return Ok(None);
+    };
+    let pairs = crate::envset::values(&target.app.name, &target.server.name)?;
+    Ok(Some(StandEnv {
+        file: file.clone(),
+        text: format!(
+            "# Written by turnout on every deploy of '{}' to '{}' - change a value with `turnout env set`, not here.\n{}",
+            target.app.name,
+            target.server.name,
+            crate::envset::render(&pairs)
+        ),
+        count: pairs.len(),
+    }))
+}
+
 /// What a deploy sends.
 pub struct Shipment<'a> {
     pub artifact: &'a Artifact,
+    /// The app's variables for this stand, when its target names the file
+    /// they are written to.
+    pub env: Option<StandEnv>,
     /// Files newer builds left on the stand that this one does not have: a
     /// rollback removes them once its own files are up.
     pub remove: Vec<String>,
@@ -252,6 +334,7 @@ impl<'a> Shipment<'a> {
     pub fn of(artifact: &'a Artifact) -> Self {
         Self {
             artifact,
+            env: None,
             remove: Vec::new(),
             rollback_of: None,
         }
@@ -674,7 +757,38 @@ fn write_build(session: &Session, dialect: Dialect, shipment: &Shipment, path: &
         remote::remove_paths(session, dialect, &paths)?;
         step.done(format!("Removed {count} file{plural} the newer builds added"));
     }
+    if let Some(env) = &shipment.env {
+        write_env(session, dialect, env)?;
+    }
     Ok(files)
+}
+
+/// Write the stand's env file: after the build is in place - `--clear` would
+/// take it with the rest - and before the restart that reads it.
+///
+/// A file that is new is made private before a value is in it: only the
+/// account that deploys reads it. One that is already there keeps the
+/// permissions it has - whoever opened it to the service's own account did
+/// so on purpose, and SFTP writes into the file rather than replacing it.
+/// On Windows the file inherits its directory's ACL, as every file of the
+/// deploy does.
+fn write_env(session: &Session, dialect: Dialect, env: &StandEnv) -> Result<()> {
+    let step = Step::start(format!("Writing {} ...", env.file));
+    remote::check_quotable(dialect, &[&env.file])?;
+    if let Some(at) = env.file.rfind(['/', '\\']).filter(|at| *at > 0) {
+        session
+            .mkdir_all(&env.file[..at])
+            .with_context(|| format!("cannot create the directory of {}", env.file))?;
+    }
+    if let Some(command) = dialect.born_private(&env.file) {
+        remote::exec(session, &command).with_context(|| format!("cannot create {} on the server", env.file))?;
+    }
+    session
+        .upload_bytes(env.text.as_bytes(), &env.file, |_| {})
+        .with_context(|| format!("cannot write {}", env.file))?;
+    let plural = if env.count == 1 { "" } else { "s" };
+    step.done(format!("Wrote {} variable{plural} to {}", env.count, env.file));
+    Ok(())
 }
 
 /// Fail a deploy for `why` after putting the stand back on `backup`, saying
@@ -1161,6 +1275,7 @@ mod tests {
             health,
             unchecked: None,
             keep_backups: remote::DEFAULT_KEEP_BACKUPS,
+            env_file: None,
         }
     }
 
@@ -1382,6 +1497,75 @@ mod tests {
         assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
     }
 
+    /// A target that names an env file has it written from the stand's
+    /// variables: after the build is in place and before the restart reads
+    /// it, private when it is new, as its owner left it when it is not - and
+    /// a cleared directory gets it back.
+    #[test]
+    fn a_deploy_writes_the_stand_its_variables() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let dir = site.display().to_string();
+        // The restart proves the order: it copies what the file holds then.
+        let restart = if cfg!(windows) {
+            "copy /y .env seen-by-restart >nul"
+        } else {
+            "cp .env seen-by-restart"
+        };
+        let target = a_target(&dir, Some(restart), None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        let ship = |file: &str, text: &str, options: &Options| {
+            let shipment = Shipment {
+                env: Some(StandEnv {
+                    file: crate::model::stand_file(&dir, file),
+                    text: text.to_string(),
+                    count: 1,
+                }),
+                ..Shipment::of(&build)
+            };
+            deploy_over_ssh(&target, &shipment, options, &mut Report::default(), &connect)
+        };
+
+        ship(".env", "# first\nA=1\n", &Options::default()).expect("a first deploy");
+        assert_eq!(std::fs::read_to_string(site.join(".env")).unwrap(), "# first\nA=1\n");
+        assert_eq!(
+            std::fs::read_to_string(site.join("seen-by-restart")).unwrap(),
+            "# first\nA=1\n",
+            "the restart read the file"
+        );
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&site.join(".env")), 0o600, "a new file is its owner's alone");
+            // Opened to the service's group by whoever runs the stand: kept.
+            std::fs::set_permissions(site.join(".env"), std::fs::Permissions::from_mode(0o640)).unwrap();
+            ship(".env", "A=2\n", &Options::default()).expect("a second deploy");
+            assert_eq!(mode(&site.join(".env")), 0o640, "a file that was there keeps its permissions");
+        }
+        // A shorter text leaves nothing of the longer one behind.
+        ship(".env", "A=2\n", &Options::default()).expect("a deploy with a shorter file");
+        assert_eq!(std::fs::read_to_string(site.join(".env")).unwrap(), "A=2\n");
+
+        // `--clear` takes the file with the rest, and the deploy puts it back.
+        let clear = Options {
+            clear: true,
+            ..Options::default()
+        };
+        ship(".env", "A=3\n", &clear).expect("a deploy into a cleared directory");
+        assert_eq!(std::fs::read_to_string(site.join(".env")).unwrap(), "A=3\n");
+        assert_eq!(std::fs::read_to_string(site.join("seen-by-restart")).unwrap(), "A=3\n");
+
+        // A file in a directory of its own, which nothing has made yet. The
+        // restart still copies `.env`, which the deploy before left there.
+        let nested = if cfg!(windows) { "config\\app.env" } else { "config/app.env" };
+        ship(nested, "B=1\n", &Options::default()).expect("a deploy with a nested env file");
+        assert_eq!(std::fs::read_to_string(site.join("config").join("app.env")).unwrap(), "B=1\n");
+    }
+
     /// An archive upload that fails part-way - a disk filling up - takes what
     /// arrived of the archive with it. Up to v0.26 it stayed in the deploy
     /// directory, where a web server could hand it out.
@@ -1554,6 +1738,7 @@ mod tests {
         let again = Artifact::packed("web", artifact::plan_upload(unpacked.path()).unwrap(), archive, history::Source::default());
         assert_eq!(again.digest().unwrap(), first.digest().unwrap(), "the very bytes #1 sent go out again");
         let shipment = Shipment {
+            env: None,
             artifact: &again,
             remove,
             rollback_of: Some(1),

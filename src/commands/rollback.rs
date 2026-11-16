@@ -85,6 +85,9 @@ pub fn run(target: Option<String>, to: Option<String>) -> Result<()> {
     }
     let shipment = Shipment {
         artifact: &build,
+        // The stand's variables as they are now: a rollback puts back a
+        // build, not the secrets of the day it was made.
+        env: deploy::stand_env(&route)?,
         remove,
         rollback_of: Some(record.id),
     };

@@ -19,6 +19,12 @@ Migrating settings from schema 2 to 3.
 
 Then the command you actually typed carries on. There is no separate migrate command to remember: a tool that refuses to start until you type a magic word is just a worse error message.
 
+## Schema 8: variables, and the file a deploy writes them into
+
+**v1.2.0** lets an app have variables on a stand ([`turnout env`](/turnout/reference/env/)) and a [target](/turnout/reference/target/#env-file) name the file a deploy writes them into. The names of the variables are a new file, `env.json`; their values are in the OS keyring. Nothing that was there is rewritten and no copy is set aside.
+
+What changes is who may read the directory. A turnout older than v1.2 editing a target would drop the file's name, and the next deploy would leave the stand without the variables it starts with. After the bump it refuses the directory instead.
+
 ## Schema 7: targets keep a number of backups
 
 **v0.25.0** lets a [target](/turnout/reference/target/#backups) say how many backups its stand keeps, and every backup turnout leaves prunes the older ones down to that number. The field is optional, so nothing is rewritten.

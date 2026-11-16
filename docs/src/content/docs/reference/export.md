@@ -31,13 +31,15 @@ The file is plain JSON, on purpose: it is configuration, and something you can r
 
 Import it on the other machine and everything works except the parts that need a secret - those report it as missing until you run [`turnout pass set`](/turnout/reference/pass/) there.
 
+The variables apps have on their stands ([`turnout env`](/turnout/reference/env/)) are secrets too. The file names them, per app and server, so the other machine knows what to store; their values stay behind.
+
 ## Taking secrets along
 
 ```bash
 turnout export --with-secrets
 ```
 
-You are asked for a passphrase (twice), and every stored secret is encrypted into the file as one sealed block. **There is no recovery**: lose the passphrase and the secrets in that file are gone. Nothing else about the export changes.
+You are asked for a passphrase (twice), and every stored secret - the credentials' and the values of the apps' variables - is encrypted into the file as one sealed block. **There is no recovery**: lose the passphrase and the secrets in that file are gone. Nothing else about the export changes.
 
 An export is exactly the kind of file that gets attached to a chat, synced to a cloud folder or forgotten in Downloads. So the sealed block gives up nothing on inspection - not the values, and not even how many secrets are stored:
 

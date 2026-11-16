@@ -34,6 +34,9 @@ pub struct Resolved {
     /// How many backups the stand keeps: the target's word, else
     /// [`DEFAULT_KEEP_BACKUPS`].
     pub keep_backups: u32,
+    /// The file on the stand this deploy writes the app's variables into,
+    /// when the target names one - where it is on the server.
+    pub env_file: Option<String>,
 }
 
 impl Resolved {
@@ -235,11 +238,20 @@ fn from_target(target: crate::model::Target, overrides: Overrides) -> Result<Res
     } else {
         (server.url.clone(), None, DEFAULT_KEEP_BACKUPS)
     };
+    // The env file is the directory's: another login or another server with
+    // the same layout still reads it there, with that server's variables;
+    // another directory is another app's layout.
+    let env_file = target
+        .env_file
+        .as_deref()
+        .filter(|_| path.name == target.path)
+        .map(|file| crate::model::stand_file(&path.dir, file));
     Ok(Resolved {
         app,
         server,
         credential,
         path,
+        env_file,
         // An overridden run is not this target any more, and recording it as one
         // would let a `--path other` run be journaled under the target's name.
         target: (!overridden).then_some(target.name),
@@ -315,6 +327,7 @@ fn assemble(app: App, server_name: String, overrides: Overrides) -> Result<Resol
         health: None,
         unchecked: None,
         keep_backups: DEFAULT_KEEP_BACKUPS,
+        env_file: None,
     })
 }
 

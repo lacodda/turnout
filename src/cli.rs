@@ -103,6 +103,11 @@ pub enum Command {
         #[command(subcommand)]
         command: PassCommand,
     },
+    /// Keep the variables an app runs with on a stand - in the OS keyring, handed to `dev`, `run` and a deploy
+    Env {
+        #[command(subcommand)]
+        command: EnvCommand,
+    },
     /// Set up SSH key access to a server, and replace a key everywhere it is used
     Key {
         #[command(subcommand)]
@@ -141,6 +146,9 @@ pub enum Command {
         /// Open the app's front door in the browser once the server is up
         #[arg(short, long)]
         open: bool,
+        /// Add variables from a sefy record for this run: `sefy:NAME` for a record of NAME=value lines, `VAR=sefy:NAME[#FIELD]` for one value (repeatable)
+        #[arg(short, long, value_name = "SOURCE")]
+        with: Vec<String>,
     },
     /// Open a target's stand in the browser, or an app at http://NAME.localhost (through the gateway's front door)
     Open {
@@ -174,6 +182,9 @@ pub enum Command {
         /// Open the app's front door in the browser once the command reports a server
         #[arg(short, long)]
         open: bool,
+        /// Add variables from a sefy record for this run: `sefy:NAME` for a record of NAME=value lines, `VAR=sefy:NAME[#FIELD]` for one value (repeatable)
+        #[arg(short, long, value_name = "SOURCE")]
+        with: Vec<String>,
     },
     /// Show the jobs turnout runs: dev servers, builds, deploys and the gateway
     Ps {
@@ -630,6 +641,64 @@ pub enum PassCommand {
     },
 }
 
+/// Whose variables, and on which stand: what every `env` command takes.
+#[derive(Args, Clone, Default)]
+pub struct Stand {
+    /// The app (defaults to the app of the current directory)
+    #[arg(short, long)]
+    pub app: Option<String>,
+    /// The stand (defaults to the one the app points at)
+    #[arg(short, long)]
+    pub server: Option<String>,
+}
+
+#[derive(Subcommand)]
+pub enum EnvCommand {
+    /// Store variables for an app on a stand; a name already there gets the new value
+    ///
+    /// `NAME=VALUE` stores what is typed. `NAME` alone asks for the value
+    /// without showing it - or reads it from standard input - so a secret
+    /// stays out of the shell history.
+    Set {
+        /// NAME=VALUE, or NAME alone to be asked for the value
+        #[arg(required = true, value_name = "NAME[=VALUE]")]
+        variables: Vec<String>,
+        #[command(flatten)]
+        stand: Stand,
+    },
+    /// List the variables by name - of one app, or of every app
+    List {
+        #[command(flatten)]
+        stand: Stand,
+        /// Print the variables of one app on one stand with their values, as dotenv lines
+        #[arg(long, conflicts_with = "json")]
+        show: bool,
+        #[command(flatten)]
+        format: Format,
+    },
+    /// Remove variables of an app on a stand
+    Remove {
+        /// Variable names
+        #[arg(required_unless_present = "all")]
+        names: Vec<String>,
+        /// Remove every variable the app has on the stand
+        #[arg(long, conflicts_with = "names")]
+        all: bool,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
+        #[command(flatten)]
+        stand: Stand,
+    },
+    /// Store every variable of a dotenv file
+    Import {
+        /// The file to read (defaults to .env in the app's directory)
+        file: Option<PathBuf>,
+        #[command(flatten)]
+        stand: Stand,
+    },
+}
+
 #[derive(Subcommand)]
 pub enum KeyCommand {
     /// Generate or reuse a key, authorize it on the server, and switch the
@@ -804,6 +873,9 @@ pub enum TargetCommand {
         /// How many backups of its deploy directory the stand keeps (default 5)
         #[arg(long, value_name = "N")]
         keep_backups: Option<u32>,
+        /// Write the app's variables for this server (`turnout env`) into this file on every deploy - relative to the deploy directory, or absolute
+        #[arg(long, value_name = "FILE")]
+        env_file: Option<String>,
     },
     /// List targets
     List {
@@ -835,6 +907,9 @@ pub enum TargetCommand {
         /// How many backups of its deploy directory the stand keeps (default 5)
         #[arg(long, value_name = "N")]
         keep_backups: Option<u32>,
+        /// Write the app's variables for this server (`turnout env`) into this file on every deploy; empty stops writing it
+        #[arg(long, value_name = "FILE")]
+        env_file: Option<String>,
     },
     /// Rename a target
     Rename {

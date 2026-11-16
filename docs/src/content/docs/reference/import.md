@@ -81,6 +81,8 @@ Kept this machine's secret of 'deploy' - the credential here was kept, so the fi
 
 With `--force` the file's credential and its secret both replace the ones here.
 
+The values of the apps' variables ([`turnout env`](/turnout/reference/env/)) arrive the same way, each with its app and its server: a variable this machine already has keeps its value unless the import is forced, and one whose app or server was not imported is left out and named. A file exported without `--with-secrets` only names the variables, and the import says how many there are to store with `turnout env set`.
+
 Decryption happens **before** anything is written. A wrong passphrase therefore leaves the machine exactly as it was, rather than importing the catalogs and failing on the secrets - which would hand you half a setup and then greet the retry with "already exists" on everything.
 
 A wrong passphrase and an altered file report the same error, because the authentication tag genuinely cannot tell them apart:
