@@ -7,6 +7,21 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [1.2.0] - 2026-11-16
+
+### Documentation
+- Show variables and key rotation on the README and the docs home
+- Keep the history markers apart from the imports on the docs home
+- Put a blank line before the history marker too
+
+### Features
+- Rotate a credential's key on every server it signs in to
+- Keep an app's variables per stand in the keyring
+
+### Testing
+- Rotate keys and write a stand's variables on a real server
+- Look for a leftover file in what the command printed
+
 ## [1.1.0] - 2026-11-11
 
 ### Documentation

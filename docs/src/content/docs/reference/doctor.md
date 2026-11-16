@@ -22,7 +22,7 @@ turnout doctor --server [NAME] [--json]
 ```text
 ┌  Local environment
 │
-◇  turnout 1.1.0 · data C:\Users\me\AppData\Local\lacodda\turnout
+◇  turnout 1.2.0 · data C:\Users\me\AppData\Local\lacodda\turnout
 ◇  node v22.11.0 · pnpm 10.34.5
 ◇  keyring answers (Windows Credential Manager)
 │
