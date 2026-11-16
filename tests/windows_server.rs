@@ -5,8 +5,8 @@
 //! an SSH server written for the tests. What they cannot show is the real
 //! sshd around it: its sessions, its SFTP server, its profiles, which account
 //! it reads which authorized-keys file for and which ACL it accepts on that
-//! file. These tests deploy, back up, restore, roll back and install keys
-//! against the real thing, and read the result straight off the disk -
+//! file. These tests deploy, back up, restore, roll back, write a stand's
+//! variables, and install and rotate keys against the real thing, and read the result straight off the disk -
 //! the server is this machine.
 //!
 //! Every test is `#[ignore]`d: it needs the server, and a plain `cargo test`
@@ -393,6 +393,153 @@ impl Drop for GeneratedKey {
     }
 }
 
+/// Rotate the key of `credential` on `win` and prove the outcome on the
+/// server: the new key signs in, the old one does not, and the file sshd
+/// reads - `type`d by the account itself - holds the new key once and the old
+/// one nowhere. Returns the file, for what else a test wants to see in it.
+fn rotate_and_prove(data: &Path, credential: &str, account: &Account, first: &GeneratedKey, file: &str) -> String {
+    // The rotation goes to every server the credential signs in to.
+    ok(data, &["server", "edit", "win", "--credential", credential]);
+    let old_public = first.public();
+    let rotated = GeneratedKey(first.0.with_file_name(format!("id_ed25519_{credential}_2")));
+    // Nobody to ask: a rotation wants a yes.
+    let said = fails(data, &["key", "rotate", credential]);
+    assert!(said.contains("--yes"), "{said}");
+    let said = ok(data, &["key", "rotate", credential, "--yes"]);
+    for line in ["The new key is authorized as", "The new key signs in as", "The old key no longer signs in as"] {
+        assert!(said.contains(line), "{line}:\n{said}");
+    }
+    let shown = json(data, &["credential", "show", credential, "--json"]);
+    assert_eq!(PathBuf::from(shown["key"].as_str().unwrap()), rotated.0, "{shown}");
+    ok(data, &["key", "check", "win", "--credential", credential]);
+
+    // The old key is a key like any other now: one the server does not know.
+    let old = format!("{credential}-old");
+    ok(
+        data,
+        &["credential", "add", &old, "--user", &account.user, "--key", &first.0.display().to_string()],
+    );
+    let refused = fails(data, &["key", "check", "win", "--credential", &old]);
+    assert!(refused.contains("cannot sign in"), "{refused}");
+
+    let held = ok(data, &["exec", "win", "--credential", credential, "--", &format!("type {file}")]);
+    let body = |public: &str| public.split_whitespace().nth(1).unwrap().to_string();
+    assert_eq!(held.matches(&body(&rotated.public())).count(), 1, "the new key, once:\n{held}");
+    assert_eq!(held.matches(&body(&old_public)).count(), 0, "the old key, nowhere:\n{held}");
+    let beside = ok(
+        data,
+        &[
+            "exec",
+            "win",
+            "--credential",
+            credential,
+            "--",
+            &format!("if exist {file}.turnout-new echo left-behind"),
+        ],
+    );
+    assert!(!beside.contains("left-behind"), "the file written beside it is gone");
+    held
+}
+
+/// A target that names an env file has it written from the app's variables
+/// for the server: after the build, before the restart, again into a cleared
+/// directory, and into a directory of its own that nothing has made.
+#[test]
+#[ignore = "needs the Windows server tools/ci/windows-sshd.ps1 stands up"]
+fn a_deploy_writes_the_stand_its_variables() {
+    let stand = Stand::from_env();
+    let data = catalog(&stand);
+    let data = data.path();
+    let root = stand.dir.join("env file");
+    let _ = std::fs::remove_dir_all(&root);
+    let site = root.join("my site");
+    let project = data.join("project");
+    build(&project.join("dist"), FIRST_BUILD);
+
+    add_login(data, "admin", &stand.admin);
+    ok(data, &["server", "edit", "win", "--credential", "admin"]);
+    // The restart copies the file as it finds it: proof it was there first.
+    ok(
+        data,
+        &[
+            "path",
+            "add",
+            "site",
+            "--dir",
+            &site.display().to_string(),
+            "--restart",
+            "copy /y .env seen-by-restart.txt >nul",
+        ],
+    );
+    ok(data, &["app", "add", "web", "--path", &project.display().to_string(), "--dist", "dist"]);
+    ok(
+        data,
+        &[
+            "target",
+            "add",
+            "web-win",
+            "--app",
+            "web",
+            "--server",
+            "win",
+            "--credential",
+            "admin",
+            "--path",
+            "site",
+            "--env-file",
+            ".env",
+        ],
+    );
+    ok(
+        data,
+        &[
+            "env",
+            "set",
+            "DATABASE_URL=postgres://app:pa$$w0rd@db/app",
+            "GREETING=two words & 100% <more>",
+            "--app",
+            "web",
+            "--server",
+            "win",
+        ],
+    );
+
+    let said = ok(data, &["deploy", "web-win", "--no-build"]);
+    assert!(said.contains("Wrote 2 variables to"), "{said}");
+    assert_landed(&site, FIRST_BUILD);
+    let written = std::fs::read_to_string(site.join(".env")).unwrap();
+    assert!(written.starts_with("# Written by turnout on every deploy of 'web' to 'win'"), "{written}");
+    assert!(
+        written.ends_with("DATABASE_URL='postgres://app:pa$$w0rd@db/app'\nGREETING='two words & 100% <more>'\n"),
+        "{written}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(site.join("seen-by-restart.txt")).unwrap(),
+        written,
+        "the restart read the file"
+    );
+
+    // The file says what the set says, into a cleared directory too.
+    ok(data, &["env", "remove", "GREETING", "--app", "web", "--server", "win", "--yes"]);
+    let said = ok(data, &["deploy", "web-win", "--no-build", "--clear"]);
+    assert!(said.contains("Wrote 1 variable to"), "{said}");
+    let written = std::fs::read_to_string(site.join(".env")).unwrap();
+    assert!(written.contains("DATABASE_URL=") && !written.contains("GREETING"), "{written}");
+
+    // A file of its own, outside the deploy directory, in a directory with a
+    // space in its name that nothing has made yet.
+    let outside = root.join("etc dir").join("web.env");
+    ok(data, &["target", "edit", "web-win", "--env-file", &outside.display().to_string()]);
+    // The restart still copies `.env`, which the deploy before left there.
+    let said = ok(data, &["deploy", "web-win", "--no-build"]);
+    assert!(said.contains(&format!("Wrote 1 variable to {}", outside.display())), "{said}");
+    assert!(
+        std::fs::read_to_string(&outside)
+            .unwrap()
+            .contains("DATABASE_URL='postgres://app:pa$$w0rd@db/app'")
+    );
+}
+
 /// A credential name no earlier run left a key file behind for.
 fn fresh(prefix: &str) -> String {
     format!("{prefix}-{}", std::process::id())
@@ -456,6 +603,14 @@ fn administrators_share_one_key_file_and_each_signs_in_with_their_own_key() {
         let body = public.split_whitespace().nth(1).unwrap();
         assert_eq!(shared.matches(body).count(), 1, "{public} in:\n{shared}");
     }
+
+    // The first administrator's key is rotated. The file is everybody's: the
+    // second administrator's key stays in it, and sshd still reads it for
+    // both - replaced whole, it has kept the ACL it is only read under.
+    let held = rotate_and_prove(data, &first, &stand.admin, &generated, r"C:\ProgramData\ssh\administrators_authorized_keys");
+    let body = own_public.split_whitespace().nth(1).unwrap();
+    assert_eq!(held.matches(body).count(), 1, "the other administrator's key stays:\n{held}");
+    ok(data, &["key", "check", "win", "--credential", second]);
 }
 
 /// An account outside the administrators keeps its key in its own profile.
@@ -482,4 +637,7 @@ fn an_ordinary_account_keeps_its_key_in_its_own_profile() {
     );
     let body = generated.public().split_whitespace().nth(1).unwrap().to_string();
     assert_eq!(said.matches(&body).count(), 1, "{said}");
+
+    // And replaces it there.
+    rotate_and_prove(data, &credential, &stand.user, &generated, r"%USERPROFILE%\.ssh\authorized_keys");
 }
