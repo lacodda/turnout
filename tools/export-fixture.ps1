@@ -50,6 +50,7 @@ try {
     $appHelp = Help @("app", "add")
     $credentialHelp = Help @("credential", "add")
     $targetHelp = Help @("target", "add")
+    $topHelp = Help @()
 
     foreach ($name in "web", "api", "keys") { New-Item -ItemType Directory -Force (Join-Path $sandbox $name) | Out-Null }
     $keyFile = Join-Path $sandbox "keys/id_ed25519"
@@ -99,10 +100,18 @@ try {
     if ($targetHelp -match "--health ") { $staging += "--health", "/health" }
     if ($targetHelp -match "--health-wait") { $staging += "--health-wait", "30" }
     if ($targetHelp -match "--keep-backups") { $staging += "--keep-backups", "3" }
+    if ($targetHelp -match "--env-file") { $staging += "--env-file", ".env" }
     Invoke-Turnout "" $staging
     $prod = @("target", "add", "api-prod", "--app", "api", "--server", "prod", "--credential", "deploy", "--path", "api-dir")
     if ($targetHelp -match "--health-command") { $prod += "--health-command", "curl -fsS localhost:8080/health" }
     Invoke-Turnout "" $prod
+
+    # The variables an app has on a stand, where the release keeps them
+    # (v1.2+): one given on the command line, one from standard input.
+    if ($topHelp -match "(?m)^\s+env\s") {
+        Invoke-Turnout "" @("env", "set", "API_URL=https://api.staging.example.com", "--app", "web", "--server", "staging")
+        Invoke-Turnout "fixture-variable" @("env", "set", "SESSION_SECRET", "--app", "web", "--server", "staging")
+    }
 
     $file = Join-Path $sandbox "export.json"
     Invoke-Turnout $passphrase @("export", "--with-secrets", "--output", $file)

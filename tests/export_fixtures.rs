@@ -81,6 +81,7 @@ fn every_fixture_imports_whole() {
         nothing_is_lost(&name, &old, &new);
         every_app_has_a_gateway_port_of_its_own(&name, &new);
         the_secrets_arrive(&name, dir.path());
+        the_variables_arrive(&name, &old, &new, dir.path());
     }
 }
 
@@ -127,6 +128,25 @@ fn the_secrets_arrive(name: &str, data_dir: &Path) {
     let stored = read_json(&data_dir.join("insecure-secrets.json"));
     assert_eq!(stored["deploy"], "fixture-password", "{name}: the password did not arrive");
     assert_eq!(stored["ci-key"], "fixture-key-passphrase", "{name}: the key's passphrase did not arrive");
+}
+
+/// Since v1.2.0 an export names the variables apps have on their stands and
+/// seals their values with the secrets: the names come back as they left,
+/// and the values land in the keyring under their app and server.
+fn the_variables_arrive(name: &str, old: &Value, new: &Value, data_dir: &Path) {
+    if old.get("env").is_none() {
+        return;
+    }
+    assert_eq!(new["env"], old["env"], "{name}: the variables that arrived are not the ones that left");
+    let stored = read_json(&data_dir.join("insecure-secrets.json"));
+    assert_eq!(
+        stored["env/web/staging/API_URL"], "https://api.staging.example.com",
+        "{name}: a variable's value did not arrive"
+    );
+    assert_eq!(
+        stored["env/web/staging/SESSION_SECRET"], "fixture-variable",
+        "{name}: a variable's value did not arrive"
+    );
 }
 
 /// The release ritual writes this version's fixture after the bump. Without
