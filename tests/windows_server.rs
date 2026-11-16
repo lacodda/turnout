@@ -426,17 +426,15 @@ fn rotate_and_prove(data: &Path, credential: &str, account: &Account, first: &Ge
     let body = |public: &str| public.split_whitespace().nth(1).unwrap().to_string();
     assert_eq!(held.matches(&body(&rotated.public())).count(), 1, "the new key, once:\n{held}");
     assert_eq!(held.matches(&body(&old_public)).count(), 0, "the old key, nowhere:\n{held}");
-    let beside = ok(
-        data,
-        &[
-            "exec",
-            "win",
-            "--credential",
-            credential,
-            "--",
-            &format!("if exist {file}.turnout-new echo left-behind"),
-        ],
-    );
+    // Only what the command printed: `exec` announces the command itself on
+    // stderr, with the word this looks for in it.
+    let beside = turnout(data)
+        .args(["exec", "win", "--credential", credential, "--"])
+        .arg(format!("if exist {file}.turnout-new echo left-behind"))
+        .output()
+        .unwrap();
+    assert!(beside.status.success(), "{}", printed(&beside));
+    let beside = String::from_utf8_lossy(&beside.stdout).into_owned();
     assert!(!beside.contains("left-behind"), "the file written beside it is gone");
     held
 }
