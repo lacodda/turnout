@@ -103,7 +103,7 @@ pub enum Command {
         #[command(subcommand)]
         command: PassCommand,
     },
-    /// Set up SSH key access to a server, so the password is needed once
+    /// Set up SSH key access to a server, and replace a key everywhere it is used
     Key {
         #[command(subcommand)]
         command: KeyCommand,
@@ -651,6 +651,14 @@ pub enum KeyCommand {
         /// Credential to check (defaults to the server's)
         #[arg(short, long)]
         credential: Option<String>,
+    },
+    /// Replace a credential's key on every server it signs in to; the old key is taken off them last
+    Rotate {
+        /// Credential name; picked interactively when omitted
+        credential: Option<String>,
+        /// Skip the confirmation prompt
+        #[arg(short = 'y', long = "yes")]
+        assume_yes: bool,
     },
 }
 

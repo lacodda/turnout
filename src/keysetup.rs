@@ -109,6 +109,26 @@ pub fn already_authorized(existing: &str, line: &str) -> bool {
     existing.lines().filter_map(key_body).any(|body| body == wanted)
 }
 
+/// `existing` without the lines that hold the key of `line` - `None` when no
+/// line does. The same comparison as [`already_authorized`]: a comment
+/// someone edited, or options in front, do not hide the key.
+///
+/// Every other line stays as it is, comments and blank ones too, and the
+/// file keeps the line endings it has: on a Windows server they are CRLF.
+pub fn without_key(existing: &str, line: &str) -> Option<String> {
+    let wanted = key_body(line)?;
+    if !existing.lines().filter_map(key_body).any(|body| body == wanted) {
+        return None;
+    }
+    let ending = if existing.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut kept = String::with_capacity(existing.len());
+    for line in existing.lines().filter(|line| key_body(line).as_ref() != Some(&wanted)) {
+        kept.push_str(line);
+        kept.push_str(ending);
+    }
+    Some(kept)
+}
+
 /// The `algorithm base64` core of an authorized-keys line, ignoring leading
 /// options and the trailing comment.
 fn key_body(line: &str) -> Option<(String, String)> {
@@ -303,6 +323,28 @@ mod tests {
         let existing = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDifferent other\n# a comment\n\n";
         assert!(!already_authorized(existing, line));
         assert!(!already_authorized("", line));
+    }
+
+    /// Removing a key takes its line - under any comment, behind any
+    /// options, however often it is there - and leaves every other line as
+    /// it was.
+    #[test]
+    fn a_key_is_removed_wherever_its_line_is() {
+        let key = "ssh-ed25519 AAAAOld turnout@desktop";
+        let existing = "# the deploy account\nssh-ed25519 AAAAOther someone\n\nfrom=\"10.0.0.0/8\" ssh-ed25519 AAAAOld renamed\nssh-ed25519 AAAANew turnout@desktop\nssh-ed25519 AAAAOld again\n";
+        assert_eq!(
+            without_key(existing, key).unwrap(),
+            "# the deploy account\nssh-ed25519 AAAAOther someone\n\nssh-ed25519 AAAANew turnout@desktop\n"
+        );
+        assert_eq!(without_key("ssh-ed25519 AAAAOther someone\n", key), None, "nothing to remove");
+        assert_eq!(without_key("", key), None);
+        // The last key of a file leaves an empty file, not a missing one.
+        assert_eq!(without_key("ssh-ed25519 AAAAOld x", key).unwrap(), "");
+        // A Windows server's file keeps its line endings.
+        assert_eq!(
+            without_key("ssh-ed25519 AAAAOld x\r\nssh-ed25519 AAAANew y\r\n", key).unwrap(),
+            "ssh-ed25519 AAAANew y\r\n"
+        );
     }
 
     /// An empty or commented file is simply not holding the key.

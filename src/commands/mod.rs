@@ -15,6 +15,7 @@ pub mod group;
 pub mod history;
 pub mod jobs;
 pub mod key;
+pub mod key_rotate;
 pub mod open;
 pub mod pass;
 pub mod path;

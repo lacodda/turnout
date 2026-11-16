@@ -211,7 +211,7 @@ fn key_left_at(path: String) -> Result<KeyInHand> {
 }
 
 /// Write a generated key pair to disk.
-fn write_generated(path: &str, private: &str, public: &str) -> Result<()> {
+pub(crate) fn write_generated(path: &str, private: &str, public: &str) -> Result<()> {
     keysetup::write_private_key(std::path::Path::new(path), private)?;
     // The `.pub` sibling is what every other tool reads; writing it means a key
     // turnout generated is an ordinary key, not a turnout-only one.
@@ -222,7 +222,7 @@ fn write_generated(path: &str, private: &str, public: &str) -> Result<()> {
 }
 
 /// The comment written into the public key: who made it, on which machine.
-fn comment() -> String {
+pub(crate) fn comment() -> String {
     let host = hostname().unwrap_or_else(|| "unknown".to_string());
     format!("turnout@{host}")
 }
@@ -280,7 +280,7 @@ fn connect_for_setup(server: &Server, credential: &Credential) -> Result<Session
 }
 
 /// Ask the server where its authorized-keys file is.
-fn locate(session: &Session, dialect: Dialect) -> Result<AuthorizedKeysFile> {
+pub(crate) fn locate(session: &Session, dialect: Dialect) -> Result<AuthorizedKeysFile> {
     let home = remote::exec(session, dialect.home_dir())
         .context("cannot read the remote home directory")?
         .trim()
@@ -299,10 +299,23 @@ fn locate(session: &Session, dialect: Dialect) -> Result<AuthorizedKeysFile> {
 /// already there, and give the file the permissions sshd requires.
 fn install(session: &Session, dialect: Dialect, placed: &AuthorizedKeysFile, public: &str) -> Result<()> {
     let step = Step::start(format!("Installing the key in {}", placed.file));
+    match authorize(session, dialect, placed, public) {
+        Ok(true) => step.done(format!("Key installed in {}", placed.file)),
+        Ok(false) => step.done(format!("The key is already authorized in {}", placed.file)),
+        Err(err) => {
+            step.clear();
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Add `public` to the authorized keys in `placed`, with the permissions sshd
+/// requires; `false` when it was already there.
+pub(crate) fn authorize(session: &Session, dialect: Dialect, placed: &AuthorizedKeysFile, public: &str) -> Result<bool> {
     let existing = remote::exec(session, &dialect.read_file(&placed.file)).unwrap_or_default();
     if keysetup::already_authorized(&existing, public) {
-        step.done(format!("The key is already authorized in {}", placed.file));
-        return Ok(());
+        return Ok(false);
     }
 
     remote::exec(session, &dialect.mkdir_p(&placed.dir)).with_context(|| format!("cannot create {} on the server", placed.dir))?;
@@ -317,8 +330,33 @@ fn install(session: &Session, dialect: Dialect, placed: &AuthorizedKeysFile, pub
         dialect.restrict_to_owner(&placed.dir, &placed.file)
     };
     remote::exec(session, &restrict).with_context(|| format!("the key was written to {} but its permissions could not be set", placed.file))?;
-    step.done(format!("Key installed in {}", placed.file));
-    Ok(())
+    Ok(true)
+}
+
+/// Take `public` out of the authorized keys in `placed`, wherever its line
+/// is and whatever its comment says; `false` when it was not there.
+///
+/// The file is replaced whole, never rewritten in place: the keys that stay
+/// are written beside it and moved over it, so a connection lost half-way
+/// leaves the file as it was - not cut short, with the key that just signed
+/// in gone from it. The replacement keeps what sshd checks: the mode on
+/// POSIX, and on Windows the file's own ACL, which a copy over it leaves.
+pub(crate) fn deauthorize(session: &Session, dialect: Dialect, placed: &AuthorizedKeysFile, public: &str) -> Result<bool> {
+    // Not `unwrap_or_default`, as before an append: a file that cannot be
+    // read must not be taken for an empty one and replaced with nothing.
+    let existing = remote::exec(session, &dialect.read_file(&placed.file)).with_context(|| format!("cannot read {}", placed.file))?;
+    let Some(kept) = keysetup::without_key(&existing, public) else {
+        return Ok(false);
+    };
+    let beside = format!("{}.turnout-new", placed.file);
+    session
+        .upload_bytes(kept.as_bytes(), &beside, |_| {})
+        .with_context(|| format!("cannot write {beside}"))?;
+    if let Err(err) = remote::exec(session, &dialect.replace_file(&beside, &placed.file)) {
+        let _ = remote::exec(session, &dialect.remove_file(&beside));
+        return Err(err).with_context(|| format!("cannot replace {}", placed.file));
+    }
+    Ok(true)
 }
 
 /// What to say when the key cannot be added to the file.
@@ -461,6 +499,57 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert!(refused.contains("does not open without a passphrase"), "{refused}");
+    }
+
+    /// The old key comes off a server without a scratch on the rest of the
+    /// file: every other line stays, the file is replaced whole, nothing is
+    /// left beside it - and a key that is not there is not an error.
+    #[test]
+    fn a_key_is_taken_off_and_the_rest_of_the_file_stays() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let session = stand.session();
+        let dialect = if cfg!(windows) { Dialect::Windows } else { Dialect::Posix };
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join(".ssh");
+        std::fs::create_dir(&dir).unwrap();
+        let file = dir.join("authorized_keys");
+        let placed = AuthorizedKeysFile {
+            dir: dir.display().to_string(),
+            file: file.display().to_string(),
+            administrators: false,
+        };
+        let old = "ssh-ed25519 AAAAOldKeyBody turnout@desktop";
+        let ending = if cfg!(windows) { "\r\n" } else { "\n" };
+        let lines = |lines: &[&str]| lines.iter().map(|line| format!("{line}{ending}")).collect::<String>();
+        std::fs::write(
+            &file,
+            lines(&[
+                "# keys of the deploy account",
+                "ssh-ed25519 AAAAOtherBody someone@laptop",
+                "no-pty ssh-ed25519 AAAAOldKeyBody renamed by hand",
+                "ssh-ed25519 AAAANewKeyBody turnout@desktop",
+            ]),
+        )
+        .unwrap();
+
+        assert!(deauthorize(&session, dialect, &placed, old).expect("the key comes off"));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            lines(&[
+                "# keys of the deploy account",
+                "ssh-ed25519 AAAAOtherBody someone@laptop",
+                "ssh-ed25519 AAAANewKeyBody turnout@desktop"
+            ])
+        );
+        let beside: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|entry| entry.unwrap().file_name()).collect();
+        assert_eq!(beside, ["authorized_keys"], "nothing is left beside the file");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "what sshd demands of it");
+        }
+        // Gone already: nothing to do, and nothing rewritten.
+        assert!(!deauthorize(&session, dialect, &placed, old).expect("a key that is not there is no error"));
     }
 
     #[test]

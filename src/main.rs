@@ -91,6 +91,7 @@ fn main() {
         cli::Command::Key { command } => match command {
             cli::KeyCommand::Setup { server, credential, key } => commands::key::setup(server, credential, key),
             cli::KeyCommand::Check { server, credential } => commands::key::check(server, credential),
+            cli::KeyCommand::Rotate { credential, assume_yes } => commands::key_rotate::run(credential, assume_yes),
         },
         cli::Command::Use { app, server, no_check } => commands::use_cmd::run(app, server, no_check),
         cli::Command::Group { command } => commands::group::run(command),

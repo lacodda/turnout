@@ -106,6 +106,11 @@ _turnout_dynamic() {
             # `pass` works on credentials since the v0.9.0 split; `list` takes no name.
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|copy|remove)$ ]] && kind="credentials"
             ;;
+        key)
+            # `key setup|check [SERVER]`, `key rotate [CREDENTIAL]`.
+            if [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(setup|check)$ ]]; then kind="servers"
+            elif [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" == "rotate" ]]; then kind="credentials"; fi
+            ;;
         cookie)
             # `cookie set|clear [APP]`; `list` takes no name.
             [[ ${COMP_CWORD} -eq 3 && "${COMP_WORDS[2]}" =~ ^(set|clear)$ ]] && kind="apps"

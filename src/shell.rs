@@ -309,6 +309,23 @@ impl Dialect {
         }
     }
 
+    /// Put the file at `from` in the place of the one at `to`, which exists,
+    /// keeping what guards `to`.
+    ///
+    /// POSIX moves it over: `mv` within a directory is one step, so `to` is
+    /// the old file or the new one and never half of either; the mode is set
+    /// first, to the one sshd demands of the file this is used for. Windows
+    /// copies over it instead - a file moved into place brings the ACL it was
+    /// created with, while one copied over keeps its own, and
+    /// `administrators_authorized_keys` is only read under the ACL it has.
+    pub fn replace_file(&self, from: &str, to: &str) -> String {
+        let (from, to) = (self.quote(from), self.quote(to));
+        match self {
+            Dialect::Posix => format!("chmod 600 {from} && mv -f {from} {to}"),
+            Dialect::Windows => format!("(copy /y {from} {to} >nul) && (del /f /q {from} >nul 2>&1 & (call ))"),
+        }
+    }
+
     /// Print a file's contents; a missing file yields empty output, not an
     /// error.
     ///

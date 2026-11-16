@@ -148,6 +148,16 @@ turnout key setup staging --credential prod-deploy
 
 The existing key is reused rather than replaced - a second key for the same account would be one more thing to rotate.
 
+## Replacing a key
+
+A key that was on a lost laptop, or one a former colleague had, is replaced everywhere at once:
+
+```bash
+turnout key rotate prod-deploy
+```
+
+[`key rotate`](/turnout/reference/key/#rotate) authorizes a new key on every server the credential signs in to, proves it signs in to each, switches the credential over, and only then takes the old key off them - so no server is ever left admitting neither. A failure before the switch undoes the whole thing.
+
 ## Protecting the key with a passphrase
 
 turnout reads the passphrase from the OS keyring under the credential's name:
