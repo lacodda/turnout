@@ -15,6 +15,8 @@ A job in your terminal speaks there. A [job in the background](/turnout/concepts
 | The [gateway](/turnout/concepts/gateway/#when-a-stand-misbehaves) found a stand down | `staging answers 502` (or `does not answer`) | The stand itself |
 | The gateway found a session expired | `myapp: the staging session expired`, naming `turnout cookie set` | The app, where its login page is |
 | A [tunnel](/turnout/reference/tunnel/) lost its SSH connection and cannot get it back yet | `Tunnel db is down` - where it goes and why, and that turnout keeps trying | The tunnel's log |
+| A [watch](/turnout/reference/watch/) deployed a change | `myapp deployed` - the stand and how long it took | The stand's address |
+| A watch's deploy did not go through | `myapp was not deployed to staging` - the reason, and that the watch goes on | The watch's log |
 
 A deploy that failed its [health check](/turnout/reference/target/#health-check) and was rolled back is a `myapp deploy failed` like any other failure; its line says so - `rolled back to 20261013-101500.tar.gz: the stand works again`.
 

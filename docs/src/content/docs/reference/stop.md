@@ -1,6 +1,6 @@
 ---
 title: "stop"
-description: Stop a job - an app's background dev server, a build, a deploy, the gateway or a tunnel.
+description: Stop a job - an app's background dev server, a build, a deploy, a watch, the gateway or a tunnel.
 sidebar:
   order: 8.3
 ---

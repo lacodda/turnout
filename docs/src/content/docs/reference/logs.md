@@ -1,6 +1,6 @@
 ---
 title: "logs"
-description: Print a job's output - a background dev server, the last build, the gateway, a tunnel.
+description: Print a job's output - a background dev server, the last build, a watch, the gateway, a tunnel.
 sidebar:
   order: 8.2
 ---

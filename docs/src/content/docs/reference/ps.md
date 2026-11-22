@@ -1,6 +1,6 @@
 ---
 title: "ps"
-description: Show the jobs turnout runs - dev servers, builds, deploys, the gateway and tunnels.
+description: Show the jobs turnout runs - dev servers, builds, deploys, watches, the gateway and tunnels.
 sidebar:
   order: 8.1
 ---
@@ -9,7 +9,7 @@ sidebar:
 turnout ps [-w | --json]
 ```
 
-Lists every [job](/turnout/concepts/background-jobs/) turnout knows about: what runs right now, in the background or in some other terminal, and how the last run of each command ended. The gateway and each [tunnel](/turnout/reference/tunnel/) are jobs like any other and have their rows.
+Lists every [job](/turnout/concepts/background-jobs/) turnout knows about: what runs right now, in the background or in some other terminal, and how the last run of each command ended. The gateway and each [tunnel](/turnout/reference/tunnel/) are jobs like any other and have their rows, and so is an app's [watch](/turnout/reference/watch/) - `myapp watch`.
 
 ```text
 JOB           STATE            PID    PORT  ADDRESS                TIME
@@ -34,7 +34,9 @@ web deploy    failed (exit 1)  -      -     -                      1m ago
 - **STATE**
   - `running` - the process is alive; `(bg)` marks a job started with `--detach` or by `gateway start`, and no mark means it runs in somebody's terminal.
   - `ready` - a server job (`dev`, a custom command) announced that it is up - see [the quiet console](/turnout/concepts/quiet-console/#commands-that-keep-running); a tunnel carries.
-  - `down` - a tunnel that runs and has lost its SSH connection; it is trying again by itself, and [`tunnel list`](/turnout/reference/tunnel/#list) says why.
+  - `down` - a tunnel that runs and has lost its SSH connection; it is trying again by itself, and the line under the row says why.
+
+  A running job kept from its work has a line of its own under its row, beginning with `!`: a tunnel's lost connection, a watch's [deploy that failed](/turnout/reference/watch/#each-deploy) - the watch is still `running`, and the line goes once a deploy goes through again.
   - `done` / `failed (exit N)` - the job ended by itself, with that exit code; `failed (killed)` when a signal ended it; `failed (did not start)` when its program could not be started at all - its directory is gone, or there is no shell to run it with. The job's log says which.
   - `gone` - the process is no longer there and never said how it ended: killed from outside, a crash, a reboot. `turnout stop NAME` clears the row.
 - **PID** - the process that owns the job: the supervisor of a background job, the `turnout` in a terminal, the gateway itself.

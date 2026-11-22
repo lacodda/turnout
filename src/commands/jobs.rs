@@ -472,6 +472,9 @@ fn table(jobs: &[JobView]) -> String {
     }
     let now = registry::now();
     let mut rows = vec![["JOB", "STATE", "PID", "PORT", "ADDRESS", "TIME"].map(str::to_string)];
+    // What keeps a running job from its work, under its row: a tunnel's lost
+    // connection, a watch's failed deploy.
+    let mut notes: Vec<Option<String>> = vec![None];
     for job in jobs {
         let since = |at: &str| crate::output::parse_iso8601(at).map(|at| human_span(now.saturating_sub(at)));
         let time = if job.is_running() {
@@ -485,7 +488,9 @@ fn table(jobs: &[JobView]) -> String {
         let mut state = match job.state {
             "failed" if job.never_ran => format!("failed ({})", Exit::NeverRan.describe()),
             "failed" => format!("failed ({})", describe_code(job.exit_code)),
-            _ if job.trouble.is_some() => "down".to_string(),
+            // A tunnel with trouble carries nothing; a watch whose deploy
+            // failed still watches.
+            _ if job.trouble.is_some() && job.app.is_none() => "down".to_string(),
             word => word.to_string(),
         };
         if job.background && job.is_running() {
@@ -499,24 +504,24 @@ fn table(jobs: &[JobView]) -> String {
             job.address.clone().unwrap_or_else(|| "-".to_string()),
             time,
         ]);
+        notes.push(job.trouble.as_ref().map(|trouble| format!("  ! {trouble}")));
     }
     let widths: Vec<usize> = (0..6)
         .map(|column| rows.iter().map(|row| row[column].chars().count()).max().unwrap_or(0))
         .collect();
-    let lines: Vec<String> = rows
-        .iter()
-        .map(|row| {
-            let mut line = String::new();
-            for (column, cell) in row.iter().enumerate() {
-                if column + 1 == row.len() {
-                    line.push_str(cell);
-                } else {
-                    line.push_str(&format!("{cell:<width$}  ", width = widths[column]));
-                }
+    let mut lines: Vec<String> = Vec::new();
+    for (row, note) in rows.iter().zip(notes) {
+        let mut line = String::new();
+        for (column, cell) in row.iter().enumerate() {
+            if column + 1 == row.len() {
+                line.push_str(cell);
+            } else {
+                line.push_str(&format!("{cell:<width$}  ", width = widths[column]));
             }
-            line.trim_end().to_string()
-        })
-        .collect();
+        }
+        lines.push(line.trim_end().to_string());
+        lines.extend(note);
+    }
     lines.join("\n")
 }
 

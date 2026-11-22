@@ -73,6 +73,7 @@ fn main() {
                 command: Some(cli::TunnelCommand::Run { .. }),
                 ..
             }
+            | cli::Command::Watch { log: Some(_), .. }
             | cli::Command::Status { short: true, .. }
     );
     let result = match cli.command {
@@ -185,6 +186,22 @@ fn main() {
                 console,
             },
         ),
+        cli::Command::Watch {
+            target,
+            server,
+            credential,
+            path,
+            build,
+            foreground,
+            log,
+        } => commands::watch::run(commands::watch::Spec {
+            target,
+            overrides: remote::Overrides { server, credential, path },
+            build,
+            foreground,
+            log,
+        }),
+        cli::Command::Copy { from, to, credential, diff } => commands::copy::run(from, to, credential, diff),
         cli::Command::Backup {
             command:
                 Some(cli::BackupCommand::Prune {

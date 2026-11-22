@@ -19,7 +19,7 @@ gateway  running (bg)  24180  80    http://localhost      2h 03m
 web dev  ready (bg)    31412  5100  http://web.localhost  12s
 ```
 
-`dev`, `build`, `test`, `lint`, `run` and `deploy` all take `-d` / `--detach`. A [tunnel](/turnout/reference/tunnel/) needs no flag: it is a job that only ever runs in the background.
+`dev`, `build`, `test`, `lint`, `run` and `deploy` all take `-d` / `--detach`. A [tunnel](/turnout/reference/tunnel/) needs no flag: it is a job that only ever runs in the background. A [watch](/turnout/reference/watch/) goes there by itself too - `myapp watch`, a job of the app - unless `--foreground` keeps it in the terminal.
 
 ## How you hear back
 

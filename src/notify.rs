@@ -213,6 +213,20 @@ pub fn failed(app: &str, command: &str, how: &str, reason: Option<&str>, places:
     }
 }
 
+/// A deploy a watch made did not go through - the build failed, the stand
+/// refused, the check did not pass. The watch goes on, and deploys the next
+/// change; `log` is the watch's own.
+pub fn watch_failed(app: &str, server: &str, reason: &str, log: Option<&Path>) -> Toast {
+    Toast {
+        title: format!("{app} was not deployed to {server}"),
+        body: cut(reason, REASON_CHARS),
+        note: Some(format!("the watch goes on - turnout logs {app} watch")),
+        open: log.map(file_url),
+        buttons: log.map(|log| Button::new("Show log", file_url(log))).into_iter().collect(),
+        failure: true,
+    }
+}
+
 /// The stand refused the session the gateway holds for an app. `login` is
 /// where the app answers, so the click lands on its login page.
 pub fn session_expired(app: &str, server: &str, login: &str) -> Toast {

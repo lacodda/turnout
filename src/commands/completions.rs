@@ -67,7 +67,7 @@ _turnout_dynamic() {
             # Named deploy targets - as many as the deploy goes to - or apps.
             [[ ${COMP_CWORD} -ge 2 ]] && kind="targets"
             ;;
-        restore|rollback)
+        restore|rollback|watch)
             # A named deploy target, or an app to use its target on the bound server.
             [[ ${COMP_CWORD} -eq 2 ]] && kind="targets"
             ;;

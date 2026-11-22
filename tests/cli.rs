@@ -6144,3 +6144,132 @@ fn key_rotate_refuses_what_it_cannot_rotate() {
         .failure()
         .stderr(predicate::str::contains("no credential named 'nobody'"));
 }
+
+/// A stand to deploy to that nothing answers on: its SSH port is closed, so
+/// every deploy fails at the connection - which is all a watch needs to
+/// show, without a server to sign in to.
+fn a_target_nothing_answers(dir: &std::path::Path, project: &std::path::Path, build: Option<&str>) {
+    let (ssh_port, reservation) = reserved_port();
+    drop(reservation);
+    turnout(dir)
+        .args(["server", "add", "stand", "--url", "http://127.0.0.1:1"])
+        .args(["--host", &format!("127.0.0.1:{ssh_port}")])
+        .assert()
+        .success();
+    add_credential(dir);
+    add_path(dir);
+    turnout_secrets(dir).args(["pass", "set", "deploy"]).write_stdin("s3cret\n").assert().success();
+    let mut add = turnout(dir);
+    add.args(["app", "add", "myapp", "--path"]).arg(project).args(["--dist", "dist"]);
+    if let Some(build) = build {
+        add.args(["--command", &format!("build={build}")]);
+    }
+    add.assert().success();
+    turnout(dir)
+        .args([
+            "target",
+            "add",
+            "web",
+            "--app",
+            "myapp",
+            "--server",
+            "stand",
+            "--credential",
+            "deploy",
+            "--path",
+            "wwwroot",
+        ])
+        .assert()
+        .success();
+}
+
+/// `turnout watch` is a job of the app in the background: a change to the
+/// build is a deploy, a deploy that fails is a notification and a line in
+/// `ps` - and the watch goes on - and `stop` ends it.
+#[test]
+fn a_watch_deploys_each_change_and_says_how_it_went() {
+    let (dir, project) = workspace();
+    std::fs::create_dir_all(project.join("dist")).unwrap();
+    std::fs::write(project.join("dist").join("index.html"), "v1").unwrap();
+    a_target_nothing_answers(dir.path(), &project, None);
+
+    turnout(dir.path())
+        .args(["watch", "web"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("myapp watch runs in the background"))
+        .stdout(predicate::str::contains("a change to dist deploys it to web"))
+        .stdout(predicate::str::contains("turnout stop myapp watch"));
+    let _stops = StopsJob::new(dir.path(), "myapp", "watch");
+    turnout(dir.path())
+        .args(["watch", "web"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("myapp watch is already running"));
+    let jobs: serde_json::Value = serde_json::from_str(&stdout_of(dir.path(), &["ps", "--json"])).unwrap();
+    let watch = jobs
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["job"] == "myapp watch")
+        .expect("the watch is a job");
+    assert_eq!(watch["state"], "running", "{watch}");
+    assert_eq!(watch["background"], true, "{watch}");
+    assert!(toasts(dir.path()).is_empty(), "nothing changed, nothing deployed");
+
+    std::fs::write(project.join("dist").join("index.html"), "v2 - the next build").unwrap();
+    let sent = toasts_eventually(dir.path(), 1);
+    assert_eq!(sent[0]["title"], "myapp was not deployed to stand", "{sent:#?}");
+    assert!(sent[0]["note"].as_str().unwrap().contains("turnout logs myapp watch"), "{sent:#?}");
+    assert_eq!(sent[0]["failure"], true);
+    eventually(10, "the failure in ps", || {
+        let ps = stdout_of(dir.path(), &["ps"]);
+        if ps.contains("! the last deploy failed:") { Ok(()) } else { Err(ps) }
+    });
+    let logs = stdout_of(dir.path(), &["logs", "myapp", "watch"]);
+    assert!(logs.contains("deploying to web"), "{logs}");
+
+    // The watch goes on: the next change is another deploy.
+    std::fs::write(project.join("dist").join("app.js"), "console.log(3)").unwrap();
+    toasts_eventually(dir.path(), 2);
+
+    turnout(dir.path())
+        .args(["stop", "myapp", "watch"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Stopped myapp watch"));
+    assert!(!stdout_of(dir.path(), &["ps"]).contains("myapp watch"), "the record goes with it");
+}
+
+/// With `--build` the watch builds on every changed source, and a build
+/// that fails is not deployed: it is a notification with the reason.
+#[test]
+fn a_watch_with_build_deploys_only_a_green_build() {
+    let (dir, project) = workspace();
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src").join("main.ts"), "v1").unwrap();
+    a_target_nothing_answers(dir.path(), &project, Some("echo the build broke && exit 3"));
+    turnout(dir.path())
+        .args(["watch", "web", "--build"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("a change to the sources builds it"));
+    let _stops = StopsJob::new(dir.path(), "myapp", "watch");
+
+    std::fs::write(project.join("src").join("main.ts"), "v2 - edited").unwrap();
+    let sent = toasts_eventually(dir.path(), 1);
+    assert_eq!(sent[0]["title"], "myapp was not deployed to stand", "{sent:#?}");
+    assert!(sent[0]["body"].as_str().unwrap().contains("build failed"), "{sent:#?}");
+}
+
+/// What a watch cannot do is refused before anything starts.
+#[test]
+fn a_watch_needs_a_build_to_watch() {
+    let (dir, project) = workspace();
+    a_target_nothing_answers(dir.path(), &project, None);
+    turnout(dir.path())
+        .args(["watch", "web", "--build"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("no build command for --build to run"));
+}

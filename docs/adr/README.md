@@ -40,3 +40,6 @@ Technical decisions that shape turnout, in the order they were made. Format: Con
 | [0034](0034-a-tunnel-is-a-job-on-turnouts-own-ssh.md) | A tunnel is a job on turnout's own SSH | accepted |
 | [0035](0035-an-apps-variables-are-kept-per-stand.md) | An app's variables are kept per stand, and reach it by one road | accepted |
 | [0036](0036-a-key-is-rotated-everywhere-old-one-last.md) | A key is rotated on every server at once, the old one removed last | accepted |
+| [0037](0037-a-deploy-sends-what-the-stand-lacks.md) | A deploy sends what the stand does not have, and nothing else | accepted |
+| [0038](0038-a-copy-tops-up-a-folder-and-removes-nothing.md) | A copy tops up a folder, removes nothing, and hands what it wrote to the folder's group | accepted |
+| [0039](0039-a-watch-looks-and-deploys-whole-builds.md) | A watch looks at the files, and deploys a change once it has settled | accepted |

@@ -284,6 +284,20 @@ pub enum Command {
         #[arg(short = 'C', long)]
         credential: Option<String>,
     },
+    /// Top up a folder on a server from a folder here: what is new or changed goes, nothing there is removed
+    Copy {
+        /// The folder here whose files go
+        from: PathBuf,
+        /// A server or a target, and the folder on it; relative to a target's deploy directory, or to where the login lands
+        #[arg(value_name = "SERVER:DIR")]
+        to: String,
+        /// Credential to sign in with (defaults to the target's or the server's)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Show what would be sent - and send nothing
+        #[arg(long)]
+        diff: bool,
+    },
     /// Set up deployment of an app to a server in one wizard
     #[command(name = "deploy-setup", alias = "setup-deploy")]
     DeploySetup {
@@ -312,7 +326,7 @@ pub enum Command {
         /// Back up the remote directory before touching it
         #[arg(short, long)]
         backup: bool,
-        /// Clear the remote directory before uploading
+        /// Leave the remote directory holding the build and nothing else: every file the build does not have is removed
         #[arg(short, long)]
         clear: bool,
         /// Upload file by file instead of packing the artifacts into one archive
@@ -329,6 +343,29 @@ pub enum Command {
         open: bool,
         #[command(flatten)]
         console: Console,
+    },
+    /// Deploy an app again whenever its build changes - in the background, until `turnout stop APP watch`
+    Watch {
+        /// Target name, or an app name to use its target on the bound server
+        target: Option<String>,
+        /// Server to use instead of the target's (without a target: instead of the app's binding)
+        #[arg(short, long)]
+        server: Option<String>,
+        /// Credential to use instead of the target's (the server's when there is no target)
+        #[arg(short = 'C', long)]
+        credential: Option<String>,
+        /// Named path to use instead of the target's (picked on a terminal when there is no target)
+        #[arg(short = 'p', long)]
+        path: Option<String>,
+        /// Watch the sources instead: build on every change, and deploy only a green build
+        #[arg(short, long)]
+        build: bool,
+        /// Stay in this terminal instead of the background; Ctrl+C ends the watch
+        #[arg(long)]
+        foreground: bool,
+        /// The log the background watch writes; marks the run as that watch
+        #[arg(long, hide = true)]
+        log: Option<PathBuf>,
     },
     /// Back up a target's deploy directory on the server; older backups beyond what the target keeps are removed
     #[command(args_conflicts_with_subcommands = true)]
