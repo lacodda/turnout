@@ -88,6 +88,9 @@ zip = { version = "9.6.0", default-features = false, features = ["deflate"] }
 [dev-dependencies]
 png = "0.18"
 assert_cmd = "2"
+# Connections torn the way a network tears them, between turnout and a real
+# server: a deploy's upload, the gateway's requests (the line's test bench).
+lacodda-tear = "0.1.1"
 axum = { version = "0.8", features = ["ws"] }
 directories = "6"
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "sink"] }

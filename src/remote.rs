@@ -702,23 +702,46 @@ const REMOVE_LINE: usize = 6_000;
 /// Delete files on the server, in as few commands as the line allows. A
 /// file that is not there is not an error.
 pub fn remove_paths(session: &Session, dialect: Dialect, paths: &[String]) -> Result<()> {
+    in_chunks(session, dialect, paths, |chunk| dialect.remove_files(chunk)).map(|_| ())
+}
+
+/// Delete the files of `paths` that will go; returns the ones that would
+/// not - held open, another account's - which stay where they are.
+pub fn remove_listing_the_rest(session: &Session, dialect: Dialect, paths: &[String]) -> Result<Vec<String>> {
+    let left = in_chunks(session, dialect, paths, |chunk| dialect.remove_files_listing_the_rest(chunk))?;
+    Ok(left.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_string).collect())
+}
+
+/// Remove the directories of `dirs` that are empty - children listed before
+/// their parents - and leave the rest as they are.
+pub fn remove_empty_dirs(session: &Session, dialect: Dialect, dirs: &[String]) -> Result<()> {
+    in_chunks(session, dialect, dirs, |chunk| dialect.remove_empty_dirs(chunk)).map(|_| ())
+}
+
+/// Run `command` over `paths` in order, as few times as the line allows;
+/// returns what the runs printed, one after another.
+fn in_chunks(session: &Session, dialect: Dialect, paths: &[String], command: impl Fn(&[&str]) -> String) -> Result<String> {
     let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
     check_quotable(dialect, &refs)?;
+    let mut said = String::new();
     let mut chunk: Vec<&str> = Vec::new();
+    // A path is spelled up to three times on Windows - `del`, `if exist`,
+    // `echo` - with about 40 characters of wrapping.
     let mut length = 0;
     for path in refs {
-        if !chunk.is_empty() && length + path.len() + 3 > REMOVE_LINE {
-            exec(session, &dialect.remove_files(&chunk))?;
+        let cost = path.len() * 3 + 40;
+        if !chunk.is_empty() && length + cost > REMOVE_LINE {
+            said.push_str(&exec(session, &command(&chunk))?);
             chunk.clear();
             length = 0;
         }
-        length += path.len() + 3;
+        length += cost;
         chunk.push(path);
     }
     if !chunk.is_empty() {
-        exec(session, &dialect.remove_files(&chunk))?;
+        said.push_str(&exec(session, &command(&chunk))?);
     }
-    Ok(())
+    Ok(said)
 }
 
 /// Whether the deploy directory is there yet - a first deploy creates it, and

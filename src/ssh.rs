@@ -280,7 +280,7 @@ impl Session {
     /// upload into the missing directory.
     pub fn mkdir(&self, remote: &str) -> Result<()> {
         let sftp = self.sftp()?;
-        self.runtime.block_on(mkdir(sftp, remote))
+        self.runtime.block_on(mkdir(sftp, remote)).map(|_| ())
     }
 
     /// [`Session::mkdir`] for `remote` and every parent it is missing, the
@@ -289,18 +289,34 @@ impl Session {
     /// The paths are split on both separators: a Windows server's are
     /// written with `\`. A drive (`C:`) and the root are never created.
     pub fn mkdir_all(&self, remote: &str) -> Result<()> {
+        self.mkdir_all_made(remote).map(|_| ())
+    }
+
+    /// [`Session::mkdir_all`], saying which directories it made - the ones
+    /// that were not there before - parents first.
+    pub fn mkdir_all_made(&self, remote: &str) -> Result<Vec<String>> {
         let sftp = self.sftp()?;
         let remote = remote.trim_end_matches(['/', '\\']);
         let parents = remote.match_indices(['/', '\\']).map(|(at, _)| &remote[..at]);
         self.runtime.block_on(async {
+            let mut made = Vec::new();
             for dir in parents.chain(std::iter::once(remote)) {
                 if dir.is_empty() || dir.ends_with(':') {
                     continue;
                 }
-                mkdir(sftp, dir).await?;
+                if mkdir(sftp, dir).await? {
+                    made.push(dir.to_string());
+                }
             }
-            Ok(())
+            Ok(made)
         })
+    }
+
+    /// Whether the connection has ended: torn by the network, closed by the
+    /// server. A session that has is no use for anything after - not even
+    /// for tidying up what it left half done.
+    pub fn is_closed(&self) -> bool {
+        self.handle.is_closed()
     }
 }
 
@@ -411,14 +427,15 @@ impl Forwarder {
 }
 
 /// Create one remote directory, tolerating only "already exists".
-async fn mkdir(sftp: &SftpSession, remote: &str) -> Result<()> {
+/// Create `remote`; `true` when this made it, `false` when it was there.
+async fn mkdir(sftp: &SftpSession, remote: &str) -> Result<bool> {
     if let Err(err) = sftp.create_dir(remote).await {
         match sftp.metadata(remote).await {
-            Ok(existing) if existing.is_dir() => {}
+            Ok(existing) if existing.is_dir() => return Ok(false),
             _ => return Err(err).with_context(|| format!("cannot create the directory {remote} on the server")),
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A credential resolved to what the wire can use: the key loaded, the
@@ -921,6 +938,34 @@ pub(crate) mod tests {
 
         pub(crate) fn session(&self) -> Session {
             Session::open("127.0.0.1", self.port, USER, AuthMaterial::Password(PASSWORD.into())).expect("password sign-in on loopback")
+        }
+    }
+
+    /// A stand reached through a proxy that tears the connection on cue -
+    /// partway up an upload, all at once, the network gone - the way a
+    /// network tears it: a reset on a real socket, not a mock.
+    pub(crate) struct Torn {
+        pub(crate) tear: lacodda_tear::Tear,
+        // Drives the proxy; dropped after it.
+        _runtime: tokio::runtime::Runtime,
+    }
+
+    impl Torn {
+        pub(crate) fn before(stand: &Stand) -> Self {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .expect("the proxy's runtime");
+            let tear = runtime
+                .block_on(lacodda_tear::Tear::start(std::net::SocketAddr::from(([127, 0, 0, 1], stand.port))))
+                .expect("a proxy before the stand");
+            Self { tear, _runtime: runtime }
+        }
+
+        /// A session through the proxy, or the reason there is none.
+        pub(crate) fn connect(&self) -> Result<Session> {
+            Session::open("127.0.0.1", self.tear.addr().port(), USER, AuthMaterial::Password(PASSWORD.into()))
         }
     }
 

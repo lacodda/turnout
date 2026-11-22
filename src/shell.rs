@@ -213,6 +213,50 @@ impl Dialect {
         }
     }
 
+    /// Delete every file of `paths` that will go, then print the ones still
+    /// there, one per line. Never fails: what could not go is the answer, as
+    /// [`Dialect::clear_dir_listing_the_rest`] answers for a whole directory.
+    pub fn remove_files_listing_the_rest(&self, paths: &[&str]) -> String {
+        match self {
+            Dialect::Posix => {
+                let quoted: Vec<String> = paths.iter().map(|path| self.quote(path)).collect();
+                let script = "for p in \"$@\"; do rm -f -- \"$p\" 2>/dev/null; if [ -e \"$p\" ]; then echo \"$p\"; fi; done; exit 0";
+                format!("sh -c {} turnout-rm {}", self.quote(script), quoted.join(" "))
+            }
+            Dialect::Windows => {
+                let removals: Vec<String> = paths
+                    .iter()
+                    .map(|path| {
+                        let quoted = self.quote(&path.replace('/', "\\"));
+                        format!("del /f /q {quoted} >nul 2>&1 & (if exist {quoted} echo {})", path.replace('/', "\\"))
+                    })
+                    .collect();
+                format!("({} & (call ))", removals.join(" & "))
+            }
+        }
+    }
+
+    /// Remove each directory of `dirs` that is empty, in the order given,
+    /// saying nothing about one that is not empty or not there.
+    ///
+    /// `rmdir` and `rd` without `/s` refuse a directory with anything in it,
+    /// which is the whole safety of this: a directory still holding a file is
+    /// never touched. The caller lists children before their parents, so a
+    /// parent emptied by its child's removal goes too.
+    pub fn remove_empty_dirs(&self, dirs: &[&str]) -> String {
+        match self {
+            Dialect::Posix => {
+                let quoted: Vec<String> = dirs.iter().map(|dir| self.quote(dir)).collect();
+                let script = "for d in \"$@\"; do rmdir -- \"$d\" 2>/dev/null; done; exit 0";
+                format!("sh -c {} turnout-rmdir {}", self.quote(script), quoted.join(" "))
+            }
+            Dialect::Windows => {
+                let removals: Vec<String> = dirs.iter().map(|dir| format!("rd {} >nul 2>&1", self.quote(&dir.replace('/', "\\")))).collect();
+                format!("({} & (call ))", removals.join(" & "))
+            }
+        }
+    }
+
     /// Unpack a gzipped tar into a directory.
     ///
     /// Both arms call `tar`. Windows has shipped bsdtar as `tar.exe` since

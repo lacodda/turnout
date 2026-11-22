@@ -32,6 +32,40 @@ pub struct Plan {
     pub newest: Option<SystemTime>,
 }
 
+impl Plan {
+    /// The part of the plan whose files `keep` names, with the directories
+    /// they sit in - parents first, as a whole plan lists them.
+    pub fn only(&self, keep: &std::collections::BTreeSet<&str>) -> Plan {
+        let entries: Vec<Entry> = self
+            .entries
+            .iter()
+            .filter(|entry| keep.contains(entry.relative.as_str()))
+            .map(|entry| Entry {
+                path: entry.path.clone(),
+                relative: entry.relative.clone(),
+                size: entry.size,
+            })
+            .collect();
+        let mut dirs = std::collections::BTreeSet::new();
+        for entry in &entries {
+            let mut relative = entry.relative.as_str();
+            while let Some((parent, _)) = relative.rsplit_once('/') {
+                dirs.insert(parent.to_string());
+                relative = parent;
+            }
+        }
+        let mut dirs: Vec<String> = dirs.into_iter().collect();
+        dirs.sort_by_key(|dir| dir.matches('/').count());
+        Plan {
+            dirs,
+            files: entries.len() as u64,
+            bytes: entries.iter().map(|entry| entry.size).sum(),
+            newest: self.newest,
+            entries,
+        }
+    }
+}
+
 /// One file of the artifact.
 pub struct Entry {
     pub path: PathBuf,
@@ -203,11 +237,8 @@ const NOT_SOURCES: [&str; 5] = [".git", "node_modules", "target", ".turbo", ".ca
 /// outputs. The artifact directory and `skip` (the dotenv file turnout itself
 /// writes on every switch) never count.
 pub fn stale(project: &Path, dist: &Path, built: SystemTime, skip: &[&Path]) -> Option<Stale> {
-    let sources = git_sources(project).unwrap_or_else(|| walked_sources(project));
-    let dist = dist.strip_prefix(project).unwrap_or(dist);
-    let newest = sources
+    let newest = sources(project, dist, skip)
         .into_iter()
-        .filter(|relative| !relative.starts_with(dist) && !skip.iter().any(|skip| relative == skip))
         .filter_map(|relative| {
             let modified = std::fs::metadata(project.join(&relative)).ok()?.modified().ok()?;
             Some((modified, relative))
@@ -218,6 +249,20 @@ pub fn stale(project: &Path, dist: &Path, built: SystemTime, skip: &[&Path]) -> 
         source: newest.1.to_string_lossy().replace('\\', "/"),
         after,
     })
+}
+
+/// What `project` is built from, relative to it: what git tracks or would
+/// track - so an ignored `.env.local` or a cache a tool writes is not taken
+/// for an edit - else the project walked without the usual outputs. Never
+/// the artifact directory `dist`, nor `skip` (the dotenv file turnout writes
+/// on every switch).
+pub fn sources(project: &Path, dist: &Path, skip: &[&Path]) -> Vec<PathBuf> {
+    let found = git_sources(project).unwrap_or_else(|| walked_sources(project));
+    let dist = dist.strip_prefix(project).unwrap_or(dist);
+    found
+        .into_iter()
+        .filter(|relative| !relative.starts_with(dist) && !skip.iter().any(|skip| relative == skip))
+        .collect()
 }
 
 /// The files git tracks or would track in `project`, relative to it; `None`
@@ -382,6 +427,27 @@ mod tests {
         let first = artifact.archive().unwrap().as_ptr();
         let second = artifact.archive().unwrap().as_ptr();
         assert_eq!(first, second, "the second target must not pack again");
+    }
+
+    /// Part of a plan keeps the files it names and every directory they sit
+    /// in, parents first - and nothing else.
+    #[test]
+    fn part_of_a_plan_brings_its_directories() {
+        let root = tempfile::tempdir().expect("temp dir");
+        for path in ["index.html", "assets/img/logo.svg", "assets/app.js", "docs/a.html"] {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "12345").unwrap();
+        }
+        let plan = plan_upload(root.path()).unwrap();
+        let part = plan.only(&["assets/img/logo.svg", "index.html"].into_iter().collect());
+        assert_eq!(part.files, 2);
+        assert_eq!(part.bytes, 10);
+        assert_eq!(part.dirs, vec!["assets", "assets/img"]);
+        let mut relative: Vec<_> = part.entries.iter().map(|e| e.relative.as_str()).collect();
+        relative.sort_unstable();
+        assert_eq!(relative, vec!["assets/img/logo.svg", "index.html"]);
+        assert!(plan.only(&Default::default()).entries.is_empty());
     }
 
     #[test]

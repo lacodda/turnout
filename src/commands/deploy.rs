@@ -88,7 +88,7 @@ pub fn run(names: Vec<String>, overrides: remote::Overrides, flags: Flags) -> Re
         }
     }
 
-    let artifacts = prepare(&targets, flags.no_build, console)?;
+    let artifacts = prepare(&targets, flags.no_build, true, console)?;
     if flags.diff {
         return compare_all(&targets, &artifacts, flags.clear, flags.json);
     }
@@ -160,8 +160,10 @@ fn resolve_all(names: Vec<String>, overrides: remote::Overrides) -> Result<Vec<R
 /// Build each app once, and walk what it built.
 ///
 /// Every build runs before any server is touched: a second app that does not
-/// build should stop the deploy before the first one is half out.
-fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<Vec<Artifact>> {
+/// build should stop the deploy before the first one is half out. `warn_stale`
+/// says so when a build that was not made here is older than its sources - a
+/// watch deploying what another build wrote has no use for that.
+pub(crate) fn prepare(targets: &[Resolved], no_build: bool, warn_stale: bool, console: job::Mode) -> Result<Vec<Artifact>> {
     let mut artifacts: Vec<Artifact> = Vec::new();
     for target in targets {
         let app = &target.app;
@@ -208,7 +210,7 @@ fn prepare(targets: &[Resolved], no_build: bool, console: job::Mode) -> Result<V
         if plan.files == 0 {
             bail!("artifact directory {} is empty - nothing to upload", local.display());
         }
-        if build.is_none() {
+        if build.is_none() && warn_stale {
             warn_if_stale(app, &project, &local, &plan);
         }
         let mut artifact = Artifact::new(&app.name, plan);
@@ -513,28 +515,7 @@ fn in_background(targets: &[Resolved], flags: &[&str], preferred: bool) -> Resul
     }
     let mut args = vec!["deploy".to_string()];
     for target in targets {
-        match &target.target {
-            Some(name) => args.push(name.clone()),
-            None => {
-                // `deploy NAME` reads NAME as a target first, so an app that shares
-                // its name with some target cannot be passed by name at all.
-                if store::load_targets()?.iter().any(|t| t.name == app.name) {
-                    bail!(
-                        "a target is also named '{0}', so the background deploy cannot name the app - deploy a target by name, or without --detach",
-                        app.name
-                    );
-                }
-                args.extend([
-                    app.name.clone(),
-                    "--server".into(),
-                    target.server.name.clone(),
-                    "--credential".into(),
-                    target.credential.name.clone(),
-                    "--path".into(),
-                    target.path.name.clone(),
-                ]);
-            }
-        }
+        args.extend(route_words(target, "deploy")?);
     }
     args.extend(flags.iter().map(|flag| flag.to_string()));
     let project = crate::utils::project_dir(Path::new(&app.path))?;
@@ -552,6 +533,34 @@ fn in_background(targets: &[Resolved], flags: &[&str], preferred: bool) -> Resul
         link: Some(first.address.clone()),
         preferred,
     })
+}
+
+/// How a background run of `command` names this route, so that it resolves
+/// to exactly this tuple and not to whatever the binding says by the time it
+/// runs: a named target as its name, anything else as the app with every
+/// field spelled out.
+pub(crate) fn route_words(target: &Resolved, command: &str) -> Result<Vec<String>> {
+    let app = &target.app;
+    if let Some(name) = &target.target {
+        return Ok(vec![name.clone()]);
+    }
+    // `deploy NAME` reads NAME as a target first, so an app that shares
+    // its name with some target cannot be passed by name at all.
+    if store::load_targets()?.iter().any(|t| t.name == app.name) {
+        bail!(
+            "a target is also named '{0}', so the background {command} cannot name the app - name a target instead, or stay in the foreground",
+            app.name
+        );
+    }
+    Ok(vec![
+        app.name.clone(),
+        "--server".into(),
+        target.server.name.clone(),
+        "--credential".into(),
+        target.credential.name.clone(),
+        "--path".into(),
+        target.path.name.clone(),
+    ])
 }
 
 /// The deploy switches, spelled the way the CLI reads them.
@@ -638,22 +647,32 @@ fn deploy_over_ssh(target: &Resolved, shipment: &Shipment, options: &Options, re
 
     let files = match write_build(&session, dialect, shipment, path, options, &mut report.reached) {
         Ok(files) => files,
-        Err(err) if report.reached == Reached::BeforeUpload => {
-            // The stand is as it was. A backup taken only to roll back to
-            // guards nothing now, and left here it would be one more archive
-            // for every deploy that fails this early.
-            if kept == Some(Kept::ForRollback)
-                && let Some(name) = &backup
-            {
-                let _ = remote::remove_backup(&session, dialect, &path.dir, name);
-            }
-            return Err(err);
-        }
-        // Writing had begun: the stand holds part of this build, and that
-        // is a failed deploy of the same kind as a restart that did not
-        // finish - rolled back when there is a check and a backup, recorded
-        // as partial when there is not.
         Err(err) => {
+            // A write the network tore leaves a session that can do nothing
+            // more - not take away what it left, not roll back - while the
+            // stand is often there again at once. Up to v1.2 everything
+            // below ran on the dead one and failed: the half archive stayed
+            // in the served directory, the backup for a rollback stayed, and
+            // a checked deploy was not rolled back.
+            refresh(&mut session, connect);
+            // What arrived of the archive is no use to anyone, and a web
+            // server would hand it out. Best-effort: there may be none.
+            let _ = remote::exec(&session, &dialect.remove_file(&remote::join_remote(&path.dir, UPLOAD_ARCHIVE)));
+            if report.reached == Reached::BeforeUpload {
+                // The stand is as it was. A backup taken only to roll back to
+                // guards nothing now, and left here it would be one more archive
+                // for every deploy that fails this early.
+                if kept == Some(Kept::ForRollback)
+                    && let Some(name) = &backup
+                {
+                    let _ = remote::remove_backup(&session, dialect, &path.dir, name);
+                }
+                return Err(err);
+            }
+            // Writing had begun: the stand holds part of this build, and that
+            // is a failed deploy of the same kind as a restart that did not
+            // finish - rolled back when there is a check and a backup, recorded
+            // as partial when there is not.
             return match (&target.health, backup) {
                 (Some(_), Some(name)) => fail_and_roll_back(format!("{err:#}"), &mut session, dialect, target, &name, connect, report),
                 _ => Err(err),
@@ -717,8 +736,27 @@ fn deploy_over_ssh(target: &Resolved, shipment: &Shipment, options: &Options, re
     }
 }
 
-/// Clear the deploy directory when asked, send the build, and take away the
-/// files the newer builds added: every write a deploy makes to the stand.
+/// The archive a deploy sends lands here for a moment, inside the deploy
+/// directory - a dotfile, so a web server serving it does not hand it out.
+const UPLOAD_ARCHIVE: &str = ".turnout-upload.tar.gz";
+
+/// Put a new session in the place of one the network tore, when a new one
+/// opens; otherwise leave it, and let what comes next say why it fails.
+///
+/// Asked of the session itself as well as of its state: a reset can reach
+/// the transport a moment after the error it caused reached the caller.
+fn refresh(session: &mut Session, connect: &dyn Fn() -> Result<Session>) {
+    if (session.is_closed() || session.exec("echo ok").is_err())
+        && let Ok(fresh) = connect()
+    {
+        *session = fresh;
+    }
+}
+
+/// Clear the deploy directory when asked, send the build - the files the
+/// stand does not have yet, when it can say which - and take away the files
+/// the newer builds added: every write a deploy makes to the stand. Returns
+/// how many files the build has, all of which the stand now holds.
 ///
 /// `reached` moves to [`Reached::Writing`] *before* the first of them, not
 /// after the last. Up to v0.26 it moved once the upload had returned, so an
@@ -728,26 +766,44 @@ fn deploy_over_ssh(target: &Resolved, shipment: &Shipment, options: &Options, re
 /// deploy over while its files were on the stand.
 fn write_build(session: &Session, dialect: Dialect, shipment: &Shipment, path: &crate::model::Path, options: &Options, reached: &mut Reached) -> Result<u64> {
     let artifact = shipment.artifact;
-    if options.clear {
-        let step = Step::start(format!("Clearing {} ...", path.dir));
-        // Emptying the directory is itself a change to the stand: failing in
-        // it or after it leaves the stand serving less than it did.
-        *reached = Reached::Writing;
-        let left = remote::clear_dir(session, dialect, &path.dir)?;
-        step.done(format!("Cleared {}", path.dir));
-        // What would not go stays beside the build, as a restore leaves it:
-        // stopping here would leave the stand serving half a directory.
-        if !left.is_empty() {
-            progress::warn(&remote::not_removed_note(&path.dir, &left, "the build's"));
+    let load = match compare_with_stand(session, dialect, &path.dir, &artifact.plan, options.clear) {
+        Some(diff) => {
+            if options.clear {
+                // The env file is not the build's, and is written again below:
+                // taken away and made anew, it would lose the mode its owner
+                // gave it.
+                let env = shipment.env.as_ref().and_then(|env| beneath(&path.dir, &env.file));
+                let extra: Vec<&str> = diff.extra.iter().map(String::as_str).filter(|file| Some(*file) != env.as_deref()).collect();
+                remove_extra(session, dialect, &path.dir, &artifact.plan, &extra, reached)?;
+            }
+            let send: std::collections::BTreeSet<&str> = diff.added.iter().chain(&diff.updated).map(String::as_str).collect();
+            Load::Part(artifact.plan.only(&send))
         }
-    }
-
-    let files = match archive_upload(session, dialect, &path.dir, artifact, options.no_archive, reached)? {
-        Some(files) => files,
-        // Either the caller opted out, the tree is too small to be worth
-        // packing, or the server has no tar - send the files one by one.
-        None => upload(session, &path.dir, &artifact.plan, reached)?,
+        None => {
+            if options.clear {
+                let step = Step::start(format!("Clearing {} ...", path.dir));
+                // Emptying the directory is itself a change to the stand: failing in
+                // it or after it leaves the stand serving less than it did.
+                *reached = Reached::Writing;
+                let left = remote::clear_dir(session, dialect, &path.dir)?;
+                step.done(format!("Cleared {}", path.dir));
+                // What would not go stays beside the build, as a restore leaves it:
+                // stopping here would leave the stand serving half a directory.
+                if !left.is_empty() {
+                    progress::warn(&remote::not_removed_note(&path.dir, &left, "the build's"));
+                }
+            }
+            Load::Whole(artifact)
+        }
     };
+
+    // Nothing to send is a stand that has the build already. Otherwise, when
+    // the archive route does not apply - the caller opted out, too few files
+    // to be worth packing, no tar on the server - the files go one by one.
+    if load.plan().files > 0 && archive_upload(session, dialect, &path.dir, &load, options.no_archive, reached)?.is_none() {
+        upload(session, &path.dir, load.plan(), reached)?;
+    }
+    let files = artifact.plan.files;
 
     if !shipment.remove.is_empty() {
         let count = shipment.remove.len();
@@ -758,9 +814,126 @@ fn write_build(session: &Session, dialect: Dialect, shipment: &Shipment, path: &
         step.done(format!("Removed {count} file{plural} the newer builds added"));
     }
     if let Some(env) = &shipment.env {
+        *reached = Reached::Writing;
         write_env(session, dialect, env)?;
     }
     Ok(files)
+}
+
+/// What goes over the wire: the whole build, or the part of it the stand
+/// does not have yet.
+enum Load<'a> {
+    Whole(&'a Artifact),
+    Part(Plan),
+}
+
+impl Load<'_> {
+    fn plan(&self) -> &Plan {
+        match self {
+            Load::Whole(artifact) => &artifact.plan,
+            Load::Part(plan) => plan,
+        }
+    }
+
+    /// The archive of what goes: the build's own, packed once for every
+    /// target and kept for a rollback, or one of just the part.
+    fn archive(&self) -> Result<std::borrow::Cow<'_, [u8]>> {
+        match self {
+            Load::Whole(artifact) => artifact.archive().map(std::borrow::Cow::Borrowed),
+            Load::Part(plan) => artifact::pack(plan).map(std::borrow::Cow::Owned),
+        }
+    }
+}
+
+/// What the stand has of the build, when it can say: the files to send are
+/// the new and the changed ones, and nothing else (ADR 0037).
+///
+/// `None` sends the whole build, as every deploy did up to v1.2: on a first
+/// deploy, which has nothing to compare with; when the server cannot list
+/// the directory; and when it has nothing to hash with - a same-size edit
+/// would then read as unchanged, and a deploy must never leave a changed
+/// file behind because it looked the same from outside.
+fn compare_with_stand(session: &Session, dialect: Dialect, dir: &str, plan: &Plan, clear: bool) -> Option<crate::manifest::Diff> {
+    let step = Step::start(format!("Comparing {} files with {dir} ...", plan.files));
+    let diff = match crate::manifest::diff(session, dialect, dir, plan, clear) {
+        Ok(diff) => diff,
+        Err(err) => {
+            step.clear();
+            progress::warn(&format!("could not compare the build with {dir} ({err:#}) - sending all of it"));
+            return None;
+        }
+    };
+    if diff.first {
+        step.clear();
+        return None;
+    }
+    if diff.compared == crate::manifest::Compared::Size {
+        step.clear();
+        progress::warn("the server has no sha256sum or shasum to tell changed files from unchanged ones - sending the whole build");
+        return None;
+    }
+    let send = diff.added.len() + diff.updated.len();
+    step.done(match send {
+        0 => format!("The stand has every one of the {} files already", plan.files),
+        _ => format!(
+            "{send} of {} files to send: {} changed, {} new",
+            plan.files,
+            diff.updated.len(),
+            diff.added.len()
+        ),
+    });
+    Some(diff)
+}
+
+/// `file` relative to `dir`, written with `/` the way a listing writes it -
+/// when it is under `dir` at all.
+fn beneath(dir: &str, file: &str) -> Option<String> {
+    let dir = dir.replace('\\', "/");
+    let file = file.replace('\\', "/");
+    file.strip_prefix(&format!("{}/", dir.trim_end_matches('/'))).map(str::to_string)
+}
+
+/// `--clear` with a comparison: remove each file on the stand the build does
+/// not have, by its name, and the directories that leaves empty - before the
+/// build goes, so a file of the build can take the place of a directory.
+///
+/// The same end as emptying the directory and sending everything, without
+/// sending everything: the stand holds the build and nothing else.
+fn remove_extra(session: &Session, dialect: Dialect, dir: &str, plan: &Plan, extra: &[&str], reached: &mut Reached) -> Result<()> {
+    if extra.is_empty() {
+        return Ok(());
+    }
+    let count = extra.len();
+    let plural = if count == 1 { "" } else { "s" };
+    let step = Step::start(format!("Removing {count} file{plural} the build does not have ..."));
+    *reached = Reached::Writing;
+    let paths: Vec<String> = extra.iter().map(|file| remote_path(dir, file)).collect();
+    // What would not go stays beside the build, as when the directory is
+    // emptied: stopping here would leave the stand serving half of it.
+    let left = remote::remove_listing_the_rest(session, dialect, &paths)?;
+    // Every directory a removed file sat in, deepest first, unless the
+    // build has it: those stay whatever is in them.
+    let mut emptied = std::collections::BTreeSet::new();
+    for file in extra {
+        let mut relative = *file;
+        while let Some((parent, _)) = relative.rsplit_once('/') {
+            if !plan.dirs.iter().any(|dir| dir == parent) {
+                emptied.insert(parent);
+            }
+            relative = parent;
+        }
+    }
+    let mut emptied: Vec<&str> = emptied.into_iter().collect();
+    emptied.sort_by_key(|dir| std::cmp::Reverse(dir.matches('/').count()));
+    let dirs: Vec<String> = emptied.iter().map(|relative| remote_path(dir, relative)).collect();
+    remote::remove_empty_dirs(session, dialect, &dirs)?;
+    let removed = count - left.len();
+    let plural = if removed == 1 { "" } else { "s" };
+    step.done(format!("Removed {removed} file{plural} the build does not have"));
+    if !left.is_empty() {
+        progress::warn(&remote::not_removed_note(dir, &left, "the build's"));
+    }
+    Ok(())
 }
 
 /// Write the stand's env file: after the build is in place - `--clear` would
@@ -1001,8 +1174,8 @@ fn compare_all(targets: &[Resolved], artifacts: &[Artifact], clear: bool, json: 
 /// when the upload or the unpacking fails - a stray multi-megabyte tarball
 /// next to the site is its own kind of bug. Up to v0.26 an upload that failed
 /// part-way left it there.
-fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifact: &Artifact, no_archive: bool, reached: &mut Reached) -> Result<Option<u64>> {
-    let plan = &artifact.plan;
+fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, load: &Load, no_archive: bool, reached: &mut Reached) -> Result<Option<u64>> {
+    let plan = load.plan();
     if !artifact::should_archive(plan.files, no_archive) {
         return Ok(None);
     }
@@ -1017,7 +1190,8 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifa
         progress::warn(&format!("{} - uploading file by file", no_tar_note(dialect)));
         return Ok(None);
     }
-    let archive = artifact.archive()?;
+    let archive = load.archive()?;
+    let archive = archive.as_ref();
 
     let remote_root = remote_root.trim_end_matches(['/', '\\']);
     // Inside the deploy directory, which is the one place we know is writable:
@@ -1027,7 +1201,7 @@ fn archive_upload(session: &Session, dialect: Dialect, remote_root: &str, artifa
     //
     // A dotfile, so a web server serving this directory does not hand it out,
     // and it is removed as soon as it is unpacked.
-    let remote_archive = remote::join_remote(remote_root, ".turnout-upload.tar.gz");
+    let remote_archive = remote::join_remote(remote_root, UPLOAD_ARCHIVE);
 
     // The archive goes inside the deploy directory, so it has to exist first -
     // on a first deploy it does not.
@@ -1110,7 +1284,7 @@ fn no_tar_note(dialect: Dialect) -> String {
 ///
 /// Up to v0.26 only a trailing `/` was trimmed and every join used `/`, so a
 /// Windows deploy directory written `C:\site\` became `C:\site\/assets`.
-fn remote_path(root: &str, relative: &str) -> String {
+pub(crate) fn remote_path(root: &str, relative: &str) -> String {
     let root = root.trim_end_matches(['/', '\\']);
     if root.contains('\\') && !root.contains('/') {
         format!("{root}\\{}", relative.replace('/', "\\"))
@@ -1309,6 +1483,16 @@ mod tests {
     }
 
     fn a_build(files: &[(&str, &str)]) -> (tempfile::TempDir, Artifact) {
+        a_build_of(files, "x")
+    }
+
+    /// A build whose every chunk differs from [`a_build`]'s: against a stand
+    /// that has one, it is enough changed files to go as an archive.
+    fn a_rebuild(files: &[(&str, &str)]) -> (tempfile::TempDir, Artifact) {
+        a_build_of(files, "y")
+    }
+
+    fn a_build_of(files: &[(&str, &str)], chunk: &str) -> (tempfile::TempDir, Artifact) {
         let root = tempfile::tempdir().unwrap();
         for (path, content) in files {
             let path = root.path().join(path);
@@ -1317,7 +1501,7 @@ mod tests {
         }
         // Enough files to take the archive route, as a real dist does.
         for index in 0..artifact::ARCHIVE_THRESHOLD {
-            std::fs::write(root.path().join(format!("chunk-{index}.js")), "x").unwrap();
+            std::fs::write(root.path().join(format!("chunk-{index}.js")), chunk).unwrap();
         }
         let plan = artifact::plan_upload(root.path()).unwrap();
         let artifact = Artifact::new("web", plan);
@@ -1456,7 +1640,7 @@ mod tests {
             deploy_over_ssh(&checked, &Shipment::of(&first), &options, &mut Report::default(), &connect).expect("a healthy first deploy");
 
             std::fs::create_dir_all(site.join("zz-blocked").join("inside")).unwrap();
-            let (_v2, second) = a_build(&[("health.txt", "ok"), ("index.html", "v2"), ("zz-blocked", "a file")]);
+            let (_v2, second) = a_rebuild(&[("health.txt", "ok"), ("index.html", "v2"), ("zz-blocked", "a file")]);
             let mut report = Report::default();
             let err = format!(
                 "{:#}",
@@ -1476,6 +1660,307 @@ mod tests {
             assert!(report.reached == Reached::Writing, "no_archive={no_archive}");
             assert!(report.reached.note(&unchecked.path).is_some_and(|note| note.contains("part of this build")));
         }
+    }
+
+    /// Bytes gzip cannot shorten: an archive of them is as long on the wire
+    /// as the files, so a cut lands where the test meant it to.
+    fn noise(len: usize, seed: u64) -> Vec<u8> {
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (0..len)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (state >> 33) as u8
+            })
+            .collect()
+    }
+
+    /// [`a_rebuild`] and a megabyte of noise beside it, in sixteen files.
+    fn a_heavy_build(files: &[(&str, &str)]) -> (tempfile::TempDir, Artifact) {
+        let (root, _) = a_rebuild(files);
+        for index in 0..16 {
+            std::fs::write(root.path().join(format!("blob-{index}.bin")), noise(64 * 1024, index)).unwrap();
+        }
+        let plan = artifact::plan_upload(root.path()).unwrap();
+        (root, Artifact::new("web", plan))
+    }
+
+    fn a_check() -> HealthCheck {
+        let probe = if cfg!(windows) { "findstr ok health.txt" } else { "grep -q ok health.txt" };
+        HealthCheck {
+            probe: Probe::Command(probe.into()),
+            wait: Some(0),
+        }
+    }
+
+    /// An archive torn on its way up by a real reset: the stand is as it
+    /// was, and nothing of the deploy stays behind - not what arrived of the
+    /// archive, in a directory a web server serves, and not the backup taken
+    /// to roll back to. Up to v1.2 both were tidied over the torn session,
+    /// which could not, and both stayed.
+    #[test]
+    fn an_archive_torn_on_its_way_up_leaves_nothing_behind() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let torn = crate::ssh::tests::Torn::before(&stand);
+        let connect = || torn.connect();
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let target = a_target(&site.display().to_string(), None, Some(a_check()), "http://127.0.0.1:1");
+        let (_v1, first) = a_build(&[("health.txt", "ok"), ("index.html", "v1")]);
+        deploy_over_ssh(&target, &Shipment::of(&first), &Options::default(), &mut Report::default(), &connect).unwrap();
+
+        let (_v2, heavy) = a_heavy_build(&[("health.txt", "ok"), ("index.html", "v2")]);
+        // Past the sign-in and the comparison, partway into the archive.
+        torn.tear.cut(lacodda_tear::Cut::Up(400_000));
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&heavy), &Options::default(), &mut report, &connect).unwrap_err()
+        );
+        assert_eq!(torn.tear.torn(), 1, "the upload was not torn: {err}");
+        assert!(err.contains("cannot upload the archive"), "{err}");
+        assert!(report.reached == Reached::BeforeUpload, "{err}");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+        assert!(!site.join(UPLOAD_ARCHIVE).exists(), "what arrived of the archive is gone");
+        assert!(backups(&site).is_empty(), "the backup for a rollback is gone: {:?}", backups(&site));
+    }
+
+    /// Files torn partway up, file by file, into a checked stand: what came
+    /// of the build is on the stand, and the rollback puts the stand back
+    /// through a connection of its own.
+    #[test]
+    fn files_torn_partway_are_rolled_back_through_a_new_connection() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let torn = crate::ssh::tests::Torn::before(&stand);
+        let connect = || torn.connect();
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let target = a_target(&site.display().to_string(), None, Some(a_check()), "http://127.0.0.1:1");
+        let options = Options {
+            no_archive: true,
+            ..Options::default()
+        };
+        let (_v1, first) = a_build(&[("health.txt", "ok"), ("index.html", "v1")]);
+        deploy_over_ssh(&target, &Shipment::of(&first), &options, &mut Report::default(), &connect).unwrap();
+
+        let (_v2, heavy) = a_heavy_build(&[("health.txt", "ok"), ("index.html", "v2")]);
+        torn.tear.cut(lacodda_tear::Cut::Up(400_000));
+        let mut report = Report::default();
+        let err = format!(
+            "{:#}",
+            deploy_over_ssh(&target, &Shipment::of(&heavy), &options, &mut report, &connect).unwrap_err()
+        );
+        assert_eq!(torn.tear.torn(), 1, "the upload was not torn: {err}");
+        assert!(report.reached == Reached::RolledBack, "{err}");
+        assert!(err.contains("rolled back to") && err.contains("the stand works again"), "{err}");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v1");
+        assert!(!site.join("blob-0.bin").exists(), "nothing of the torn deploy stays");
+    }
+
+    /// The restart's connection torn while it runs: the command runs on, on
+    /// the server, and the deploy follows it to its end over a new one.
+    #[cfg(unix)]
+    #[test]
+    fn a_restart_outlives_its_connection_torn() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let torn = crate::ssh::tests::Torn::before(&stand);
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let restart = "touch started && sleep 1 && echo restarted > restarted.txt && echo done";
+        let target = a_target(&site.display().to_string(), Some(restart), None, "http://127.0.0.1:1");
+        let (_build, build) = a_build(&[("index.html", "v1")]);
+        std::thread::scope(|scope| {
+            let deploying = scope.spawn(|| {
+                let connect = || torn.connect();
+                let mut report = Report::default();
+                deploy_over_ssh(&target, &Shipment::of(&build), &Options::default(), &mut report, &connect).map(|_| report)
+            });
+            let waited = Instant::now();
+            while !site.join("started").exists() {
+                assert!(waited.elapsed() < Duration::from_secs(20), "the restart never started");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            torn.tear.cut(lacodda_tear::Cut::Now);
+            let report = deploying.join().unwrap().expect("the restart is followed over a new connection");
+            let restart = report.restart.expect("the restart is kept");
+            assert!(restart.ok && restart.output.contains("done"), "{restart:?}");
+        });
+        assert!(torn.tear.torn() >= 1, "the connection was not torn");
+        assert!(site.join("restarted.txt").is_file());
+    }
+
+    /// When a file was last written, to tell a file a deploy left alone from
+    /// one it wrote again with the same bytes.
+    fn written(path: &Path) -> SystemTime {
+        std::fs::metadata(path).unwrap().modified().unwrap()
+    }
+
+    fn age(path: &Path) {
+        let long_ago = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+        std::fs::File::options().write(true).open(path).unwrap().set_modified(long_ago).unwrap();
+    }
+
+    /// The second deploy sends only what the stand does not have - the file
+    /// that changed and the one that is new - by either route, and leaves
+    /// every other file as it was: not written again, not even with the
+    /// same bytes.
+    #[test]
+    fn a_deploy_sends_only_what_changed() {
+        for no_archive in [false, true] {
+            let stand = crate::ssh::tests::Stand::spawn_shell();
+            let connect = || Ok(stand.session());
+            let server = tempfile::tempdir().unwrap();
+            let site = server.path().join("site");
+            let target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+            let options = Options {
+                no_archive,
+                ..Options::default()
+            };
+            let (_v1, first) = a_build(&[("index.html", "v1"), ("assets/app.js", "one")]);
+            deploy_over_ssh(&target, &Shipment::of(&first), &options, &mut Report::default(), &connect).unwrap();
+            age(&site.join("chunk-0.js"));
+            let before = written(&site.join("chunk-0.js"));
+
+            let (_v2, second) = a_build(&[("index.html", "v2"), ("assets/app.js", "one"), ("assets/new.js", "fresh")]);
+            let files = deploy_over_ssh(&target, &Shipment::of(&second), &options, &mut Report::default(), &connect).unwrap();
+            assert_eq!(files, second.plan.files, "the stand holds the whole build");
+            assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v2");
+            assert_eq!(std::fs::read_to_string(site.join("assets").join("new.js")).unwrap(), "fresh");
+            assert_eq!(
+                written(&site.join("chunk-0.js")),
+                before,
+                "no_archive={no_archive}: an unchanged file is not sent again"
+            );
+
+            // Nothing changed: nothing is sent, and the deploy still goes through.
+            deploy_over_ssh(&target, &Shipment::of(&second), &options, &mut Report::default(), &connect).unwrap();
+            assert_eq!(written(&site.join("chunk-0.js")), before);
+
+            // Enough changed files to pack: the archive holds them and no more.
+            age(&site.join("index.html"));
+            let kept = written(&site.join("index.html"));
+            let (_v3, third) = a_rebuild(&[("index.html", "v2"), ("assets/app.js", "one"), ("assets/new.js", "fresh")]);
+            deploy_over_ssh(&target, &Shipment::of(&third), &options, &mut Report::default(), &connect).unwrap();
+            assert_eq!(std::fs::read_to_string(site.join("chunk-0.js")).unwrap(), "y");
+            assert_eq!(
+                written(&site.join("index.html")),
+                kept,
+                "no_archive={no_archive}: the archive held only what changed"
+            );
+            assert!(!site.join(".turnout-upload.tar.gz").exists());
+        }
+    }
+
+    /// `--clear` after a comparison takes away, by name, every file the build
+    /// does not have and the folders that leaves empty - and nothing the
+    /// build has: an unchanged file stays unwritten, and the env file the
+    /// deploy writes again keeps the mode its owner gave it. A file of the
+    /// build may take the place of a folder the stand had.
+    #[test]
+    fn a_clear_removes_what_the_build_does_not_have_by_name() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let dir = site.display().to_string();
+        let target = a_target(&dir, None, None, "http://127.0.0.1:1");
+        let (_v1, first) = a_build(&[("index.html", "v1"), ("assets/app.js", "one")]);
+        deploy_over_ssh(&target, &Shipment::of(&first), &Options::default(), &mut Report::default(), &connect).unwrap();
+        for (path, content) in [
+            ("stray.txt", "left over"),
+            ("old/deep/gone.js", "an old chunk"),
+            ("uploads/avatar.png", "the app's own"),
+            ("docs/page.html", "a folder the build makes a file"),
+            ("assets/stale.js", "beside a file that stays"),
+        ] {
+            let path = site.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        }
+        std::fs::write(site.join(".env"), "A=0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(site.join(".env"), std::fs::Permissions::from_mode(0o640)).unwrap();
+        }
+        age(&site.join("chunk-0.js"));
+        let before = written(&site.join("chunk-0.js"));
+
+        let (_v2, second) = a_build(&[("index.html", "v2"), ("assets/app.js", "one"), ("docs", "now a file")]);
+        let shipment = Shipment {
+            env: Some(StandEnv {
+                file: crate::model::stand_file(&dir, ".env"),
+                text: "A=1\n".into(),
+                count: 1,
+            }),
+            ..Shipment::of(&second)
+        };
+        let clear = Options {
+            clear: true,
+            ..Options::default()
+        };
+        deploy_over_ssh(&target, &shipment, &clear, &mut Report::default(), &connect).unwrap();
+        for gone in ["stray.txt", "old", "uploads", "assets/stale.js"] {
+            assert!(!site.join(gone).exists(), "{gone} is not the build's and goes");
+        }
+        assert_eq!(std::fs::read_to_string(site.join("docs")).unwrap(), "now a file");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v2");
+        assert_eq!(std::fs::read_to_string(site.join("assets").join("app.js")).unwrap(), "one");
+        assert_eq!(written(&site.join("chunk-0.js")), before, "what the build has is not written again");
+        assert_eq!(std::fs::read_to_string(site.join(".env")).unwrap(), "A=1\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(site.join(".env")).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o640, "the env file is written over, not taken away and made anew");
+        }
+    }
+
+    /// A file `--clear` cannot take away - held open, in a folder the
+    /// account may not write - stays beside the build, and the deploy goes
+    /// on: stopping there would leave the stand serving half a directory.
+    /// Found by the v1.3.0 live run, where the first cut of this failed the
+    /// deploy instead.
+    #[test]
+    fn a_file_clear_cannot_remove_stays_and_the_deploy_goes_on() {
+        let stand = crate::ssh::tests::Stand::spawn_shell();
+        let connect = || Ok(stand.session());
+        let server = tempfile::tempdir().unwrap();
+        let site = server.path().join("site");
+        let target = a_target(&site.display().to_string(), None, None, "http://127.0.0.1:1");
+        let (_v1, first) = a_build(&[("index.html", "v1")]);
+        deploy_over_ssh(&target, &Shipment::of(&first), &Options::default(), &mut Report::default(), &connect).unwrap();
+        std::fs::create_dir_all(site.join("locked")).unwrap();
+        std::fs::write(site.join("locked").join("held.txt"), "not yours").unwrap();
+        std::fs::write(site.join("stray.txt"), "left over").unwrap();
+        #[cfg(windows)]
+        let _held = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(site.join("locked").join("held.txt"))
+                .unwrap()
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(site.join("locked"), std::fs::Permissions::from_mode(0o555)).unwrap();
+        }
+        let (_v2, second) = a_build(&[("index.html", "v2")]);
+        let clear = Options {
+            clear: true,
+            ..Options::default()
+        };
+        let result = deploy_over_ssh(&target, &Shipment::of(&second), &clear, &mut Report::default(), &connect);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(site.join("locked"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        result.expect("a file that will not go does not stop the deploy");
+        assert_eq!(std::fs::read_to_string(site.join("index.html")).unwrap(), "v2");
+        assert!(site.join("locked").join("held.txt").exists(), "it stays where it was");
+        assert!(!site.join("stray.txt").exists(), "the rest goes");
     }
 
     /// `--clear` on a first deploy: the directory is not there yet, and an
@@ -1635,7 +2120,7 @@ mod tests {
 
         // The archive cannot land: its name is taken by a directory.
         std::fs::create_dir_all(site.join(".turnout-upload.tar.gz").join("inside")).unwrap();
-        let (_v2, second) = a_build(&[("health.txt", "ok"), ("index.html", "v2")]);
+        let (_v2, second) = a_rebuild(&[("health.txt", "ok"), ("index.html", "v2")]);
         let mut report = Report::default();
         deploy_over_ssh(&target, &Shipment::of(&second), &Options::default(), &mut report, &connect).unwrap_err();
         assert!(report.reached == Reached::BeforeUpload);

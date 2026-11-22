@@ -2082,6 +2082,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lacodda-tear"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9258abb6c7a10c15c9be2cb98eac81d00c3fc41d64541cc90f782202852ce7b9"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4252,6 +4261,7 @@ dependencies = [
  "hmac",
  "indicatif",
  "keyring",
+ "lacodda-tear",
  "libc",
  "notify-rust",
  "png",
