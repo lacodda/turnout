@@ -76,7 +76,9 @@ Recent
 
 - **A dev gateway.** One address per app (`http://web.localhost`), ports assigned for you, redirects and WebSockets proxied, a session per app and stand. [Gateway](https://lacodda.github.io/turnout/concepts/gateway/)
 - **Servers, logins and paths, apart** - joined into named targets, so `turnout deploy web-prod` works from any directory. [Entities](https://lacodda.github.io/turnout/concepts/entities/)
-- **A deploy that checks itself.** `--diff` before, a health check after and a rollback when it fails, a history of every deploy; Linux and Windows servers alike. [deploy](https://lacodda.github.io/turnout/reference/deploy/)
+- **A deploy that checks itself.** Only the files that changed go, `--diff` before, a health check after and a rollback when it fails, a history of every deploy; Linux and Windows servers alike. [deploy](https://lacodda.github.io/turnout/reference/deploy/)
+- **A stand that keeps up by itself.** `turnout watch web-stage` deploys every change to the build in the background, with a notification for each. [watch](https://lacodda.github.io/turnout/reference/watch/)
+- **Folders topped up on a stand.** `turnout copy ./inbox stage:/srv/app/inbox` sends what is new or changed, removes nothing, and leaves it writable for the folder's group. [copy](https://lacodda.github.io/turnout/reference/copy/)
 - **Access set up, not just used.** Secrets in the OS keyring, `key setup` that proves a key before switching to it, `key rotate` that replaces one on every server, the SSH agent, and every server's host key checked. [SSH access](https://lacodda.github.io/turnout/guides/ssh-access/)
 - **An app's variables, off the disk.** `turnout env` keeps them per app and stand in the keyring: `dev` hands them over, a deploy writes the stand's env file from them, `--with sefy:NAME` brings the rest from a password manager. [env](https://lacodda.github.io/turnout/reference/env/)
 - **Tunnels to what a stand keeps private.** `turnout tunnel db@staging 5432` puts the stand's database at `localhost:5432`, in the background, back by itself after a dropped connection. [tunnel](https://lacodda.github.io/turnout/reference/tunnel/)

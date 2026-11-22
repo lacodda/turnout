@@ -120,7 +120,13 @@ A deploy, a stand checked before one, and the window onto it all - recorded from
 		A build shows a loader and its elapsed time, not two minutes of scrollback; a dev server goes quiet once it is up and speaks again only when something breaks. A failure prints its output on the spot, every job's output is kept in a log file, and `-v` still gives you everything.
 	</Card>
 	<Card title="Deploy" icon="cloud-download">
-		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Every deploy is recorded with its version and commit - `history` lists them, `rollback` sends an earlier build back. Artifacts travel as one archive, to Linux and Windows servers alike.
+		Build, upload over SSH/SFTP, restart the service, then ask the stand whether it works - and roll it back by itself when it does not. Only the files the stand does not have yet go; `--diff` shows what would change before anything is written; one command ships one build to several targets; a long restart survives a dropped connection. Every deploy is recorded with its version and commit - `history` lists them, `rollback` sends an earlier build back. To Linux and Windows servers alike.
+	</Card>
+	<Card title="A stand that keeps up" icon="random">
+		`turnout watch myapp-stage` deploys the app again whenever its build changes - whatever wrote it - and `--build` builds on every saved source and deploys only a green build. It runs in the background as a job of the app, and every deploy is a notification: one that went through opens the stand, one that failed says why.
+	</Card>
+	<Card title="Folders topped up on a stand" icon="document">
+		`turnout copy ./inbox stage:/srv/app/inbox` sends the files a folder on the server does not have yet, and removes nothing there - for an inbox a service empties. Every file appears whole, and what the copy wrote belongs to the folder's group, which may write it.
 	</Card>
 	<Card title="Portable settings" icon="seti:config">
 		`export` writes your apps, servers, credentials, paths, targets and groups to one file; `import` merges it on another machine. Secrets - the apps' variables among them - come along only when you ask, sealed with a passphrase. A file from any release since 0.11 still imports - every build proves it against the file each of those releases wrote.
