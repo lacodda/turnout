@@ -7,6 +7,23 @@ a version cannot be published below the latest one without making `cargo
 install` and the changelog disagree about what is current. Nothing was withdrawn
 and nothing is missing - the number is simply unused.
 
+## [1.3.0] - 2026-11-23
+
+### Build
+- Take url 2.5.9 for RUSTSEC-2026-0592
+
+### Documentation
+- Show watch, copy and the smaller deploy on the README and the docs home
+
+### Features
+- Send only the files the stand does not have
+- Top up a folder on a server from a folder here
+- Deploy an app again whenever its build changes
+
+### Testing
+- Tear the gateway's connections to a stand for real
+- Make the torn restart's build in the thread that sends it
+
 ## [1.2.0] - 2026-11-16
 
 ### Documentation

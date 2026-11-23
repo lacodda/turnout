@@ -57,7 +57,7 @@ And see what has been going on:
 
 ```console
 $ turnout status
-turnout 1.2.0  ~/.local/share/lacodda/turnout
+turnout 1.3.0  ~/.local/share/lacodda/turnout
 
 Apps
   api  -> staging  http://api.localhost  spare :7101 (TURNOUT_GATEWAY_URL)
@@ -124,7 +124,7 @@ turnout deploy-setup           # to deploy: walks the credential, path and targe
 
 ## Status
 
-v1.2.0, on the 1.x line - the first stable one. The settings are a contract: an export written by any release since v0.11 imports into this one, and nothing in 1.x breaks it. Deploys are proven against real Linux and Windows servers on every push; what landed in each version is in [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).
+v1.3.0, on the 1.x line - the first stable one. The settings are a contract: an export written by any release since v0.11 imports into this one, and nothing in 1.x breaks it. Deploys are proven against real Linux and Windows servers on every push; what landed in each version is in [the changelog](https://github.com/lacodda/turnout/blob/main/CHANGELOG.md).
 
 ## Documentation
 
