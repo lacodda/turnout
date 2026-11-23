@@ -1767,9 +1767,11 @@ mod tests {
         let site = server.path().join("site");
         let restart = "touch started && sleep 1 && echo restarted > restarted.txt && echo done";
         let target = a_target(&site.display().to_string(), Some(restart), None, "http://127.0.0.1:1");
-        let (_build, build) = a_build(&[("index.html", "v1")]);
         std::thread::scope(|scope| {
             let deploying = scope.spawn(|| {
+                // Made in the thread that sends it: a build packs itself
+                // once, and is not to be shared between threads.
+                let (_build, build) = a_build(&[("index.html", "v1")]);
                 let connect = || torn.connect();
                 let mut report = Report::default();
                 deploy_over_ssh(&target, &Shipment::of(&build), &Options::default(), &mut report, &connect).map(|_| report)
